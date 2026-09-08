@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install
+        working-directory: dispatch-service
+        run: npm ci || npm install
+      - name: Test
+        working-directory: dispatch-service
+        run: npm test
+
+  app:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install
+        working-directory: driver-app
+        run: npm install
+      - name: Logic tests
+        working-directory: driver-app
+        run: npm test
+      # Every screen must survive the real Expo transform. This is the check
+      # that would have caught the missing babel-preset-expo.
+      - name: Compile check
+        working-directory: driver-app
+        run: |
+          node -e "
+          const b=require('@babel/core'), fs=require('fs'), path=require('path');
+          const walk=(d)=>fs.readdirSync(d,{withFileTypes:true}).flatMap(e=>
+            e.isDirectory()?walk(path.join(d,e.name)):
+            e.name.endsWith('.js')?[path.join(d,e.name)]:[]);
+          const files=['App.js','index.js',...walk('src')];
+          let bad=0;
+          for(const f of files){
+            try{ b.transformSync(fs.readFileSync(f,'utf8'),{filename:f,presets:['babel-preset-expo']}); }
+            catch(e){ bad++; console.error('FAIL '+f+': '+e.message.split('\n')[0]); }
+          }
+          if(bad) process.exit(1);
+          console.log(files.length+' files compile');
+          "

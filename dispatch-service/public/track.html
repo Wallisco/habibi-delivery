@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Track your order</title>
+<link rel="stylesheet" href="/vendor/leaflet.css"/>
+<script src="/vendor/leaflet.js"></script>
+<style>
+  #map{height:260px;border-radius:16px;margin-bottom:18px;border:1px solid var(--line);
+       background:var(--wash)}
+  .leaflet-container{border-radius:16px;font:inherit}
+  .pin{display:grid;place-items:center;border-radius:50%;box-shadow:0 2px 8px rgba(0,0,0,.25);
+       font-size:15px}
+  .stale{font-size:11.5px;color:var(--muted);margin:-12px 0 16px;text-align:center}
+  :root{
+    --forest:#084A2C; --green:#0F7A46; --live:#22C069; --wash:#EAF6EF; --mist:#F7FAF8;
+    --ink:#0C1A12; --muted:#647268; --line:#DDE7E1; --white:#fff; --red:#C0442F;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--mist);color:var(--ink);
+       font-family:-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+       padding:22px 16px 60px}
+  .wrap{max-width:520px;margin:0 auto}
+
+  .hero{background:var(--forest);border-radius:20px;padding:24px;color:#fff;margin-bottom:18px}
+  .hero .lbl{font-size:11px;font-weight:800;letter-spacing:.7px;color:rgba(255,255,255,.6)}
+  .hero h1{font-size:26px;font-weight:800;letter-spacing:-.6px;margin:6px 0 4px}
+  .hero .sub{font-size:14px;color:rgba(255,255,255,.75);line-height:1.5}
+  .eta{display:flex;align-items:baseline;gap:8px;margin-top:16px}
+  .eta b{font-size:40px;font-weight:800;letter-spacing:-1.5px;color:var(--live)}
+  .eta span{font-size:13px;color:rgba(255,255,255,.7)}
+
+  .driver{display:flex;align-items:center;gap:12px;background:var(--white);
+          border:1px solid var(--line);border-radius:16px;padding:15px;margin-bottom:18px}
+  .avatar{width:44px;height:44px;border-radius:50%;background:var(--wash);display:grid;
+          place-items:center;font-weight:800;color:var(--green);font-size:17px;flex:none}
+  .driver .n{font-weight:700;font-size:15px}
+  .driver .v{font-size:12.5px;color:var(--muted);margin-top:2px}
+
+  .card{background:var(--white);border:1px solid var(--line);border-radius:16px;padding:18px}
+  h2{font-size:12px;font-weight:800;letter-spacing:.6px;color:var(--muted);margin-bottom:14px}
+
+  .step{display:flex;gap:13px;padding-bottom:18px;position:relative}
+  .step:last-child{padding-bottom:0}
+  .step::before{content:'';position:absolute;left:8px;top:20px;bottom:0;width:2px;
+                background:var(--line)}
+  .step:last-child::before{display:none}
+  .step.done::before{background:var(--live)}
+  .bead{width:18px;height:18px;border-radius:50%;border:2px solid var(--line);
+        background:var(--white);flex:none;z-index:1;margin-top:1px}
+  .step.done .bead{background:var(--live);border-color:var(--live)}
+  .step.now .bead{background:var(--white);border-color:var(--live);
+                  box-shadow:0 0 0 4px rgba(34,192,105,.18)}
+  .step .t{font-weight:700;font-size:14.5px}
+  .step.pending .t{color:var(--muted);font-weight:500}
+  .step .m{font-size:12.5px;color:var(--muted);margin-top:2px;line-height:1.45}
+  .step .w{font-size:11px;color:var(--muted);margin-top:3px}
+
+  .note{background:var(--wash);border-radius:14px;padding:15px;margin-top:16px;
+        font-size:13.5px;color:var(--green);line-height:1.5}
+  .err{text-align:center;padding:60px 20px;color:var(--muted)}
+  footer{text-align:center;font-size:11.5px;color:var(--muted);margin-top:26px}
+</style>
+</head>
+<body>
+<div class="wrap" id="root">
+  <div class="err">Loading your order…</div>
+</div>
+
+<script>
+const jobId = location.pathname.split('/').filter(Boolean).pop();
+const $ = (s) => document.querySelector(s);
+const time = (ts) => new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+async function load() {
+  let d;
+  try {
+    const res = await fetch('/v1/track/' + jobId);
+    if (!res.ok) throw new Error('not found');
+    d = await res.json();
+  } catch {
+    $('#root').innerHTML =
+      '<div class="err"><h1 style="font-size:20px;margin-bottom:8px">Order not found</h1>' +
+      '<p>This link may have expired. Check the message from the restaurant.</p></div>';
+    return;
+  }
+
+  const done = new Set(d.timeline.map((t) => t.code));
+  const all = ['PENDING', 'ASSIGNED', 'AT_STORE', 'IN_TRANSIT', 'AT_CUSTOMER', 'DELIVERED'];
+  const currentIdx = all.reduce((acc, c, i) => (done.has(c) ? i : acc), 0);
+
+  const delivered = d.status === 'DELIVERED';
+  const meta = Object.fromEntries(d.timeline.map((t) => [t.code, t]));
+
+  $('#root').innerHTML = `
+    <div class="hero">
+      <div class="lbl">YOUR ORDER</div>
+      <h1>${delivered ? 'Delivered' : d.label}</h1>
+      <div class="sub">${d.pickup.name ?? 'Your order'} → ${d.dropoff.name ?? 'your address'}</div>
+      ${!delivered && d.etaMinutes ? `<div class="eta"><b>${d.etaMinutes}</b>
+        <span>minutes away</span></div>` : ''}
+    </div>
+
+    ${d.driverPosition || d.dropoffPosition ? '<div id="map"></div>' : ''}
+    ${d.driverPosition && d.driverPosition.secondsAgo > 90
+      ? `<div class="stale">Last location update ${Math.round(d.driverPosition.secondsAgo/60)} min ago</div>` : ''}
+
+    ${d.driver ? `<div class="driver">
+      <div class="avatar">${(d.driver.firstName || '?')[0].toUpperCase()}</div>
+      <div><div class="n">${d.driver.firstName}</div>
+        <div class="v">${d.driver.vehicle ?? 'On the way'}</div></div>
+    </div>` : ''}
+
+    <div class="card">
+      <h2>PROGRESS</h2>
+      ${all.map((code, i) => {
+        const t = meta[code];
+        const state = t ? (i === currentIdx && !delivered ? 'now done' : 'done') : 'pending';
+        return `<div class="step ${state}">
+          <div class="bead"></div>
+          <div><div class="t">${label(code)}</div>
+            ${t?.meta ? `<div class="m">${t.meta}</div>` : ''}
+            ${t ? `<div class="w">${time(t.at)}</div>` : ''}</div>
+        </div>`;
+      }).join('')}
+    </div>
+
+    ${d.status === 'AT_CUSTOMER' ? `<div class="note">
+      <strong>Your driver is here.</strong> Give them the 4-digit code from your chat so they
+      can complete the delivery.</div>` : ''}
+    ${delivered ? `<div class="note">Thanks — enjoy it.</div>` : ''}
+
+    <footer>This page updates on its own. Keep it open.</footer>`;
+
+  if (d.dropoffPosition) drawMap(d);
+}
+
+function label(code) {
+  return ({
+    PENDING: 'Order placed',
+    ASSIGNED: 'Driver assigned',
+    AT_STORE: 'Order ready',
+    IN_TRANSIT: 'On the way to you',
+    AT_CUSTOMER: 'Driver at your door',
+    DELIVERED: 'Delivered',
+  })[code] ?? code;
+}
+
+/**
+ * The map is created once and then only moved. Rebuilding it on every poll
+ * would reset the customer's zoom and pan every ten seconds, which is
+ * infuriating on a phone.
+ */
+let map = null, driverMarker = null, dropMarker = null, fitted = false;
+
+function icon(emoji, bg) {
+  return L.divIcon({ className: '', iconSize: [34, 34], iconAnchor: [17, 17],
+    html: `<div class="pin" style="width:34px;height:34px;background:${bg}">${emoji}</div>` });
+}
+
+function drawMap(d) {
+  const el = document.getElementById('map');
+  if (!el) return;
+  if (typeof L === 'undefined') {
+    // A blank grey box tells the customer nothing. A link they can tap does.
+    el.outerHTML = `<div class="card" style="margin-bottom:18px">
+      <div style="font-weight:700;font-size:14px">Map unavailable</div>
+      <div style="font-size:12.5px;color:var(--muted);margin-top:4px">
+        <a style="color:var(--green)" target="_blank"
+          href="https://www.google.com/maps/search/?api=1&query=${d.dropoffPosition.lat},${d.dropoffPosition.lng}">
+          Open the delivery address in Google Maps</a></div></div>`;
+    return;
+  }
+  const drop = d.dropoffPosition;
+  const drv = d.driverPosition;
+
+  if (!map) {
+    map = L.map(el, { zoomControl: false, attributionControl: false })
+      .setView([drop.lat, drop.lng], 15);
+    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
+    L.control.attribution({ prefix: false })
+      .addAttribution('&copy; OpenStreetMap').addTo(map);
+    dropMarker = L.marker([drop.lat, drop.lng], { icon: icon('🏠', '#fff') }).addTo(map);
+  }
+
+  if (drv) {
+    if (!driverMarker) {
+      driverMarker = L.marker([drv.lat, drv.lng], { icon: icon('🛵', '#22C069') }).addTo(map);
+    } else {
+      driverMarker.setLatLng([drv.lat, drv.lng]);
+    }
+    // Frame both points once, then leave the view alone so the customer can
+    // pan and zoom without it snapping back.
+    if (!fitted) {
+      map.fitBounds(L.latLngBounds([[drv.lat, drv.lng], [drop.lat, drop.lng]]),
+        { padding: [40, 40], maxZoom: 16 });
+      fitted = true;
+    }
+  }
+}
+
+load();
+// Ten seconds, not fifteen: a moving vehicle looks broken if it jumps.
+setInterval(load, 10000);
+</script>
+</body>
+</html>

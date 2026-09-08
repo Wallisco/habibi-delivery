@@ -1,0 +1,891 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Operations</title>
+<style>
+  :root{
+    --forest:#084A2C; --green:#0F7A46; --live:#22C069; --wash:#EAF6EF; --mist:#F7FAF8;
+    --ink:#0C1A12; --muted:#647268; --line:#DDE7E1; --white:#fff;
+    --amber:#B8791A; --amberbg:#FDF3E2; --red:#C0442F; --redbg:#FBE9E5;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--mist);color:var(--ink);
+       font-family:-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+       font-size:14px;padding:24px 20px 70px}
+  .wrap{max-width:1320px;margin:0 auto}
+  header{display:flex;justify-content:space-between;align-items:flex-end;flex-wrap:wrap;
+         gap:14px;margin-bottom:16px}
+  h1{font-size:25px;font-weight:800;letter-spacing:-.6px}
+  .sub{color:var(--muted);font-size:13px;margin-top:3px}
+  .controls{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+  select,button,input,textarea{font:inherit;padding:8px 12px;border-radius:9px;
+    border:1px solid var(--line);background:var(--white);color:var(--ink)}
+  button{cursor:pointer}
+  button.go{background:var(--green);color:#fff;border-color:var(--green);font-weight:600}
+  button.sm{padding:5px 10px;font-size:12.5px}
+  .live{display:flex;gap:8px;align-items:center;font-size:12px;font-weight:700;
+        color:var(--green);background:var(--wash);padding:7px 12px;border-radius:99px}
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--live)}
+
+  nav{display:flex;gap:4px;border-bottom:2px solid var(--line);margin-bottom:20px;overflow-x:auto}
+  nav button{background:none;border:none;border-bottom:3px solid transparent;border-radius:0;
+    padding:11px 15px;font-weight:600;color:var(--muted);white-space:nowrap}
+  nav button.on{color:var(--ink);border-bottom-color:var(--green)}
+  nav button .badge{background:var(--red);color:#fff;border-radius:99px;padding:1px 6px;
+    font-size:10.5px;margin-left:5px;font-weight:800}
+
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(185px,1fr));gap:12px;margin-bottom:20px}
+  .kpi{background:var(--white);border:1px solid var(--line);border-radius:14px;padding:15px}
+  .kpi .lbl{font-size:10.5px;font-weight:800;letter-spacing:.6px;color:var(--muted);text-transform:uppercase}
+  .kpi .val{font-size:27px;font-weight:800;letter-spacing:-1px;margin:5px 0 2px}
+  .kpi .note{font-size:11.5px;color:var(--muted)}
+  .kpi.hero{background:var(--forest);border-color:var(--forest)}
+  .kpi.hero .lbl{color:rgba(255,255,255,.6)} .kpi.hero .val{color:#fff}
+  .kpi.hero .note{color:rgba(255,255,255,.7)}
+  .kpi.warn .val{color:var(--amber)} .kpi.bad .val{color:var(--red)}
+
+  section{background:var(--white);border:1px solid var(--line);border-radius:14px;
+          padding:18px;margin-bottom:16px}
+  h2{font-size:15px;font-weight:800;margin-bottom:3px}
+  .hint{font-size:12px;color:var(--muted);margin-bottom:13px;line-height:1.5}
+
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th{text-align:left;font-size:10.5px;font-weight:800;letter-spacing:.5px;color:var(--muted);
+     text-transform:uppercase;padding:7px 9px;border-bottom:2px solid var(--line)}
+  td{padding:9px;border-bottom:1px solid var(--line);vertical-align:middle}
+  tr:last-child td{border-bottom:none}
+  tr.click{cursor:pointer} tr.click:hover{background:var(--mist)}
+  td.num{text-align:right;font-variant-numeric:tabular-nums}
+  .mono{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px}
+  .bad{color:var(--red);font-weight:700} .ok{color:var(--green);font-weight:700}
+
+  .tag{display:inline-block;padding:2px 9px;border-radius:99px;font-size:10.5px;font-weight:800;white-space:nowrap}
+  .tag.g{background:var(--wash);color:var(--green)}
+  .tag.a{background:var(--amberbg);color:var(--amber)}
+  .tag.r{background:var(--redbg);color:var(--red)}
+  .tag.n{background:#EEF1F3;color:var(--muted)}
+
+  .bars{display:flex;align-items:flex-end;gap:3px;height:100px;margin-top:6px}
+  .bar{flex:1;background:var(--wash);border-radius:3px 3px 0 0;min-height:2px;position:relative}
+  .bar.peak{background:var(--live)}
+  .bar span{position:absolute;bottom:-18px;left:0;right:0;text-align:center;font-size:9px;color:var(--muted)}
+
+  .split{display:grid;grid-template-columns:320px 1fr;gap:16px}
+  .list{max-height:560px;overflow:auto}
+  .row{padding:11px 12px;border-radius:10px;cursor:pointer;border:1px solid transparent}
+  .row:hover{background:var(--mist)} .row.on{background:var(--wash);border-color:var(--green)}
+  .row .n{font-weight:700;font-size:13.5px}
+  .row .p{font-size:12px;color:var(--muted);margin-top:2px;overflow:hidden;
+          text-overflow:ellipsis;white-space:nowrap}
+
+  .thread{max-height:420px;overflow:auto;display:flex;flex-direction:column;gap:9px;padding:4px 2px}
+  .msg{max-width:78%;padding:10px 13px;border-radius:14px;font-size:13.5px;line-height:1.45}
+  .msg.ops{background:var(--forest);color:#fff;align-self:flex-end;border-bottom-right-radius:5px}
+  .msg.driver{background:var(--white);border:1px solid var(--line);align-self:flex-start;
+              border-bottom-left-radius:5px}
+  .msg .meta{font-size:10.5px;opacity:.65;margin-top:4px}
+  .composer{display:flex;gap:8px;margin-top:12px} .composer input{flex:1}
+  .quick{display:flex;gap:6px;flex-wrap:wrap;margin-top:9px}
+  .quick button{font-size:12px;padding:5px 10px;color:var(--green);border-color:var(--wash);
+                background:var(--wash)}
+
+  .tl{position:relative;padding-left:22px}
+  .tl .ev{position:relative;padding-bottom:16px}
+  .tl .ev::before{content:'';position:absolute;left:-18px;top:4px;width:11px;height:11px;
+    border-radius:50%;background:var(--live)}
+  .tl .ev::after{content:'';position:absolute;left:-13px;top:15px;bottom:0;width:2px;background:var(--line)}
+  .tl .ev:last-child::after{display:none}
+  .tl .t{font-weight:700;font-size:13.5px}
+  .tl .m{font-size:12px;color:var(--muted);margin-top:2px}
+  .tl .w{font-size:11px;color:var(--muted);margin-top:2px}
+
+  .empty{color:var(--muted);font-size:13px;padding:16px 0}
+  .hidden{display:none}
+  @media(max-width:820px){.split{grid-template-columns:1fr}body{padding:16px 12px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div><h1>Operations</h1><div class="sub" id="sub">Loading…</div></div>
+    <div class="controls">
+      <div class="live"><span class="dot"></span><span id="livetxt">–</span></div>
+      <select id="days">
+        <option value="1">Today</option><option value="7" selected>7 days</option>
+        <option value="30">30 days</option><option value="90">90 days</option>
+      </select>
+      <button class="go" id="refresh">Refresh</button>
+    </div>
+  </header>
+  <nav id="tabs"></nav>
+  <div id="tab-overview"></div>
+  <div id="tab-orders" class="hidden"></div>
+  <div id="tab-drivers" class="hidden"></div>
+  <div id="tab-earnings" class="hidden"></div>
+  <div id="tab-messages" class="hidden"></div>
+  <div id="tab-pricing" class="hidden"></div>
+  <div id="tab-integration" class="hidden"></div>
+</div>
+
+<script>
+const $ = (s) => document.querySelector(s);
+const r = (v, d = 1) => (v == null ? '–' : Number(v).toFixed(d));
+const R = (v) => (v == null ? '–' : 'R' + Number(v).toLocaleString('en-ZA', {maximumFractionDigits:0}));
+const R2 = (v) => (v == null ? '–' : 'R' + Number(v).toFixed(2));
+const time = (ts) => ts ? new Date(ts).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) : '–';
+const days = () => $('#days').value;
+const kpi = (lbl,val,note,cls='') =>
+  `<div class="kpi ${cls}"><div class="lbl">${lbl}</div><div class="val">${val}</div>
+   <div class="note">${note}</div></div>`;
+const num = (v) => `<td class="num">${v}</td>`;
+const empty = (m) => `<div class="empty">${m}</div>`;
+const post = (url, body) => fetch(url,{method:'POST',
+  headers:{'content-type':'application/json'},body:JSON.stringify(body)});
+const stateTag = (s) => s==='DELIVERED' ? 'g' : ['FAILED','CANCELLED'].includes(s) ? 'r'
+  : ['PENDING','OFFERED'].includes(s) ? 'n' : 'a';
+
+/**
+ * @param rowKey  optional (item) => ({ kind, id }) making the row clickable.
+ *                Handled by delegation below rather than an inline onclick.
+ */
+function table(head, rows, rowKey = null, items = null) {
+  return `<table><thead><tr>${head.map((h)=>`<th>${h}</th>`).join('')}</tr></thead><tbody>` +
+    rows.map((cells,i)=>{
+      let attrs = '';
+      if (rowKey && items) {
+        const k = rowKey(items[i]);
+        if (k && k.id != null) attrs = ` class="click" data-kind="${k.kind}" data-id="${k.id}"`;
+      }
+      return `<tr${attrs}>` +
+        cells.map((c)=>(typeof c==='string'&&c.startsWith('<td'))?c:`<td>${c}</td>`).join('') +
+        '</tr>';
+    }).join('') + '</tbody></table>';
+}
+
+// One listener for the whole page. Survives every re-render, and works no
+// matter how deeply the table is nested.
+document.addEventListener('click', (e) => {
+  const tab = e.target.closest('[data-tab]');
+  if (tab) { go(tab.dataset.tab); return; }
+  const row = e.target.closest('tr.click');
+  if (row) {
+    const { kind, id } = row.dataset;
+    if (kind === 'driver') openDriver(id);
+    if (kind === 'order') openOrder(id);
+    return;
+  }
+  const act = e.target.closest('[data-act]');
+  if (!act) return;
+  const { act: action, id, key, state, zone, zi } = act.dataset;
+  if (action === 'doc')        setDoc(id, key, state);
+  if (action === 'vehicle')    saveVehicle(id);
+  if (action === 'onboarding') setOnboarding(id, state);
+  if (action === 'message')    { go('messages'); setTimeout(() => openThread(id), 250); }
+  if (action === 'thread')     openThread(id);
+  if (action === 'send')       sendMsg(id);
+  if (action === 'quick')      sendQuick(id, act.textContent);
+  if (action === 'saveRates')  saveRates(zone);
+  if (action === 'resetRates') resetRates(zone);
+  if (action === 'saveSurge')  saveSurge(Number(zi));
+  if (action === 'openDriver') openDriver(id);
+  if (action === 'openOrder')  openOrder(id);
+  if (action === 'issueCode')  issueCode(id);
+  if (action === 'closeJob')   closeJob(id, state);
+  if (action === 'reassign')   reassignJob(id);
+  if (action === 'editAddress') editAddress(id);
+  if (action === 'copyTrack')   copyTrack(id);
+  if (action === 'orderState')  { ORDER_STATE = state; loadOrders(); }
+  if (action === 'orderSearch') { ORDER_SEARCH = $('#orderSearch').value; loadOrders(); }
+  if (action === 'orderClear')  { ORDER_SEARCH = ''; loadOrders(); }
+  if (action === 'eventType')   { EVENT_TYPE = state; loadIntegration(); }
+  if (action === 'openLedger')  openLedger(id);
+});
+
+// Enter in the search box should search, not reload the page.
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && e.target.id === 'orderSearch') {
+    ORDER_SEARCH = e.target.value; loadOrders();
+  }
+});
+
+function copyTrack(jobId) {
+  const url = `${location.origin}/track/${jobId}`;
+  navigator.clipboard?.writeText(url)
+    .then(() => alert('Tracking link copied:\n' + url))
+    .catch(() => prompt('Copy this link:', url));
+}
+
+/**
+ * Correct a delivery address mid-run. Re-routes and re-prices, and reissues
+ * the code if one was already out -- it was tied to the old geofence.
+ */
+async function editAddress(jobId) {
+  const coords = prompt('New drop-off coordinates as "lat, lng"\n' +
+    'Get these from Google Maps by long-pressing the location.');
+  if (!coords) return;
+  const [lat, lng] = coords.split(',').map((v) => Number(v.trim()));
+  if (!isFinite(lat) || !isFinite(lng)) { alert('Could not read those coordinates.'); return; }
+  const name = prompt('Address label shown to the driver:', '') || undefined;
+
+  const res = await fetch(`/v1/ops/orders/${jobId}/address`, {
+    method: 'PATCH', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ lat, lng, name, actor: 'ops' }),
+  });
+  const body = await res.json();
+  if (!res.ok) { $('#ordErr').textContent = body.error; return; }
+  if (body.codeReissued) alert('Address updated. The delivery code was reissued.');
+  await loadOrders(); openOrder(jobId);
+}
+
+/**
+ * Back-office overrides. Every one of these is a delivery that could not close
+ * on its own, so they are recorded as grade D against the driver -- a rate well
+ * above their peers is a signal worth looking at.
+ */
+async function issueCode(jobId) {
+  const res = await post(`/v1/ops/orders/${jobId}/issue-code`, { actor: 'ops' });
+  if (!res.ok) { const e = await res.json(); $('#ordErr').textContent = e.error; return; }
+  openOrder(jobId);
+}
+async function closeJob(jobId, outcome) {
+  const verb = outcome === 'DELIVERED' ? 'mark this delivered' : 'mark this failed';
+  if (!confirm(`Are you sure you want to ${verb}? It will be recorded as a back-office override.`)) return;
+  const reason = prompt('Reason (recorded against the order and the driver):',
+    outcome === 'DELIVERED' ? 'Customer confirmed receipt by phone' : 'Customer unreachable');
+  if (reason === null) return;
+  const res = await post(`/v1/ops/orders/${jobId}/close`, { outcome, reason, actor: 'ops' });
+  if (!res.ok) { const e = await res.json(); $('#ordErr').textContent = e.error; return; }
+  await loadOrders(); openOrder(jobId);
+}
+async function reassignJob(jobId) {
+  if (!confirm('Put this order back in the pool for another driver?')) return;
+  const res = await post(`/v1/ops/orders/${jobId}/reassign`, { actor: 'ops' });
+  if (!res.ok) { const e = await res.json(); $('#ordErr').textContent = e.error; return; }
+  await loadOrders(); openOrder(jobId);
+}
+
+const TABS = [['overview','Overview'],['orders','Orders'],['drivers','Drivers'],
+  ['earnings','Earnings'],['messages','Messages'],['pricing','Pricing'],['integration','Integration']];
+let active='overview', unreadCount=0;
+
+function renderTabs(){
+  $('#tabs').innerHTML = TABS.map(([id,label])=>
+    `<button class="${id===active?'on':''}" data-tab="${id}">${label}${
+      id==='messages'&&unreadCount?`<span class="badge">${unreadCount}</span>`:''}</button>`).join('');
+}
+function go(id){
+  active=id;
+  TABS.forEach(([t])=>document.getElementById('tab-'+t).classList.toggle('hidden',t!==id));
+  renderTabs(); LOADERS[id]?.();
+}
+
+/* ---------------------------------------------------------------- overview */
+async function loadOverview(){
+  const d = await (await fetch('/v1/ops/dashboard?days='+days())).json();
+  const s = d.summary, onTime = s.quality.onTimeRate;
+  $('#sub').textContent = `${s.volume.delivered} delivered of ${s.volume.created} created · last ${days()} days`;
+  $('#livetxt').textContent = `${d.live.driversOnline} online · ${d.live.jobsPending} pending`;
+  const max = Math.max(1, ...d.hourly.map((h)=>h.orders));
+  $('#tab-overview').innerHTML = `
+    <div class="grid">
+      ${kpi('Driver wait at store', r(s.speed.medianWaitAtStoreMin)+' min',
+        'median · p90 '+r(s.speed.p90WaitAtStoreMin), s.speed.medianWaitAtStoreMin>10?'bad':'')}
+      ${kpi('Driver hours lost waiting', r(s.speed.totalDriverWaitHours)+' h',
+        'unpaid at the incumbents; we pay from 5 min','hero')}
+      ${kpi('Cost to serve', R2(s.cost.costPerOrder), 'driver pay per delivered order')}
+      ${kpi('Driver earns', R2(s.cost.driverEarningsPerOrder), 'per order, tips included')}
+      ${kpi('On time', onTime==null?'–':(onTime*100).toFixed(1)+'%','against promised',
+        onTime!=null&&onTime<0.9?'warn':'')}
+      ${kpi('Order to door', r(s.speed.medianOrderToDeliveredMin)+' min','median, end to end')}
+      ${kpi('Flagged', String(s.quality.flagged),'proof needs review', s.quality.flagged?'warn':'')}
+      ${kpi('Open now', String(s.volume.open),'not yet delivered')}
+    </div>
+    <div style="display:flex;gap:7px;flex-wrap:wrap;margin:-8px 0 20px">
+      ${(d.live.zones??[]).map((z)=>`<span class="tag ${z.premiumMultiplier?'a':'g'}">
+        ${z.zone} · ratio ${z.supplyRatio}${z.premiumMultiplier?' · premium '+R2(z.premiumRands):' · no premium'}
+      </span>`).join('')}</div>
+    <section><h2>Where the minutes go</h2>
+      <div class="hint">Orders per hour, with the median wait at the restaurant in each.</div>
+      <div class="bars">${d.hourly.map((h)=>`<div class="bar ${h.orders>=max*0.7&&h.orders?'peak':''}"
+        style="height:${(h.orders/max)*100}%" title="${h.hour}:00 — ${h.orders} orders, wait ${r(h.medianWaitMin)} min">
+        ${h.hour%3===0?`<span>${h.hour}</span>`:''}</div>`).join('')}</div>
+      <div style="height:20px"></div></section>
+    <section><h2>Merchant leaderboard</h2>
+      <div class="hint">Ranked by driver time consumed. The report you take into a merchant
+        conversation — neither Uber Eats nor Mr D acts on their version of it.</div>
+      ${d.merchants.length ? table(['Store','Orders','Prep','Wait','p90','Driver hours','Delay fees'],
+        d.merchants.map((m)=>[m.storeId,num(m.orders),num(r(m.medianPrepMin)+' min'),
+          `<td class="num ${m.medianWaitMin>10?'bad':m.medianWaitMin<5?'ok':''}">${r(m.medianWaitMin)} min</td>`,
+          num(r(m.p90WaitMin)+' min'),num(r(m.driverHoursConsumed,2)+' h'),num(R2(m.delayFeesPaid))]))
+        : empty('No completed deliveries yet.')}</section>
+    <section><h2>Exceptions</h2>
+      <div class="hint">The work queue. Anything here needs a human.</div>
+      ${d.exceptions.length ? table(['Type','Job','Driver','Detail'],
+        d.exceptions.map((e)=>[`<td><span class="tag ${['PROOF_FLAGGED','FAILED'].includes(e.type)?'r':
+          e.type==='LONG_WAIT'?'a':'g'}">${e.type.replace(/_/g,' ')}</span></td>`,
+          `<span class="mono">${e.jobId}</span>`, e.driverId??'–', e.detail]))
+        : '<div class="empty">Nothing needs attention.</div>'}</section>`;
+}
+
+/* ------------------------------------------------------------------ orders */
+let ORDER_STATE = 'OPEN';
+let ORDER_SEARCH = '';
+
+/**
+ * Sub-tabs by state, because an operator's day is organised by state rather
+ * than by time: what needs a driver, what is stuck at a restaurant, what needs
+ * a code read out. A single undifferentiated list makes you scan for all of it.
+ */
+const STATE_GROUPS = [
+  { key:'OPEN',        label:'Open',        match:(s)=>!['DELIVERED','FAILED','CANCELLED'].includes(s) },
+  { key:'PENDING',     label:'Waiting',     match:(s)=>['PENDING','OFFERED'].includes(s) },
+  { key:'ASSIGNED',    label:'With driver', match:(s)=>['ASSIGNED','AT_STORE'].includes(s) },
+  { key:'IN_TRANSIT',  label:'On the road', match:(s)=>['IN_TRANSIT','AT_CUSTOMER'].includes(s) },
+  { key:'DELIVERED',   label:'Delivered',   match:(s)=>s==='DELIVERED' },
+  { key:'PROBLEM',     label:'Problems',    match:(s)=>['FAILED','CANCELLED'].includes(s) },
+  { key:'ALL',         label:'All',         match:()=>true },
+];
+
+async function loadOrders(){
+  const d = await (await fetch('/v1/ops/orders?days='+days())).json();
+  const group = STATE_GROUPS.find((g)=>g.key===ORDER_STATE) ?? STATE_GROUPS[0];
+  const q = ORDER_SEARCH.trim().toLowerCase();
+
+  const counts = Object.fromEntries(STATE_GROUPS.map((g)=>
+    [g.key, d.orders.filter((o)=>g.match(o.status)).length]));
+
+  // Search matches the tail of an order number, because that is what a
+  // customer reads out over the phone -- rarely the whole thing.
+  const filtered = d.orders
+    .filter((o)=>group.match(o.status))
+    .filter((o)=> !q || [o.orderNumber,o.externalId,o.jobId,o.dropoffName,o.pickupName,o.driverId]
+      .some((v)=>String(v??'').toLowerCase().includes(q)));
+
+  $('#tab-orders').innerHTML = `
+    <section><h2>Orders</h2>
+      <div class="hint">Every order and the state it is in. Click Open for the full timeline,
+        so "where is my order" is answered by looking rather than by phoning.</div>
+
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">
+        ${STATE_GROUPS.map((g)=>`<button class="sm ${g.key===ORDER_STATE?'go':''}"
+          data-act="orderState" data-state="${g.key}">${g.label}
+          <span style="opacity:.7">${counts[g.key]}</span></button>`).join('')}
+      </div>
+
+      <div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap">
+        <input id="orderSearch" placeholder="Search order number, address or driver…"
+          value="${ORDER_SEARCH.replace(/"/g,'&quot;')}" style="flex:1;min-width:240px">
+        <button class="sm" data-act="orderSearch">Search</button>
+        ${ORDER_SEARCH?`<button class="sm" data-act="orderClear">Clear</button>`:''}
+      </div>
+      ${q?`<div class="hint">${filtered.length} match${filtered.length===1?'':'es'} for
+        "${ORDER_SEARCH}" in ${group.label.toLowerCase()}</div>`:''}
+      ${filtered.length ? table(['Order','Collect from','Deliver to','State','Driver','Code','Wait','Charge','Age',''],
+        filtered.map((o)=>[`<td><span class="mono">${o.orderNumber??o.jobId}</span></td>`,
+          `<td>${o.pickupName}<div style="font-size:11px;color:var(--muted)">${o.zone??''}</div></td>`,
+          `<td>${o.dropoffName}<div style="font-size:11px;color:var(--muted)">${
+            o.deliverKm!=null?r(o.deliverKm)+' km':''}</div></td>`,
+          `<td><span class="tag ${stateTag(o.status)}">${o.statusLabel}</span></td>`,
+          o.driverId??'–',
+          o.deliveryCode
+            ? `<td><span style="font-family:ui-monospace,monospace;font-size:15px;
+                font-weight:800;letter-spacing:3px;color:var(--green)">${o.deliveryCode}</span></td>`
+            : num('–'),
+          `<td class="num ${o.waitAtStoreMin>10?'bad':''}">${o.waitAtStoreMin!=null?r(o.waitAtStoreMin)+' min':'–'}</td>`,
+          num(R2(o.customerCharge)),
+          num(o.completedAt?time(o.completedAt):o.ageMinutes+' min'),
+          `<td style="white-space:nowrap">
+             <button class="sm go" data-act="openOrder" data-id="${o.jobId}">Open</button>
+             ${!['DELIVERED','FAILED','CANCELLED'].includes(o.status)
+               ? ` <a class="sm" style="text-decoration:none;padding:5px 10px;
+                   border:1px solid var(--line);border-radius:9px;color:var(--green)"
+                   href="/track/${o.jobId}" target="_blank">Track</a>` : ''}
+           </td>`],
+        (o)=>({kind:'order',id:o.jobId}), filtered))
+        : empty(q
+            ? `Nothing matching "${ORDER_SEARCH}" in ${group.label.toLowerCase()}.`
+            : `No ${group.label.toLowerCase()} orders in the last ${days()} days.`)}
+    </section><div id="orderDetail"></div>`;
+}
+
+async function openOrder(jobId){
+  const d = await (await fetch('/v1/ops/orders/'+jobId)).json();
+  const o = d.order;
+  $('#orderDetail').innerHTML = `
+    <section><h2>${o.orderNumber??o.id}</h2>
+      <div class="hint">${o.storeId} → ${o.dropoff?.name??'customer'}</div>
+      <div style="display:flex;gap:20px;flex-wrap:wrap;margin-bottom:12px;font-size:13px">
+        <div><div style="font-size:10.5px;font-weight:800;color:var(--muted)">COLLECT FROM</div>
+          ${o.pickup?.name ?? o.storeId}
+          ${o.pickup?.lat ? `<div><a style="font-size:11.5px;color:var(--green)" target="_blank"
+            href="https://www.google.com/maps/search/?api=1&query=${o.pickup.lat},${o.pickup.lng}">
+            ${o.pickup.lat.toFixed(5)}, ${o.pickup.lng.toFixed(5)} ↗</a></div>` : ''}</div>
+        <div><div style="font-size:10.5px;font-weight:800;color:var(--muted)">DELIVER TO</div>
+          ${o.dropoff?.name ?? '–'}
+          ${o.dropoff?.lat ? `<div><a style="font-size:11.5px;color:var(--green)" target="_blank"
+            href="https://www.google.com/maps/search/?api=1&query=${o.dropoff.lat},${o.dropoff.lng}">
+            ${o.dropoff.lat.toFixed(5)}, ${o.dropoff.lng.toFixed(5)} ↗</a></div>` : ''}</div>
+      </div>
+      ${!['DELIVERED','FAILED','CANCELLED'].includes(o.status) ? `
+        <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap">
+          <input readonly value="${location.origin}/track/${o.id}"
+            style="flex:1;min-width:240px;font-size:12px;color:var(--muted)"
+            onclick="this.select()">
+          <button class="sm" data-act="copyTrack" data-id="${o.id}">Copy link</button>
+          <a class="sm go" style="text-decoration:none;padding:5px 12px;border-radius:9px"
+            href="/track/${o.id}" target="_blank">Open live map</a>
+        </div>
+        <iframe src="/track/${o.id}" style="width:100%;height:340px;border:1px solid var(--line);
+          border-radius:14px;margin-bottom:14px" title="Live tracking"></iframe>` : ''}
+      <div class="split">
+        <div><div class="tl">${d.timeline.map((t)=>`<div class="ev">
+          <div class="t">${t.label}</div>${t.meta?`<div class="m">${t.meta}</div>`:''}
+          <div class="w">${time(t.at)}${t.dwellMinutes!=null?` · sat here ${t.dwellMinutes} min`:''}</div>
+        </div>`).join('')}</div></div>
+        <div>
+          ${d.deliveryCode ? `<div style="background:var(--forest);border-radius:14px;
+            padding:16px;margin-bottom:14px">
+            <div style="font-size:10.5px;font-weight:800;letter-spacing:.6px;
+              color:rgba(255,255,255,.6)">CUSTOMER'S CODE</div>
+            <div style="font-size:38px;font-weight:800;letter-spacing:8px;color:#fff;
+              margin:4px 0">${d.deliveryCode.code}</div>
+            <div style="font-size:11.5px;color:rgba(255,255,255,.7)">
+              ${d.deliveryCode.attempts} attempt${d.deliveryCode.attempts===1?'':'s'} used ·
+              read this to the customer if they cannot find it</div>
+          </div>` : ''}
+
+          ${d.canIssueCode || d.canClose ? `<div style="display:flex;gap:7px;flex-wrap:wrap;
+            margin-bottom:14px">
+            ${d.canIssueCode && !d.deliveryCode ? `<button class="sm go" data-act="issueCode"
+              data-id="${o.id}">Issue code now</button>` : ''}
+            ${d.canClose ? `<button class="sm" data-act="closeJob" data-id="${o.id}"
+              data-state="DELIVERED">Mark delivered</button>
+            <button class="sm" data-act="reassign" data-id="${o.id}">Reassign</button>
+            <button class="sm" data-act="closeJob" data-id="${o.id}"
+              data-state="FAILED">Mark failed</button>
+            <button class="sm" data-act="editAddress" data-id="${o.id}">Change address</button>` : ''}
+          </div>
+          <div id="ordErr" style="color:var(--red);font-size:12.5px;margin-bottom:10px"></div>` : ''}
+
+          ${o.earnings?`<h2 style="margin-bottom:10px">Driver pay</h2>
+          <table><tbody>${o.earnings.lines.map((l)=>`<tr><td>${l.label}
+            <div style="font-size:11px;color:var(--muted)">${l.detail??''}</div></td>
+            ${num(R2(l.amount))}</tr>`).join('')}
+            <tr><td><strong>Total</strong></td>${num('<strong>'+R2(o.earnings.total)+'</strong>')}</tr>
+          </tbody></table>`:'<div class="empty">Not yet delivered.</div>'}
+          ${d.driver?`<div style="margin-top:14px"><h2 style="margin-bottom:6px">Driver</h2>
+            <div style="font-size:13px">${d.driver.firstName} ${d.driver.lastName}
+              <span class="mono">(${d.driver.driverId})</span> · ${d.driver.vehicleType} · ${d.driver.hubCode}</div>
+            <button class="sm go" style="margin-top:9px"
+              data-act="message" data-id="${d.driver.driverId}">
+              Message this driver</button></div>`:''}
+        </div></div></section>`;
+  $('#orderDetail').scrollIntoView({behavior:'smooth',block:'nearest'});
+}
+
+/* ----------------------------------------------------------------- drivers */
+let ACCOUNTS=null;
+async function loadDrivers(){
+  ACCOUNTS = await (await fetch('/v1/ops/accounts')).json();
+  $('#tab-drivers').innerHTML = `
+    ${ACCOUNTS.pipeline.length?`<section><h2>Onboarding queue</h2>
+      <div class="hint">A driver cannot receive a job until every document is verified and a
+        vehicle is registered. Oldest first.</div>
+      ${table(['Driver','Name','Phone','Hub','Stage','Docs','Waiting',''],
+        ACCOUNTS.pipeline.map((p)=>[`<td><span class="mono">${p.driverId}</span></td>`,
+          p.name,p.phone,p.hubCode,
+          `<td><span class="tag a">${p.onboarding.replace(/_/g,' ')}</span></td>`,
+          num(`${p.docsVerified}/${p.docsTotal}`), num(p.waitingDays+' d'),
+          `<td><button class="sm go" data-act="openDriver" data-id="${p.driverId}">Open</button></td>`],
+        (p)=>({kind:'driver',id:p.driverId}), ACCOUNTS.pipeline))}</section>`:''}
+    <section><h2>All drivers</h2>
+      <div class="hint">IDs follow the Mr D convention — six-digit numeric, hub codes, shift
+        slots — so anyone who has worked an incumbent back office reads this without retraining.</div>
+      ${ACCOUNTS.drivers.length ? table(
+        ['Driver','Name','Hub','Vehicle','Shift','Onboarding','Live','Accept','Msgs',''],
+        ACCOUNTS.drivers.map((v)=>[`<td><span class="mono">${v.driverId}</span></td>`,v.name,v.hubCode,
+          `${v.vehicleType}${v.vehicleReg?' · '+v.vehicleReg:''}`, v.shiftSlot,
+          `<td><span class="tag ${v.onboarding==='ACTIVE'?'g':v.onboarding==='SUSPENDED'?'r':'a'}">${v.onboarding.replace(/_/g,' ')}</span></td>`,
+          `<td><span class="tag ${v.liveState==='OFFLINE'?'n':'g'}">${v.liveState.replace(/_/g,' ')}</span></td>`,
+          num((v.acceptanceRate*100).toFixed(0)+'%'),
+          v.unread?`<td><span class="tag r">${v.unread}</span></td>`:num('–'),
+          `<td><button class="sm go" data-act="openDriver" data-id="${v.driverId}">Open</button></td>`],
+        (v)=>({kind:'driver',id:v.driverId}), ACCOUNTS.drivers)) : empty('No drivers yet.')}
+    </section><div id="driverDetail"></div>`;
+}
+
+async function openDriver(id){
+  const pane = $('#driverDetail');
+  if (pane) pane.innerHTML = '<section><div class="empty">Loading driver ' + id + '…</div></section>';
+  let d;
+  try {
+    const res = await fetch('/v1/ops/accounts/'+id);
+    if (!res.ok) throw new Error('Server returned ' + res.status);
+    d = await res.json();
+  } catch (err) {
+    if (pane) pane.innerHTML = `<section><div style="color:var(--red)">
+      Could not load driver ${id}: ${err.message}</div></section>`;
+    return;
+  }
+  const a = d.account;
+  $('#driverDetail').innerHTML = `
+    <section><h2>${a.firstName} ${a.lastName} <span class="mono">(${a.driverId})</span></h2>
+      <div class="hint">${a.phone} · ${a.hubCode} · ${a.vehicleType}
+        ${a.vehicleReg?'· '+a.vehicleReg:'· no vehicle registered'}</div>
+      <div class="split">
+        <div><h2 style="margin-bottom:10px">Documents</h2>
+          <table><tbody>${d.requiredDocs.map((doc)=>{
+            const st=a.documents[doc.key]?.status??'MISSING';
+            return `<tr><td>${doc.label}</td>
+              <td><span class="tag ${st==='VERIFIED'?'g':st==='REJECTED'?'r':'n'}">${st}</span></td>
+              <td style="text-align:right">
+                <button class="sm" data-act="doc" data-id="${a.driverId}" data-key="${doc.key}"
+                  data-state="VERIFIED">Verify</button>
+                <button class="sm" data-act="doc" data-id="${a.driverId}" data-key="${doc.key}"
+                  data-state="REJECTED">Reject</button>
+              </td></tr>`;}).join('')}</tbody></table>
+          <div style="margin-top:12px;display:flex;gap:7px;flex-wrap:wrap">
+            <input id="veh" placeholder="Vehicle registration" value="${a.vehicleReg??''}"
+              style="flex:1;min-width:150px">
+            <button class="sm go" data-act="vehicle" data-id="${a.driverId}">Save</button></div>
+          <div style="margin-top:12px;display:flex;gap:7px;flex-wrap:wrap">
+            ${['ACTIVE','SUSPENDED','OFFBOARDED'].map((st)=>
+              `<button class="sm ${st==='ACTIVE'?'go':''}" data-act="onboarding" data-id="${a.driverId}" data-state="${st}">${st}</button>`).join('')}
+          </div>
+          <div id="drvErr" style="color:var(--red);font-size:12.5px;margin-top:9px"></div></div>
+        <div><h2 style="margin-bottom:10px">Recent trips</h2>
+          ${d.recentJobs.length ? table(['Order','Store','State','Earned'],
+            d.recentJobs.map((j)=>[`<td><span class="mono">${j.orderNumber??j.jobId}</span></td>`,
+              j.storeId, `<td><span class="tag ${stateTag(j.status)}">${j.status}</span></td>`,
+              num(R2(j.earned))])) : empty('No trips yet.')}
+          <h2 style="margin:16px 0 8px">Notes</h2>
+          <div style="max-height:150px;overflow:auto;font-size:12.5px;color:var(--muted)">
+            ${(a.notes??[]).slice(-12).reverse().map((n)=>
+              `<div style="padding:4px 0">${time(n.at)} · ${n.actor} · ${n.text}</div>`).join('')||'None'}
+          </div></div></div></section>`;
+  $('#driverDetail').scrollIntoView({behavior:'smooth',block:'nearest'});
+}
+
+async function setDoc(id,docKey,status){
+  await post(`/v1/ops/accounts/${id}/document`,{docKey,status}); openDriver(id);
+}
+async function saveVehicle(id){
+  await fetch(`/v1/ops/accounts/${id}`,{method:'PATCH',headers:{'content-type':'application/json'},
+    body:JSON.stringify({vehicleReg:$('#veh').value})}); openDriver(id);
+}
+async function setOnboarding(id,state){
+  const res = await post(`/v1/ops/accounts/${id}/onboarding`,{state});
+  if(!res.ok){ $('#drvErr').textContent=(await res.json()).error; return; }
+  await loadDrivers(); openDriver(id);
+}
+
+/* ---------------------------------------------------------------- earnings */
+async function loadEarnings(){
+  const d = await (await fetch('/v1/ops/drivers?days='+days())).json();
+  const st = await (await fetch('/v1/keychat/statement?days='+days())).json();
+  const totalPay = d.drivers.reduce((a,v)=>a+v.earnings,0);
+  $('#tab-earnings').innerHTML = `
+    <div class="grid">
+      ${kpi('Driver earnings',R(totalPay),'across '+d.drivers.length+' drivers','hero')}
+      ${kpi('Customer charges',R(st.totals.customerCharges),'billable to Keychat')}
+      ${kpi('Driver cost',R(st.totals.driverCost),'what we funded')}
+      ${kpi('Tips passed through',R(st.totals.tipsPassedThrough),'never our cost')}
+      ${kpi('Margin',R(st.totals.margin),'charges less driver cost',st.totals.margin<0?'bad':'')}
+    </div>
+    <section><h2>Per driver</h2>
+      <div class="hint">Orders per active day and what they earned. Tip share matters: a driver
+        relying on tips for a third of their income has an unstable week.</div>
+      ${d.drivers.length ? table(['Driver','Zone','Orders','Per day','Earned','Per day','Tip share','Wait','Overrides'],
+        d.drivers.map((v)=>[`<td><span class="mono">${v.driverId}</span></td>`,v.zone??'–',
+          num(v.orders),num(r(v.ordersPerDay)),num(R(v.earnings)),num(R(v.earningsPerDay)),
+          `<td class="num ${v.tipShare>0.3?'bad':''}">${v.tipShare==null?'–':(v.tipShare*100).toFixed(0)+'%'}</td>`,
+          num(r(v.medianWaitMin)+' min'),
+          `<td class="num ${v.overrideRate>0.05?'bad':''}">${v.overrideRate==null?'–':(v.overrideRate*100).toFixed(1)+'%'}</td>`]))
+        : empty('No completed deliveries yet.')}</section>
+    <section><h2>Vehicle ledger</h2>
+      <div class="hint">R900 a week for the bike and job access, accrued daily at
+        R128.57 so the balance means something on a Wednesday rather than only on payday.
+        A negative balance is money the driver owes us.</div>
+      <div id="ledgerTable">Loading…</div>
+    </section>
+    <div id="ledgerDetail"></div>
+
+    <section><h2>Reconciliation — what Keychat owes us</h2>
+      <div class="hint">Every delivered order with its charge, cost and margin, so a dispute
+        lands on one row rather than the whole invoice.</div>
+      ${st.rows.length ? table(['Order','Store','Km','Charge','Driver cost','Tip','Margin'],
+        st.rows.slice(0,60).map((o)=>[`<td><span class="mono">${o.externalId??o.jobId}</span></td>`,
+          o.storeId,num(r(o.deliverKm)),num(R2(o.customerCharge)),num(R2(o.driverCost)),
+          num(R2(o.tipPassedThrough)),
+          `<td class="num ${o.margin<0?'bad':'ok'}">${R2(o.margin)}</td>`]))
+        : empty('Nothing to reconcile yet.')}</section>`;
+  loadLedger();
+}
+
+/* ------------------------------------------------------------------ ledger */
+
+async function loadLedger() {
+  const el = $('#ledgerTable');
+  if (!el) return;
+  let d;
+  try { d = await (await fetch('/v1/ops/ledger')).json(); }
+  catch (e) { el.innerHTML = `<div class="empty">Could not load ledgers: ${e.message}</div>`; return; }
+
+  const rows = d.drivers ?? d.balances ?? [];
+  if (!rows.length) { el.innerHTML = empty('No ledger entries yet.'); return; }
+
+  el.innerHTML = table(
+    ['Driver','Balance','Rental this week','Earned','Still owed','Orders',''],
+    rows.map((v)=>[
+      `<td><span class="mono">${v.driverId}</span></td>`,
+      `<td class="num ${v.balance < 0 ? 'bad':'ok'}">${R2(v.balance)}</td>`,
+      num(R2(v.week?.rentalCharged ?? v.rentalCharged)),
+      num(R2(v.week?.earned ?? v.earned)),
+      `<td class="num ${(v.week?.stillOwed ?? v.stillOwed) > 0 ? 'bad':'ok'}">${
+        R2(v.week?.stillOwed ?? v.stillOwed)}</td>`,
+      num(v.week?.orders ?? v.orders ?? '–'),
+      `<td><button class="sm go" data-act="openLedger" data-id="${v.driverId}">Statement</button></td>`,
+    ]));
+}
+
+async function openLedger(driverId) {
+  const pane = $('#ledgerDetail');
+  pane.innerHTML = '<section><div class="empty">Loading statement…</div></section>';
+  let d;
+  try { d = await (await fetch(`/v1/ops/ledger/${driverId}`)).json(); }
+  catch (e) { pane.innerHTML = `<section><div style="color:var(--red)">${e.message}</div></section>`; return; }
+
+  const st = d.statement ?? d;
+  pane.innerHTML = `
+    <section>
+      <h2>Statement — driver <span class="mono">${driverId}</span></h2>
+      <div class="hint">Opening balance, every movement, closing balance. Reissuable for any
+        date range, because opening is derived from the rows rather than stored.</div>
+      <div class="grid" style="margin-bottom:14px">
+        ${kpi('Opening', R2(st.openingBalance), 'brought forward')}
+        ${kpi('Rental charged', R2(st.totals?.rentalCharged), 'vehicle and job access')}
+        ${kpi('Earned', R2(st.totals?.deliveryEarnings), 'delivery fees')}
+        ${kpi('Tips', R2(st.totals?.tips), 'passed through in full')}
+        ${kpi('Payments', R2(st.totals?.payments), 'received')}
+        ${kpi('Closing', R2(st.closingBalance),
+          st.closingBalance < 0 ? 'owed to us' : 'in credit',
+          st.closingBalance < 0 ? 'bad' : 'hero')}
+      </div>
+      ${st.rows?.length ? table(['Date','Type','Detail','Amount'],
+        st.rows.slice(-60).reverse().map((e)=>[
+          new Date(e.at).toLocaleDateString([], {day:'numeric',month:'short'}),
+          `<td><span class="tag ${e.amount<0?'r':'g'}">${e.type.replace(/_/g,' ')}</span></td>`,
+          e.description ?? e.note ?? '',
+          `<td class="num ${e.amount<0?'bad':'ok'}">${R2(e.amount)}</td>`]))
+        : empty('No movements in this period.')}
+      <div style="margin-top:12px;display:flex;gap:8px">
+        <button class="go" data-act="sendStatement" data-id="${driverId}">Send to driver</button>
+      </div>
+    </section>`;
+  pane.scrollIntoView({ behavior:'smooth', block:'nearest' });
+}
+
+/**
+ * Statements go to the driver in the app, where they already read messages.
+ * Email would need addresses we do not reliably hold, and a driver checks the
+ * app far more often than an inbox.
+ */
+async function sendStatement(driverId) {
+  const d = await (await fetch(`/v1/ops/ledger/${driverId}`)).json();
+  const st = d.statement ?? d;
+  const body = [
+    `Your statement`,
+    `Opening balance: ${R2(st.openingBalance)}`,
+    `Vehicle and job access: ${R2(-(st.totals?.rentalCharged ?? 0))}`,
+    `Delivery earnings: ${R2(st.totals?.deliveryEarnings ?? 0)}`,
+    `Tips: ${R2(st.totals?.tips ?? 0)}`,
+    `Payments received: ${R2(st.totals?.payments ?? 0)}`,
+    `Closing balance: ${R2(st.closingBalance)}`,
+    st.closingBalance < 0
+      ? `You still owe ${R2(Math.abs(st.closingBalance))} on the bike.`
+      : `You are in credit.`,
+  ].join('\n');
+
+  if (!confirm('Send this statement to the driver in the app?\n\n' + body)) return;
+  await post(`/v1/ops/messages/${driverId}`, { body, actor: 'accounts' });
+  alert('Statement sent.');
+}
+
+/* ---------------------------------------------------------------- messages */
+let CURRENT_THREAD=null;
+async function loadMessages(){
+  const d = await (await fetch('/v1/ops/messages')).json();
+  unreadCount = d.inbox.filter((i)=>i.awaitingOpsReply).length; renderTabs();
+  $('#tab-messages').innerHTML = `
+    <section><h2>Driver messages</h2>
+      <div class="hint">Talk to a driver mid-delivery. Drivers awaiting a reply come first.</div>
+      <div class="split">
+        <div class="list">${d.inbox.length?d.inbox.map((i)=>`
+          <div class="row ${i.driverId===CURRENT_THREAD?'on':''}" data-act="thread" data-id="${i.driverId}">
+            <div class="n"><span class="mono">${i.driverId}</span>
+              ${i.awaitingOpsReply?'<span class="tag r" style="margin-left:6px">reply</span>':''}</div>
+            <div class="p">${i.lastFrom==='ops'?'You: ':''}${i.lastMessage}</div></div>`).join('')
+          :'<div class="empty">No conversations yet.</div>'}</div>
+        <div id="threadPane"><div class="empty">Pick a driver, or open one from the Drivers tab.</div></div>
+      </div></section>`;
+  if(CURRENT_THREAD) openThread(CURRENT_THREAD);
+}
+
+async function openThread(driverId){
+  CURRENT_THREAD = driverId;
+  const d = await (await fetch('/v1/ops/messages/'+driverId)).json();
+  const q = await (await fetch('/v1/ops/messages')).json();
+  $('#threadPane').innerHTML = `
+    <div style="font-weight:700;margin-bottom:10px">Driver <span class="mono">${driverId}</span></div>
+    <div class="thread" id="thread">${d.thread.length?d.thread.map((m)=>`
+      <div class="msg ${m.from}">${m.body}<div class="meta">${m.from==='ops'?(m.actor??'ops'):'driver'}
+        · ${time(m.at)}${m.from==='ops'?(m.readAt?' · read':' · unread'):''}</div></div>`).join('')
+      :'<div class="empty">No messages yet.</div>'}</div>
+    <div class="composer">
+      <input id="msgBody" placeholder="Type a message…"
+        onkeydown="if(event.key==='Enter')sendMsg('${driverId}')">
+      <button class="go" data-act="send" data-id="${driverId}">Send</button></div>
+    <div class="quick">${q.quickReplies.map((t)=>
+      `<button data-act="quick" data-id="${driverId}">${t}</button>`).join('')}</div>`;
+  const el=$('#thread'); if(el) el.scrollTop=el.scrollHeight;
+}
+async function sendMsg(driverId){
+  const body=$('#msgBody').value.trim(); if(!body) return;
+  await post(`/v1/ops/messages/${driverId}`,{body,actor:'ops'}); openThread(driverId);
+}
+async function sendQuick(driverId,body){
+  await post(`/v1/ops/messages/${driverId}`,{body,actor:'ops'}); openThread(driverId);
+}
+
+/* ----------------------------------------------------------------- pricing */
+let RATES=null,SURGE=null;
+async function loadPricing(){
+  RATES = await (await fetch('/v1/ops/rates')).json();
+  SURGE = await (await fetch('/v1/ops/surge')).json();
+  const rz = RATES.zones.length?RATES.zones:[{zone:'default',card:RATES.mrdDefault,custom:false}];
+  const sz = SURGE.zones.length?SURGE.zones
+    :[{zone:'default',windows:SURGE.defaultWindows,activeNow:{bonusRands:0},forecast:[]}];
+  $('#tab-pricing').innerHTML = `
+    <section><h2>Rate cards</h2>
+      <div class="hint">Seeded from Mr D's actual rates, derived from 78,891 of their legs.
+        Each zone is independent because supply and demand are local. Every change is kept.</div>
+      ${rz.map((z)=>`<div style="border:1px solid var(--line);border-radius:12px;padding:14px;margin-bottom:12px">
+        <div style="display:flex;justify-content:space-between;margin-bottom:10px">
+          <strong>${z.zone}</strong>
+          <span class="tag ${z.custom?'g':'a'}">${z.custom?'custom':'inheriting Mr D defaults'}</span></div>
+        <table><thead><tr><th>Rate</th><th>Mr D</th><th style="width:130px">Ours</th></tr></thead>
+        <tbody>${RATES.fields.map((f)=>`<tr><td>${f.label}
+          <span style="color:var(--muted)">${f.unit}</span></td>
+          <td class="num" style="color:var(--muted)">${f.mrd??'–'}</td>
+          <td><input data-z="${z.zone}" data-k="${f.key}" type="number" step="0.01"
+            value="${z.card[f.key]}" style="width:100%;text-align:right"></td></tr>`).join('')}</tbody></table>
+        <div style="margin-top:11px;display:flex;gap:8px">
+          <button class="go" data-act="saveRates" data-zone="${z.zone}">Save</button>
+          <button data-act="resetRates" data-zone="${z.zone}">Reset to Mr D</button></div></div>`).join('')}
+    </section>
+    <section><h2>Surge schedule</h2>
+      <div class="hint">Planned bonuses by hour and day, on top of the live supply premium. A
+        driver deciding on Wednesday whether to work Friday needs Friday's rate on Wednesday,
+        which a reactive premium cannot give them. Overlapping windows stack.</div>
+      ${sz.map((z,zi)=>`<div style="border:1px solid var(--line);border-radius:12px;padding:14px;margin-bottom:12px">
+        <div style="display:flex;justify-content:space-between;margin-bottom:10px"><strong>${z.zone}</strong>
+          <span class="tag ${z.activeNow.bonusRands?'a':'g'}">${z.activeNow.bonusRands
+            ?'paying '+R2(z.activeNow.bonusRands)+' now':'no surge now'}</span></div>
+        <table><thead><tr><th>Window</th><th>Days</th><th>From</th><th>To</th><th>Bonus</th><th>On</th></tr></thead>
+        <tbody>${z.windows.map((w,wi)=>`<tr>
+          <td><input value="${w.label}" data-s="${zi}" data-w="${wi}" data-k="label" style="width:110px"></td>
+          <td>${SURGE.days.map((dn,di)=>`<label style="font-size:10.5px;margin-right:4px">
+            <input type="checkbox" data-s="${zi}" data-w="${wi}" data-k="day" value="${di}"
+              ${w.days.includes(di)?'checked':''}>${dn[0]}</label>`).join('')}</td>
+          <td><input type="number" value="${w.startHour}" data-s="${zi}" data-w="${wi}" data-k="startHour" style="width:52px"></td>
+          <td><input type="number" value="${w.endHour}" data-s="${zi}" data-w="${wi}" data-k="endHour" style="width:52px"></td>
+          <td><input type="number" step="0.5" value="${w.bonusRands}" data-s="${zi}" data-w="${wi}" data-k="bonusRands" style="width:70px"></td>
+          <td><input type="checkbox" data-s="${zi}" data-w="${wi}" data-k="enabled" ${w.enabled?'checked':''}></td>
+        </tr>`).join('')}</tbody></table>
+        <div style="margin-top:11px"><button class="go" data-act="saveSurge" data-zi="${zi}">Save schedule</button></div>
+        ${z.forecast.length?`<div style="margin-top:14px">
+          <div style="font-size:10.5px;font-weight:800;color:var(--muted);margin-bottom:5px">NEXT 24 HOURS</div>
+          <div class="bars" style="height:46px">${z.forecast.map((f)=>
+            `<div class="bar ${f.bonusRands?'peak':''}" style="height:${f.bonusRands?Math.max(16,f.bonusRands*6):3}%"
+              title="${f.day} ${f.hour}:00 — ${R2(f.bonusRands)}"></div>`).join('')}</div></div>`:''}
+      </div>`).join('')}</section>`;
+}
+async function saveRates(zone){
+  const card={}; document.querySelectorAll(`input[data-z="${zone}"]`).forEach((i)=>card[i.dataset.k]=Number(i.value));
+  await fetch('/v1/ops/rates/'+encodeURIComponent(zone),{method:'PUT',
+    headers:{'content-type':'application/json'},body:JSON.stringify({card})}); loadPricing();
+}
+async function resetRates(zone){
+  await post(`/v1/ops/rates/${encodeURIComponent(zone)}/reset`,{}); loadPricing();
+}
+async function saveSurge(zi){
+  const z=SURGE.zones[zi];
+  const windows=z.windows.map((w,wi)=>{
+    const g=(k)=>document.querySelector(`[data-s="${zi}"][data-w="${wi}"][data-k="${k}"]`);
+    return {id:w.id,label:g('label').value,
+      days:[...document.querySelectorAll(`[data-s="${zi}"][data-w="${wi}"][data-k="day"]:checked`)].map((c)=>Number(c.value)),
+      startHour:Number(g('startHour').value),endHour:Number(g('endHour').value),
+      bonusRands:Number(g('bonusRands').value),enabled:g('enabled').checked};
+  });
+  await fetch('/v1/ops/surge/'+encodeURIComponent(z.zone),{method:'PUT',
+    headers:{'content-type':'application/json'},body:JSON.stringify({windows})}); loadPricing();
+}
+
+/* -------------------------------------------------------------- integration */
+let EVENT_TYPE = 'ALL';
+
+async function loadIntegration(){
+  const d = await (await fetch('/v1/ops/integration?type=' + EVENT_TYPE)).json();
+  const types = ['ALL', ...new Set(d.recent.map((e)=>e.type))];
+  const shown = EVENT_TYPE==='ALL' ? d.recent : d.recent.filter((e)=>e.type===EVENT_TYPE);
+  $('#tab-integration').innerHTML = `
+    <div class="grid">
+      ${kpi('Routing', d.routing.mode, d.routing.osrmConfigured?'OSRM configured'
+        :'straight-line fallback — do not bill on this', d.routing.osrmConfigured?'':'warn')}
+      ${kpi('Keychat webhook', d.webhook.configured?'connected':'not set',
+        d.webhook.configured?d.webhook.queued+' queued':'events recorded, not delivered',
+        d.webhook.configured?'':'warn')}
+      ${Object.entries(d.events).map(([k,v])=>kpi(k,String(v),'outbound events',k==='DEAD'?'bad':'')).join('')}
+    </div>
+    <section><h2>Recent events</h2>
+      <div class="hint">A DEAD row is an order Keychat has not been told about, which means we
+        have not been paid for it. Someone must chase those.</div>
+      <div style="display:flex;gap:5px;flex-wrap:wrap;margin-bottom:13px">
+        <button class="sm ${EVENT_TYPE==='ALL'?'go':''}" data-act="eventType" data-etype="ALL">
+          All <span style="opacity:.65">${Object.values(d.types).reduce((a,b)=>a+b,0)}</span></button>
+        ${Object.entries(d.types).sort().map(([t,n])=>`
+          <button class="sm ${EVENT_TYPE===t?'go':''}" data-act="eventType" data-etype="${t}">
+            ${t.replace('delivery.','')} <span style="opacity:.65">${n}</span></button>`).join('')}
+      </div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">
+        ${types.map((t)=>`<button class="sm ${t===EVENT_TYPE?'go':''}" data-act="eventType"
+          data-state="${t}">${t==='ALL'?'All':t.replace('delivery.','')}
+          <span style="opacity:.7">${t==='ALL'?d.recent.length
+            :d.recent.filter((e)=>e.type===t).length}</span></button>`).join('')}
+      </div>
+      ${shown.length ? table(['Type','Order','Detail','Status','At'],
+        shown.map((e)=>[e.type,
+          `<td><span class="mono">${e.payload?.jobId ?? '–'}</span></td>`,
+          e.type==='delivery.code_issued' && e.payload?.code
+            ? `<td><span style="font-family:ui-monospace,monospace;font-size:17px;
+                font-weight:800;letter-spacing:4px;color:var(--green)">${e.payload.code}</span></td>`
+            : `<td style="color:var(--muted);font-size:12px">${
+                e.payload?.charge ? 'charge '+R2(e.payload.charge.customerCharge)
+                : e.payload?.reason ?? e.payload?.externalId ?? '–'}</td>`,
+          `<td><span class="tag ${e.status==='SENT'?'g':e.status==='DEAD'?'r':'a'}">${e.status}</span></td>`,
+          time(e.created_at)]))
+        : empty(EVENT_TYPE==='ALL'?'No events yet.':`No ${EVENT_TYPE} events.`)}</section>`;
+}
+
+const LOADERS={overview:loadOverview,orders:loadOrders,drivers:loadDrivers,earnings:loadEarnings,
+  messages:loadMessages,pricing:loadPricing,integration:loadIntegration};
+$('#refresh').onclick=()=>LOADERS[active]?.();
+$('#days').onchange=()=>LOADERS[active]?.();
+renderTabs(); loadOverview();
+setInterval(()=>{ if(['orders','messages'].includes(active)) LOADERS[active](); }, 6000);
+setInterval(()=>{ if(active==='overview') loadOverview(); }, 20000);
+</script>
+</body>
+</html>

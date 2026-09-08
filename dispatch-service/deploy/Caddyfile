@@ -1,0 +1,25 @@
+# Caddy gets you HTTPS automatically, which both app stores require and which
+# the driver app's fetch calls will refuse to work without on iOS.
+
+api.yourdomain.co.za {
+	encode gzip
+
+	# The customer tracking page and its API are public by design.
+	@public path /track/* /v1/track/*
+	handle @public {
+		reverse_proxy 127.0.0.1:3000
+	}
+
+	# Everything else, including /ops, once basic auth is configured.
+	# Generate the hash with: caddy hash-password
+	# handle {
+	#   basicauth {
+	#     ops $2a$14$REPLACE_WITH_HASH
+	#   }
+	#   reverse_proxy 127.0.0.1:3000
+	# }
+
+	handle {
+		reverse_proxy 127.0.0.1:3000
+	}
+}

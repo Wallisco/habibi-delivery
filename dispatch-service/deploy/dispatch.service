@@ -1,0 +1,31 @@
+[Unit]
+Description=Dispatch service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=dispatch
+Group=dispatch
+WorkingDirectory=/opt/dispatch/dispatch-service
+EnvironmentFile=/opt/dispatch/dispatch-service/.env
+ExecStart=/usr/bin/node src/server.js
+Restart=always
+RestartSec=3
+
+# The database lives outside the repo so a deploy never touches it.
+ReadWritePaths=/var/lib/dispatch
+StateDirectory=dispatch
+
+# Basic hardening. This process is internet-facing.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=dispatch
+
+[Install]
+WantedBy=multi-user.target

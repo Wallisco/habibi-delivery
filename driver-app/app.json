@@ -1,0 +1,75 @@
+﻿{
+    "expo":  {
+                 "name":  "Driver",
+                 "slug":  "delivery-driver",
+                 "version":  "0.1.0",
+                 "orientation":  "portrait",
+                 "scheme":  "delivery-driver",
+                 "userInterfaceStyle":  "light",
+                 "newArchEnabled":  true,
+                 "splash":  {
+                                "backgroundColor":  "#16222E",
+                                "resizeMode":  "contain"
+                            },
+                 "assetBundlePatterns":  [
+                                             "**/*"
+                                         ],
+                 "ios":  {
+                             "supportsTablet":  false,
+                             "bundleIdentifier":  "za.co.habibi.driver",
+                             "buildNumber":  "1",
+                             "infoPlist":  {
+                                               "UIBackgroundModes":  [
+                                                                         "location",
+                                                                         "fetch"
+                                                                     ],
+                                               "NSLocationWhenInUseUsageDescription":  "We use your location to send you the deliveries closest to you and to confirm you arrived at the restaurant and the customer.",
+                                               "NSLocationAlwaysAndWhenInUseUsageDescription":  "We track your location while you are on a delivery so the customer can follow their order and so we can confirm the drop-off. Tracking stops when you go offline.",
+                                               "NSCameraUsageDescription":  "The camera scans the order label at the restaurant and takes proof-of-delivery photos.",
+                                               "NSPhotoLibraryAddUsageDescription":  "Proof-of-delivery photos are saved so they can be reviewed if a customer disputes a delivery.",
+                                               "ITSAppUsesNonExemptEncryption":  false
+                                           }
+                         },
+                 "android":  {
+                                 "package":  "za.co.habibi.driver",
+                                 "versionCode":  1,
+                                 "adaptiveIcon":  {
+                                                      "backgroundColor":  "#16222E"
+                                                  },
+                                 "permissions":  [
+                                                     "ACCESS_COARSE_LOCATION",
+                                                     "ACCESS_FINE_LOCATION",
+                                                     "ACCESS_BACKGROUND_LOCATION",
+                                                     "FOREGROUND_SERVICE",
+                                                     "FOREGROUND_SERVICE_LOCATION",
+                                                     "CAMERA",
+                                                     "VIBRATE",
+                                                     "POST_NOTIFICATIONS"
+                                                 ]
+                             },
+                 "plugins":  [
+                                 [
+                                     "expo-location",
+                                     {
+                                         "locationAlwaysAndWhenInUsePermission":  "We track your location while you are on a delivery so the customer can follow their order. Tracking stops when you go offline.",
+                                         "isAndroidBackgroundLocationEnabled":  true,
+                                         "isAndroidForegroundServiceEnabled":  true
+                                     }
+                                 ],
+                                 [
+                                     "expo-camera",
+                                     {
+                                         "cameraPermission":  "The camera scans the order label at the restaurant."
+                                     }
+                                 ],
+                                 "expo-secure-store"
+                             ],
+                 "extra":  {
+                               "apiBaseUrl":  "https://habibi-api.quikr.co.za",
+                               "demoMode":  false,
+                               "eas":  {
+                                           "projectId":  "bb57e84f-872a-489a-952e-674a171b2bb0"
+                                       }
+                           }
+             }
+}

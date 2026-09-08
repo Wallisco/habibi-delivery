@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Driver app — visual preview</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --forest:#084A2C; --green:#0F7A46; --live:#22C069; --wash:#EAF6EF; --mist:#F7FAF8;
+    --ink:#0C1A12; --muted:#647268; --line:#DDE7E1; --white:#fff;
+    --amber:#B8791A; --amberbg:#FDF3E2; --red:#C0442F;
+    --sans:'Inter',-apple-system,'Segoe UI',Roboto,sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:#EEF2EF;font-family:var(--sans);color:var(--ink);padding:48px 24px 72px}
+  .page{max-width:1180px;margin:0 auto}
+  h1{font-size:34px;font-weight:800;letter-spacing:-1px;margin-bottom:8px}
+  .lede{font-size:16px;color:var(--muted);max-width:62ch;line-height:1.55;margin-bottom:14px}
+
+  .swatches{display:flex;gap:10px;flex-wrap:wrap;margin:22px 0 44px}
+  .sw{border-radius:10px;padding:11px 14px;font-size:11.5px;font-weight:600;min-width:104px}
+
+  .rack{display:flex;gap:26px;flex-wrap:wrap;justify-content:center}
+  .unit{width:268px}
+  .cap{font-size:12.5px;font-weight:700;color:var(--muted);text-align:center;
+       margin-bottom:12px;letter-spacing:.4px}
+
+  .phone{width:268px;height:566px;background:var(--mist);border-radius:34px;
+         border:9px solid #17211B;overflow:hidden;position:relative;
+         box-shadow:0 18px 44px rgba(12,26,18,.18)}
+  .notch{position:absolute;top:0;left:50%;transform:translateX(-50%);width:92px;height:22px;
+         background:#17211B;border-radius:0 0 13px 13px;z-index:5}
+  .nav{padding:26px 18px 8px;font-size:16px;font-weight:800}
+  .body{padding:0 15px}
+
+  .card{background:var(--white);border:1px solid var(--line);border-radius:20px;padding:16px;
+        box-shadow:0 4px 14px rgba(12,26,18,.05)}
+  .card.forest{background:var(--forest);border-color:var(--forest);color:#fff}
+  .card.wash{background:var(--wash);border-color:transparent}
+
+  .top{display:flex;justify-content:space-between;align-items:flex-start;gap:8px}
+  .state{display:flex;align-items:center;gap:9px}
+  .dot{width:22px;height:22px;border-radius:50%;background:rgba(34,192,105,.22);
+       display:grid;place-items:center;flex:none}
+  .dot i{width:10px;height:10px;border-radius:50%;background:var(--live);display:block}
+  .st-t{font-size:17px;font-weight:700;letter-spacing:-.3px}
+  .st-s{font-size:12px;color:var(--muted)}
+  .forest .st-t{color:#fff}.forest .st-s{color:rgba(255,255,255,.66)}
+
+  .pill{padding:5px 11px;border-radius:99px;font-size:11px;font-weight:800;
+        background:var(--wash);color:var(--green);white-space:nowrap}
+  .pill.dark{background:rgba(255,255,255,.15);color:#fff}
+  .pill.live{background:var(--live);color:#fff}
+  .pill.forest{background:var(--forest);color:#fff}
+  .pill.amber{background:var(--amberbg);color:var(--amber)}
+
+  .rule{height:1px;background:var(--line);margin:14px 0}
+  .forest .rule{background:rgba(255,255,255,.15)}
+
+  .lbl{font-size:10.5px;font-weight:800;letter-spacing:.7px;color:rgba(255,255,255,.6)}
+  .fig{font-size:44px;font-weight:800;letter-spacing:-1.6px;color:#fff;margin-top:1px}
+  .track{height:7px;border-radius:4px;background:rgba(255,255,255,.16);margin-top:13px;overflow:hidden}
+  .fill{height:7px;border-radius:4px;background:var(--live)}
+  .tnote{font-size:10.5px;color:rgba(255,255,255,.62);margin-top:8px}
+
+  .btn{border-radius:15px;padding:15px;text-align:center;font-size:15px;font-weight:700;
+       margin-top:15px;box-shadow:0 4px 14px rgba(12,26,18,.06)}
+  .btn.live{background:var(--live);color:#fff}
+  .btn.green{background:var(--green);color:#fff}
+  .btn sub{display:block;font-size:11px;font-weight:500;opacity:.86;margin-top:3px}
+  .btn.ghost{background:transparent;border:1.5px solid rgba(255,255,255,.25);color:rgba(255,255,255,.9);box-shadow:none}
+  .ghostlink{text-align:center;font-size:14px;font-weight:600;color:rgba(255,255,255,.65);padding:13px 0}
+
+  .sect{font-size:10.5px;font-weight:800;letter-spacing:.7px;color:var(--muted);margin:20px 0 9px}
+  .h3{font-size:15px;font-weight:700}
+  .sm{font-size:12.5px;color:var(--muted);line-height:1.5;margin-top:4px}
+
+  .scrim{position:absolute;inset:0;background:rgba(12,26,18,.5);display:flex;align-items:flex-end}
+  .sheet{background:#fff;border-radius:26px 26px 0 0;padding:10px 20px 26px;width:100%}
+  .grab{width:38px;height:4px;border-radius:2px;background:var(--line);margin:0 auto 16px}
+  .fee{font-size:50px;font-weight:800;letter-spacing:-2px;margin-top:12px}
+  .timer{font-size:27px;font-weight:800;color:var(--red);letter-spacing:-1px}
+  .r{display:flex;justify-content:space-between;padding:7px 0;font-size:13px}
+  .r span:first-child{color:var(--muted)}
+  .r span:last-child{font-weight:600}
+
+  .steps{display:flex;gap:6px;margin-bottom:16px}
+  .step{flex:1;height:5px;border-radius:3px;background:var(--line)}
+  .step.on{background:var(--live)}
+  .otp{border:2px solid var(--line);background:var(--mist);border-radius:15px;padding:17px;
+       text-align:center;font-size:32px;font-weight:800;letter-spacing:14px;margin:12px 0 7px}
+
+  .notes{margin-top:56px;display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:20px}
+  .note{background:#fff;border:1px solid var(--line);border-radius:16px;padding:18px}
+  .note h3{font-size:15px;font-weight:700;margin-bottom:6px}
+  .note p{font-size:13.5px;color:var(--muted);line-height:1.55}
+
+  @media(max-width:640px){body{padding:28px 14px}.rack{gap:18px}}
+</style>
+</head>
+<body>
+<div class="page">
+  <h1>Driver app</h1>
+  <p class="lede">White and green. The hero surface at the top of every screen is the whole
+  status signal: deep green when you are earning, white when you are not. Everything else stays
+  quiet so that one thing reads at a glance, one-handed, at 18:00, in traffic.</p>
+
+  <div class="swatches">
+    <div class="sw" style="background:#084A2C;color:#fff">Forest · 084A2C</div>
+    <div class="sw" style="background:#0F7A46;color:#fff">Green · 0F7A46</div>
+    <div class="sw" style="background:#22C069;color:#06301B">Live · 22C069</div>
+    <div class="sw" style="background:#EAF6EF;color:#0F7A46">Wash · EAF6EF</div>
+    <div class="sw" style="background:#F7FAF8;color:#647268;border:1px solid #DDE7E1">Mist · F7FAF8</div>
+    <div class="sw" style="background:#0C1A12;color:#fff">Ink · 0C1A12</div>
+  </div>
+
+  <div class="rack">
+
+    <div class="unit">
+      <div class="cap">OFFLINE</div>
+      <div class="phone"><div class="notch"></div>
+        <div class="nav">Your shift</div>
+        <div class="body">
+          <div class="card">
+            <div class="top">
+              <div class="state"><div><div class="st-t">Offline</div>
+                <div class="st-s">Not receiving offers</div></div></div>
+              <div class="pill">Durbanville</div>
+            </div>
+            <div class="btn live">Go online<sub>Durbanville · jobs held until food is ready</sub></div>
+          </div>
+          <div class="sect">LAST SHIFT</div>
+          <div class="card">
+            <div class="r"><span>Trips</span><span>11</span></div>
+            <div class="r"><span>Earned</span><span>R604</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="unit">
+      <div class="cap">ONLINE, EARNING</div>
+      <div class="phone"><div class="notch"></div>
+        <div class="nav">Your shift</div>
+        <div class="body">
+          <div class="card forest">
+            <div class="top">
+              <div class="state"><div class="dot"><i></i></div>
+                <div><div class="st-t">Online in zone</div>
+                <div class="st-s">Local deliveries only</div></div></div>
+              <div class="pill dark">Durbanville</div>
+            </div>
+            <div class="rule"></div>
+            <div class="lbl">EARNED TODAY</div>
+            <div class="fig">R363</div>
+            <div class="track"><div class="fill" style="width:64%"></div></div>
+            <div class="tnote">7 of about 11 trips this shift</div>
+            <div class="btn live">Include long runs<sub>Paying 25% extra right now</sub></div>
+            <div class="ghostlink">Go offline</div>
+          </div>
+          <div class="sect">NEXT UP</div>
+          <div class="card">
+            <div class="h3">Waiting for a trip</div>
+            <div class="sm">We hold jobs back until the kitchen is nearly done, so you are not
+            standing around waiting for food.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="unit">
+      <div class="cap">TRIP OFFERED</div>
+      <div class="phone"><div class="notch"></div>
+        <div class="nav">Your shift</div>
+        <div class="body">
+          <div class="card forest">
+            <div class="top">
+              <div class="state"><div class="dot"><i></i></div>
+                <div><div class="st-t">Online in zone</div></div></div>
+              <div class="pill dark">Durbanville</div>
+            </div>
+          </div>
+        </div>
+        <div class="scrim">
+          <div class="sheet">
+            <div class="grab"></div>
+            <div style="display:flex;justify-content:space-between;align-items:center">
+              <div class="pill live">LOCAL</div><div class="timer">18<span style="font-size:13px">s</span></div>
+            </div>
+            <div class="fee">R48</div>
+            <div class="sm" style="margin-top:-2px">plus about R19 in tips, all yours</div>
+            <div class="rule"></div>
+            <div class="r"><span>Collect from</span><span>RocoMamas Durbanville</span></div>
+            <div class="r"><span>Deliver to</span><span>14 Wellington St</span></div>
+            <div class="r"><span>Distance</span><span>3.2 km</span></div>
+            <div class="r"><span>Bags to scan</span><span>2</span></div>
+            <div class="r"><span>Food ready</span><span>in ~2 min</span></div>
+            <div class="btn live">Accept trip</div>
+            <div style="text-align:center;font-size:14px;font-weight:700;color:var(--muted);padding:14px 0">Decline</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="unit">
+      <div class="cap">AT THE DOOR</div>
+      <div class="phone"><div class="notch"></div>
+        <div class="nav">Delivery</div>
+        <div class="body">
+          <div class="steps"><div class="step on"></div><div class="step on"></div>
+            <div class="step on"></div><div class="step on"></div></div>
+          <div class="card" style="margin-bottom:13px">
+            <div class="top"><div class="h3">14 Wellington St</div><div class="pill live">R48</div></div>
+            <div class="sm">18 m away</div>
+          </div>
+          <div class="card">
+            <div class="h3">Customer code</div>
+            <div class="sm">Ask the customer to read you the 4 digits.</div>
+            <div class="otp">4 8 2 6</div>
+            <div style="font-size:11px;color:var(--muted)">4 attempts left</div>
+            <div class="btn live">Complete delivery</div>
+          </div>
+          <div class="card wash" style="margin-top:13px">
+            <div class="sm" style="color:var(--green)">Tips are never touched. Every cent a
+            customer adds is yours.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="notes">
+    <div class="note">
+      <h3>One surface carries the state</h3>
+      <p>Deep green means you are earning. White means you are not. A driver can read their
+      status from a phone on a handlebar mount without focusing on it.</p>
+    </div>
+    <div class="note">
+      <h3>Money is the largest thing on screen</h3>
+      <p>The fee and the day's earnings are set at 44 to 50px. Nothing else competes. That is
+      the number a driver actually opens the app for.</p>
+    </div>
+    <div class="note">
+      <h3>Bright green is rationed</h3>
+      <p>The live accent appears on exactly one action per screen and on the earnings bar.
+      Used everywhere it would stop meaning anything.</p>
+    </div>
+    <div class="note">
+      <h3>Every target is 58px or taller</h3>
+      <p>Buttons, the code field, the decline row. Sized for a gloved thumb in a hurry rather
+      than a designer's cursor.</p>
+    </div>
+  </div>
+</div>
+</body>
+</html>

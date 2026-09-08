@@ -1,0 +1,36 @@
+name: Deploy dispatch service
+
+on:
+  push:
+    branches: [main]
+    paths: ['dispatch-service/**']
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    # Only deploy if CI passed on this commit.
+    needs: []
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_KEY }}
+          script: |
+            set -e
+            cd /opt/dispatch
+            git fetch --all
+            git reset --hard origin/main
+            cd dispatch-service
+            npm ci --omit=dev || npm install --omit=dev
+            # Back up the database before restarting. Cheap insurance.
+            sudo -u dispatch cp /var/lib/dispatch/dispatch.db \
+              /var/lib/dispatch/backups/pre-deploy-$(date +%F-%H%M).db || true
+            sudo systemctl restart dispatch
+            sleep 3
+            curl -fsS http://127.0.0.1:3000/health || (sudo journalctl -u dispatch -n 40 && exit 1)
+            echo "deployed"
