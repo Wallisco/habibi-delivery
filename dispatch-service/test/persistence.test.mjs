@@ -58,7 +58,7 @@ test('state survives a restart', async (t) => {
   t.after(clean);
 
   /* ---------------------------------------------- first process lifetime */
-  let app = build({ dbPath: DBP });
+  let app = build({ dbPath: DBP, partnerAuth: false });
 
   const driverId = await onboard(app, '0821234567', 'Milnerton');
   await app.inject({ method: 'POST', url: `/v1/driver/${driverId}/state`,
@@ -80,7 +80,7 @@ test('state survives a restart', async (t) => {
   await app.close();
 
   /* --------------------------------------------- second process lifetime */
-  app = build({ dbPath: DBP });
+  app = build({ dbPath: DBP, partnerAuth: false });
   t.after(async () => { shut(app); await app.close(); });
 
   const stats = (await app.inject({ url: '/v1/ops/stats' })).json();
@@ -111,7 +111,7 @@ test('a completed delivery leaves durable evidence', async (t) => {
   clean();
   t.after(clean);
 
-  let app = build({ dbPath: DBP });
+  let app = build({ dbPath: DBP, partnerAuth: false });
   const created = await app.inject({ method: 'POST', url: '/v1/keychat/jobs',
     payload: { storeId: 'S1', zone: 'Z', pickup: DBN, dropoff: near(100) } });
   const jobId = created.json().jobId;
@@ -125,7 +125,7 @@ test('a completed delivery leaves durable evidence', async (t) => {
   shut(app);
   await app.close();
 
-  app = build({ dbPath: DBP });
+  app = build({ dbPath: DBP, partnerAuth: false });
   t.after(async () => { shut(app); await app.close(); });
 
   const after = app.engine.db.stats();

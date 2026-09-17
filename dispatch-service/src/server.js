@@ -10,6 +10,7 @@
  * persistence directly.
  */
 
+import { registerPartnerAuth } from './auth.js';
 import Fastify from 'fastify';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -31,8 +32,10 @@ import { JobStore, PROOF_GRADE, GRADE_ORDER } from './jobs.js';
 import { Dispatcher } from './dispatch.js';
 import { OtpService } from './otp.js';
 
-export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/dispatch.db' } = {}) {
+export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/dispatch.db',
+  partnerAuth = true, partnerKeys = null } = {}) {
   const app = Fastify({ logger });
+  registerPartnerAuth(app, { enabled: partnerAuth, keys: partnerKeys });
 
   // dbPath ':memory:' gives an isolated database per instance, which is what
   // the tests want. Anything else is a file that survives a restart.

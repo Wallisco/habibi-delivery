@@ -87,7 +87,7 @@ async function seed(app, { storeId = 'ROCO', prepSamples = 12 } = {}) {
 }
 
 test('a job flows from Keychat to delivered', async (t) => {
-  const app = build({ dbPath: ':memory:' });
+  const app = build({ dbPath: ':memory:', partnerAuth: false });
   t.after(() => app.close());
   const driverId = await seed(app);
 
@@ -154,7 +154,7 @@ test('a job flows from Keychat to delivered', async (t) => {
 });
 
 test('a wrong code burns an attempt and reports what is left', async (t) => {
-  const app = build({ dbPath: ':memory:' });
+  const app = build({ dbPath: ':memory:', partnerAuth: false });
   t.after(() => app.close());
   const driverId = await seed(app);
   const created = await app.inject({ method: 'POST', url: '/v1/keychat/jobs',
@@ -172,7 +172,7 @@ test('a wrong code burns an attempt and reports what is left', async (t) => {
 });
 
 test('proof floor blocks a photo close on an age-restricted order', async (t) => {
-  const app = build({ dbPath: ':memory:' });
+  const app = build({ dbPath: ':memory:', partnerAuth: false });
   t.after(() => app.close());
   await seed(app);
   const created = await app.inject({ method: 'POST', url: '/v1/keychat/jobs',
@@ -186,7 +186,7 @@ test('proof floor blocks a photo close on an age-restricted order', async (t) =>
 });
 
 test('an offline completion whose trail never entered the geofence is flagged', async (t) => {
-  const app = build({ dbPath: ':memory:' });
+  const app = build({ dbPath: ':memory:', partnerAuth: false });
   t.after(() => app.close());
   await seed(app);
   const created = await app.inject({ method: 'POST', url: '/v1/keychat/jobs',
@@ -200,7 +200,7 @@ test('an offline completion whose trail never entered the geofence is flagged', 
 });
 
 test('a driver holding a job cannot go offline', async (t) => {
-  const app = build({ dbPath: ':memory:' });
+  const app = build({ dbPath: ':memory:', partnerAuth: false });
   t.after(() => app.close());
   const driverId = await seed(app);
   const created = await app.inject({ method: 'POST', url: '/v1/keychat/jobs',
@@ -215,7 +215,7 @@ test('a driver holding a job cannot go offline', async (t) => {
 });
 
 test('a declined offer returns to the pool and is not re-offered to the same driver', async (t) => {
-  const app = build({ dbPath: ':memory:' });
+  const app = build({ dbPath: ':memory:', partnerAuth: false });
   t.after(() => app.close());
   const driverId = await seed(app);
   const created = await app.inject({ method: 'POST', url: '/v1/keychat/jobs',
@@ -230,7 +230,7 @@ test('a declined offer returns to the pool and is not re-offered to the same dri
 });
 
 test('the gate suppresses a job that was only just placed', async (t) => {
-  const app = build({ dbPath: ':memory:' });
+  const app = build({ dbPath: ':memory:', partnerAuth: false });
   t.after(() => app.close());
   await seed(app, { storeId: 'SLOW' });
   for (let i = 0; i < 12; i++) app.engine.gate.observe('SLOW', 32, { source: 'print' });
@@ -240,7 +240,7 @@ test('the gate suppresses a job that was only just placed', async (t) => {
 });
 
 test('a cold store falls back to the merchant estimate, a known store does not', async (t) => {
-  const app = build({ dbPath: ':memory:' });
+  const app = build({ dbPath: ':memory:', partnerAuth: false });
   t.after(() => app.close());
 
   // No history for this store: the merchant's own POS estimate is the prior.
@@ -264,7 +264,7 @@ test('a cold store falls back to the merchant estimate, a known store does not',
 });
 
 test('a delivered order emits a reconcilable charge to Keychat', async (t) => {
-  const app = build({ dbPath: ':memory:' });
+  const app = build({ dbPath: ':memory:', partnerAuth: false });
   t.after(() => app.close());
 
   const created = await app.inject({ method: 'POST', url: '/v1/keychat/jobs',
@@ -291,7 +291,7 @@ test('a delivered order emits a reconcilable charge to Keychat', async (t) => {
 });
 
 test('an un-onboarded driver cannot go online', async (t) => {
-  const app = build({ dbPath: ':memory:' });
+  const app = build({ dbPath: ':memory:', partnerAuth: false });
   t.after(() => app.close());
   const res = await app.inject({ method: 'POST', url: '/v1/driver/signin',
     payload: { phone: '0837654321' } });
@@ -307,7 +307,7 @@ test('an un-onboarded driver cannot go online', async (t) => {
 });
 
 test('activation is refused until every document is verified', async (t) => {
-  const app = build({ dbPath: ':memory:' });
+  const app = build({ dbPath: ':memory:', partnerAuth: false });
   t.after(() => app.close());
   const id = (await app.inject({ method: 'POST', url: '/v1/driver/signin',
     payload: { phone: '0839999999' } })).json().driver.id;
@@ -335,7 +335,7 @@ test('activation is refused until every document is verified', async (t) => {
 });
 
 test('driver ids follow the Mr D numeric convention', async (t) => {
-  const app = build({ dbPath: ':memory:' });
+  const app = build({ dbPath: ':memory:', partnerAuth: false });
   t.after(() => app.close());
   const a = (await app.inject({ method: 'POST', url: '/v1/driver/signin',
     payload: { phone: '0821111111' } })).json().driver.id;
@@ -351,7 +351,7 @@ test('driver ids follow the Mr D numeric convention', async (t) => {
 });
 
 test('ops and driver can message each other, with unread tracking', async (t) => {
-  const app = build({ dbPath: ':memory:' });
+  const app = build({ dbPath: ':memory:', partnerAuth: false });
   t.after(() => app.close());
   const id = await onboard(app, '0824444444');
 
@@ -374,7 +374,7 @@ test('ops and driver can message each other, with unread tracking', async (t) =>
 });
 
 test('an order exposes a full state timeline and a customer tracking link', async (t) => {
-  const app = build({ dbPath: ':memory:' });
+  const app = build({ dbPath: ':memory:', partnerAuth: false });
   t.after(() => app.close());
   const driverId = await seed(app);
 
