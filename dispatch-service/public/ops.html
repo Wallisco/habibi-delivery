@@ -398,7 +398,7 @@ async function loadOrders(){
           num(o.completedAt?time(o.completedAt):o.ageMinutes+' min'),
           `<td style="white-space:nowrap">
              <button class="sm go" data-act="openOrder" data-id="${o.jobId}">Open</button>
-             ${!['DELIVERED','FAILED','CANCELLED'].includes(o.status)
+             ${o.trackingToken && !['DELIVERED','FAILED','CANCELLED'].includes(o.status)
                ? ` <a class="sm" style="text-decoration:none;padding:5px 10px;
                    border:1px solid var(--line);border-radius:9px;color:var(--green)"
                    href="/track/${o.trackingToken}" target="_blank">Track</a>` : ''}
@@ -428,7 +428,9 @@ async function openOrder(jobId){
             href="https://www.google.com/maps/search/?api=1&query=${o.dropoff.lat},${o.dropoff.lng}">
             ${o.dropoff.lat.toFixed(5)}, ${o.dropoff.lng.toFixed(5)} ↗</a></div>` : ''}</div>
       </div>
-      ${!['DELIVERED','FAILED','CANCELLED'].includes(o.status) ? `
+      ${!o.collectedAt && !['DELIVERED','FAILED','CANCELLED'].includes(o.status) ? `
+        <div class="hint" style="margin-bottom:12px">The customer tracking link is released when the driver collects the order.</div>` : ''}
+      ${o.collectedAt && !['DELIVERED','FAILED','CANCELLED'].includes(o.status) ? `
         <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap">
           <input readonly value="${location.origin}/track/${o.trackingToken}"
             style="flex:1;min-width:240px;font-size:12px;color:var(--muted)"

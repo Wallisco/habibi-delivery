@@ -401,7 +401,8 @@ test('an order exposes a full state timeline and a customer tracking link', asyn
   assert.ok(detail.order.orderNumber.startsWith('DFD'), 'Mr D order number format');
 
   // The public view must not leak the driver.
-  const token = created.json().trackingUrl.split('/track/')[1];
+  const collected = app.engine.outbound.find((e) => e.type === 'delivery.collected');
+  const token = collected.payload.trackingUrl.split('/track/')[1];
   const pub = (await app.inject({ url: `/v1/track/${token}` })).json();
   assert.equal(pub.driver.firstName, 'Test');
   assert.equal(pub.driver.lastName, undefined, 'no surname to the customer');

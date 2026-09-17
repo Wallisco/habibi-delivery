@@ -166,6 +166,19 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
 
   // Customer tracking link. Built on the token, never the job id.
   const trackingUrl = (job) => `${process.env.PUBLIC_URL ?? ''}/track/${job.trackingToken}`;
+
+  /**
+   * The customer's tracking link exists, as far as anyone outside ops is
+   * concerned, only once the driver has collected the order.
+   *
+   * Before that there is nothing useful to watch -- the food is still in the
+   * kitchen and the driver may yet be swapped -- and every extra message with a
+   * live link in it is one more copy of a customer's address in the wild.
+   * `delivery.collected` is the one event that hands it over; anything later
+   * may repeat it, nothing earlier may carry it.
+   */
+  const isCollected = (job) => Boolean(job?.collectedAt);
+  const linkIfCollected = (job) => (isCollected(job) ? { trackingUrl: trackingUrl(job) } : {});
   const TRACK_TTL_MIN = Number(process.env.TRACKING_LINK_TTL_MIN ?? 60);
 
   function emit(type, payload) {
@@ -256,13 +269,11 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
     gate.noteOrder(job.storeId, job.createdAt);
     emit('delivery.accepted', {
       jobId: job.id, externalId: job.externalId, quoteId: job.quoteId,
-      trackingUrl: trackingUrl(job),
       etaMinutes: Math.round(
         gate.predictPrepMinutes(job.storeId, job.merchantPrepMinutes) + routing.deliverMinutes + 4),
     });
     return reply.code(201).send({
       jobId: job.id, status: job.status,
-      trackingUrl: trackingUrl(job),
       routing: { collectKm: routing.collectKm, deliverKm: routing.deliverKm, source: routing.source },
       dispatchAtMinutes: Number(gate.releaseOffsetMinutes(
         job.storeId, routing.collectMinutes, job.merchantPrepMinutes).toFixed(1)),
@@ -429,9 +440,6 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
       jobId: req.params.id,
       externalId: res.job.externalId,
       driverId: req.body.driverId,
-      // Send this now. The customer should be able to watch the driver
-      // approach, not discover where they are once they have arrived.
-      trackingUrl: trackingUrl(res.job),
       driver: acct ? { firstName: acct.firstName || 'Your driver',
         vehicle: acct.vehicleType } : null,
       etaMinutes: res.job.routing?.deliverMinutes
@@ -461,6 +469,8 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
   app.post('/v1/jobs/:id/collect', async (req, reply) => {
     const job = jobs.get(req.params.id);
     if (!job) return reply.code(404).send({ error: 'Unknown job' });
+    // A retried scan must not send the customer the link twice.
+    if (job.collectedAt) return { ok: true, alreadyCollected: true };
     job.collectedAt = Date.now();
     jobs.setStatus(job.id, 'IN_TRANSIT');
     if (!job.readyAt) {
@@ -469,7 +479,15 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
       gate.observe(job.storeId, (job.collectedAt - job.createdAt) / 60000,
         { source: 'scan', courierWaited: waited });
     }
-    emit('delivery.collected', { jobId: job.id });
+    // The only point at which the customer's tracking link is released.
+    const acct = job.driverId ? accounts.get(job.driverId) : null;
+    emit('delivery.collected', {
+      jobId: job.id,
+      externalId: job.externalId,
+      trackingUrl: trackingUrl(job),
+      driver: acct ? { firstName: acct.firstName || 'Your driver', vehicle: acct.vehicleType } : null,
+      etaMinutes: job.routing?.deliverMinutes ? Math.round(job.routing.deliverMinutes) : null,
+    });
     return {
       ok: true,
       waitAtStoreMinutes: job.readyAt
@@ -486,8 +504,7 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
     jobs.setStatus(job.id, 'AT_CUSTOMER');
     emit('delivery.code_issued', {
       jobId: job.id, externalId: job.externalId, code,
-      // The customer's live tracking link, handed to Keychat to show in chat.
-      trackingUrl: trackingUrl(job),
+      ...linkIfCollected(job),
     });   // -> Keychat -> WhatsApp
     return { ok: true, codeSentToCustomer: true };
   });
@@ -803,7 +820,7 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
         .slice(0, 300)
         .map((j) => ({
           jobId: j.id,
-          trackingToken: j.trackingToken,
+          trackingToken: j.collectedAt ? j.trackingToken : null,
           orderNumber: j.orderNumber,
           externalId: j.externalId,
           status: j.status,
@@ -836,9 +853,9 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
     const j = jobs.get(req.params.jobId);
     if (!j) return reply.code(404).send({ error: 'Unknown order' });
     return {
-      order: j,
+      order: { ...j, trackingToken: isCollected(j) ? j.trackingToken : null },
       timeline: timeline(j),
-      trackingUrl: trackingUrl(j),
+      trackingUrl: isCollected(j) ? trackingUrl(j) : null,
       driver: j.driverId ? accounts.get(j.driverId) : null,
       // The customer's code, for an agent on the phone to someone who cannot
       // find it. Ops-only: it appears in no driver-facing response.
@@ -865,7 +882,7 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
     }
     emit('delivery.code_issued', {
       jobId: job.id, externalId: job.externalId, code,
-      trackingUrl: trackingUrl(job),
+      ...linkIfCollected(job),
       issuedBy: req.body?.actor ?? 'ops',
     });
     return { ok: true, code };
@@ -973,7 +990,7 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
     emit('delivery.address_changed', {
       jobId: job.id, externalId: job.externalId,
       dropoff: job.dropoff, deliverKm: routing.deliverKm,
-      trackingUrl: trackingUrl(job),
+      ...linkIfCollected(job),
     });
 
     return {
@@ -1141,7 +1158,9 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
     reply.header('cache-control', 'no-store');
     reply.header('x-robots-tag', 'noindex');
     const job = jobs.getByTrackingToken(req.params.token);
-    if (!job) return reply.code(404).send({ error: 'Not found' });
+    // Before collection the link does not exist yet. Same 404 as a bad token,
+    // so it reveals nothing about the order.
+    if (!job || !isCollected(job)) return reply.code(404).send({ error: 'Not found' });
 
     // A finished order keeps its link for a short while ("was it delivered?"),
     // then the link dies. Nobody needs a customer's address on a link that
