@@ -210,8 +210,8 @@ document.addEventListener('keydown', (e) => {
   }
 });
 
-function copyTrack(jobId) {
-  const url = `${location.origin}/track/${jobId}`;
+function copyTrack(token) {
+  const url = `${location.origin}/track/${token}`;
   navigator.clipboard?.writeText(url)
     .then(() => alert('Tracking link copied:\n' + url))
     .catch(() => prompt('Copy this link:', url));
@@ -401,7 +401,7 @@ async function loadOrders(){
              ${!['DELIVERED','FAILED','CANCELLED'].includes(o.status)
                ? ` <a class="sm" style="text-decoration:none;padding:5px 10px;
                    border:1px solid var(--line);border-radius:9px;color:var(--green)"
-                   href="/track/${o.jobId}" target="_blank">Track</a>` : ''}
+                   href="/track/${o.trackingToken}" target="_blank">Track</a>` : ''}
            </td>`],
         (o)=>({kind:'order',id:o.jobId}), filtered))
         : empty(q
@@ -430,14 +430,14 @@ async function openOrder(jobId){
       </div>
       ${!['DELIVERED','FAILED','CANCELLED'].includes(o.status) ? `
         <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap">
-          <input readonly value="${location.origin}/track/${o.id}"
+          <input readonly value="${location.origin}/track/${o.trackingToken}"
             style="flex:1;min-width:240px;font-size:12px;color:var(--muted)"
             onclick="this.select()">
-          <button class="sm" data-act="copyTrack" data-id="${o.id}">Copy link</button>
+          <button class="sm" data-act="copyTrack" data-id="${o.trackingToken}">Copy link</button>
           <a class="sm go" style="text-decoration:none;padding:5px 12px;border-radius:9px"
-            href="/track/${o.id}" target="_blank">Open live map</a>
+            href="/track/${o.trackingToken}" target="_blank">Open live map</a>
         </div>
-        <iframe src="/track/${o.id}" style="width:100%;height:340px;border:1px solid var(--line);
+        <iframe src="/track/${o.trackingToken}" style="width:100%;height:340px;border:1px solid var(--line);
           border-radius:14px;margin-bottom:14px" title="Live tracking"></iframe>` : ''}
       <div class="split">
         <div><div class="tl">${d.timeline.map((t)=>`<div class="ev">

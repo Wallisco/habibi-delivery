@@ -5,7 +5,15 @@
  * touches dispatch. The dispatcher never learns what a burrito is.
  */
 
-import { randomUUID } from 'node:crypto';
+import { randomUUID, randomBytes } from 'node:crypto';
+
+/**
+ * The customer's tracking link token. 128 random bits, separate from the job id.
+ * The job id is an operational identifier (8 hex chars, read out on the phone,
+ * used in partner and ops URLs); it is guessable at scale and must never be the
+ * thing that unlocks a customer's address and a driver's live position.
+ */
+export const newTrackingToken = () => randomBytes(16).toString('base64url');
 import { metresBetween, DETOUR_FACTOR } from './supply.js';
 import { orderNumber } from './accounts.js';
 
@@ -34,18 +42,26 @@ export function sensibleTimestamp(v) {
 }
 
 export class JobStore {
-  constructor(db = null) { this.byId = new Map(); this.db = db; }
+  constructor(db = null) { this.byId = new Map(); this.byToken = new Map(); this.db = db; }
 
   /** Restore live jobs on boot. Delivered jobs stay on disk. */
   hydrate(jobs) {
-    for (const j of jobs) this.byId.set(j.id, j);
+    for (const j of jobs) {
+      // Jobs saved before tracking tokens existed get one on the way in.
+      if (!j.trackingToken) { j.trackingToken = newTrackingToken(); this.db?.saveJob(j); }
+      this.byId.set(j.id, j);
+      this.byToken.set(j.trackingToken, j);
+    }
     return jobs.length;
   }
 
   create(input) {
-    const id = input.id ?? `JOB-${randomUUID().slice(0, 8)}`;
+    let id = input.id ?? `JOB-${randomUUID().slice(0, 8)}`;
+    // Never overwrite a live job, whatever the caller sent or the dice rolled.
+    while (this.byId.has(id)) id = `JOB-${randomUUID().slice(0, 8)}`;
     const job = {
       id,
+      trackingToken: newTrackingToken(),
       // Human-readable, in the incumbents' format, so support staff and drivers
       // can read one out over the phone.
       orderNumber: input.orderNumber ?? orderNumber(input.vertical ?? 'FOOD'),
@@ -114,11 +130,13 @@ export class JobStore {
       history: [],
     };
     this.byId.set(id, job);
+    this.byToken.set(job.trackingToken, job);
     this.db?.saveJob(job);
     return job;
   }
 
   get(id) { return this.byId.get(id); }
+  getByTrackingToken(token) { return token ? this.byToken.get(String(token)) ?? null : null; }
   all() { return [...this.byId.values()]; }
   pending() { return this.all().filter((j) => j.status === 'PENDING'); }
   pendingInZone(zone) { return this.pending().filter((j) => j.zone === zone); }

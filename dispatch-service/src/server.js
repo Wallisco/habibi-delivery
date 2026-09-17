@@ -164,6 +164,10 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
     };
   }
 
+  // Customer tracking link. Built on the token, never the job id.
+  const trackingUrl = (job) => `${process.env.PUBLIC_URL ?? ''}/track/${job.trackingToken}`;
+  const TRACK_TTL_MIN = Number(process.env.TRACKING_LINK_TTL_MIN ?? 60);
+
   function emit(type, payload) {
     const e = keychat.emit(type, payload);
     outbound.push({ type, at: e.at, payload });
@@ -240,8 +244,10 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
     // We route it ourselves. Keychat's ETA is for their customer; our distance
     // is what the fee is built on, and it has to be defensible in a dispute.
     const routing = await routeJob({ pickup: b.pickup, dropoff: b.dropoff });
+    // The partner does not choose our ids or tokens.
+    const { id: _id, trackingToken: _t, ...input } = b;
     const job = jobs.create({
-      ...b,
+      ...input,
       deliverKm: routing.deliverKm,
       collectKm: routing.collectKm,
     });
@@ -250,12 +256,13 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
     gate.noteOrder(job.storeId, job.createdAt);
     emit('delivery.accepted', {
       jobId: job.id, externalId: job.externalId, quoteId: job.quoteId,
-      trackingUrl: `${process.env.PUBLIC_URL ?? ''}/track/${job.id}`,
+      trackingUrl: trackingUrl(job),
       etaMinutes: Math.round(
         gate.predictPrepMinutes(job.storeId, job.merchantPrepMinutes) + routing.deliverMinutes + 4),
     });
     return reply.code(201).send({
       jobId: job.id, status: job.status,
+      trackingUrl: trackingUrl(job),
       routing: { collectKm: routing.collectKm, deliverKm: routing.deliverKm, source: routing.source },
       dispatchAtMinutes: Number(gate.releaseOffsetMinutes(
         job.storeId, routing.collectMinutes, job.merchantPrepMinutes).toFixed(1)),
@@ -424,7 +431,7 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
       driverId: req.body.driverId,
       // Send this now. The customer should be able to watch the driver
       // approach, not discover where they are once they have arrived.
-      trackingUrl: `${process.env.PUBLIC_URL ?? ''}/track/${req.params.id}`,
+      trackingUrl: trackingUrl(res.job),
       driver: acct ? { firstName: acct.firstName || 'Your driver',
         vehicle: acct.vehicleType } : null,
       etaMinutes: res.job.routing?.deliverMinutes
@@ -480,7 +487,7 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
     emit('delivery.code_issued', {
       jobId: job.id, externalId: job.externalId, code,
       // The customer's live tracking link, handed to Keychat to show in chat.
-      trackingUrl: `${process.env.PUBLIC_URL ?? ''}/track/${job.id}`,
+      trackingUrl: trackingUrl(job),
     });   // -> Keychat -> WhatsApp
     return { ok: true, codeSentToCustomer: true };
   });
@@ -796,6 +803,7 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
         .slice(0, 300)
         .map((j) => ({
           jobId: j.id,
+          trackingToken: j.trackingToken,
           orderNumber: j.orderNumber,
           externalId: j.externalId,
           status: j.status,
@@ -830,7 +838,7 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
     return {
       order: j,
       timeline: timeline(j),
-      trackingUrl: `${process.env.PUBLIC_URL ?? ''}/track/${j.id}`,
+      trackingUrl: trackingUrl(j),
       driver: j.driverId ? accounts.get(j.driverId) : null,
       // The customer's code, for an agent on the phone to someone who cannot
       // find it. Ops-only: it appears in no driver-facing response.
@@ -857,7 +865,7 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
     }
     emit('delivery.code_issued', {
       jobId: job.id, externalId: job.externalId, code,
-      trackingUrl: `${process.env.PUBLIC_URL ?? ''}/track/${job.id}`,
+      trackingUrl: trackingUrl(job),
       issuedBy: req.body?.actor ?? 'ops',
     });
     return { ok: true, code };
@@ -965,7 +973,7 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
     emit('delivery.address_changed', {
       jobId: job.id, externalId: job.externalId,
       dropoff: job.dropoff, deliverKm: routing.deliverKm,
-      trackingUrl: `${process.env.PUBLIC_URL ?? ''}/track/${job.id}`,
+      trackingUrl: trackingUrl(job),
     });
 
     return {
@@ -1129,18 +1137,28 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
    * shows the driver's first name and vehicle only -- never their surname,
    * phone or full location history.
    */
-  app.get('/v1/track/:jobId', async (req, reply) => {
-    const job = jobs.get(req.params.jobId);
+  app.get('/v1/track/:token', async (req, reply) => {
+    reply.header('cache-control', 'no-store');
+    reply.header('x-robots-tag', 'noindex');
+    const job = jobs.getByTrackingToken(req.params.token);
     if (!job) return reply.code(404).send({ error: 'Not found' });
+
+    // A finished order keeps its link for a short while ("was it delivered?"),
+    // then the link dies. Nobody needs a customer's address on a link that
+    // lives forever in a WhatsApp chat.
+    const finished = ['DELIVERED', 'FAILED', 'CANCELLED'].includes(job.status);
+    const endedAt = job.completedAt ?? job.failedAt ?? job.history?.at(-1)?.at ?? null;
+    if (finished && endedAt && Date.now() - endedAt > TRACK_TTL_MIN * 60000) {
+      return reply.code(410).send({ error: 'This tracking link has expired' });
+    }
     const acct = job.driverId ? accounts.get(job.driverId) : null;
     const d = job.driverId ? supply.get(job.driverId) : null;
     return {
-      jobId: job.id,
       status: job.status,
       label: ORDER_STATES.find((s) => s.code === job.status)?.label ?? job.status,
       pickup: { name: job.pickup?.name ?? null },
       dropoff: { name: job.dropoff?.name ?? null },
-      driver: acct ? { firstName: acct.firstName || 'Your driver', vehicle: acct.vehicleType } : null,
+      driver: acct && !finished ? { firstName: acct.firstName || 'Your driver', vehicle: acct.vehicleType } : null,
       // Live position, only while the delivery is in flight. Once it is
       // delivered the driver's whereabouts are none of the customer's business.
       driverPosition: d?.position && !['DELIVERED', 'FAILED', 'CANCELLED'].includes(job.status)
@@ -1152,7 +1170,8 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
       pickupPosition: ['ASSIGNED', 'AT_STORE'].includes(job.status)
         ? { lat: job.pickup.lat ?? job.pickup.latitude,
             lng: job.pickup.lng ?? job.pickup.longitude } : null,
-      dropoffPosition: {
+      // The drop-off is the customer's home. Only while the order is live.
+      dropoffPosition: finished ? null : {
         lat: job.dropoff.lat ?? job.dropoff.latitude,
         lng: job.dropoff.lng ?? job.dropoff.longitude },
       etaMinutes: d?.position && ['IN_TRANSIT', 'AT_CUSTOMER'].includes(job.status)
@@ -1181,8 +1200,13 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
     }
   });
 
-  app.get('/track/:jobId', async (req, reply) => {
+  app.get('/track/:token', async (req, reply) => {
     reply.type('text/html');
+    // The token is in the URL. Without this, every map tile request would hand
+    // it to the tile server in the Referer header.
+    reply.header('referrer-policy', 'no-referrer');
+    reply.header('cache-control', 'no-store');
+    reply.header('x-robots-tag', 'noindex');
     return readFileSync(join(HERE, '..', 'public', 'track.html'), 'utf8');
   });
 

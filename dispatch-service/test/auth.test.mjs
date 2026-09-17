@@ -37,7 +37,7 @@ test('no keys configured fails closed', async (t) => {
 test('public tracking stays public', async (t) => {
   const app = build({ dbPath: ':memory:', partnerKeys: keys });
   t.after(() => app.close());
-  const res = await app.inject({ url: '/v1/track/JOB-nope' });
+  const res = await app.inject({ url: '/v1/track/not-a-real-token' });
   assert.equal(res.statusCode, 404, 'not found, not unauthorised');
 });
 

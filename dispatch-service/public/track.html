@@ -69,14 +69,25 @@
 </div>
 
 <script>
-const jobId = location.pathname.split('/').filter(Boolean).pop();
+const token = location.pathname.split('/').filter(Boolean).pop();
+// Names come from the partner (addresses) and from driver sign-up. Never trust
+// them as HTML: an address like <img onerror=...> would otherwise run here.
+const esc = (v) => String(v ?? '').replace(/[&<>"']/g,
+  (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const $ = (s) => document.querySelector(s);
 const time = (ts) => new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
 async function load() {
   let d;
   try {
-    const res = await fetch('/v1/track/' + jobId);
+    const res = await fetch('/v1/track/' + encodeURIComponent(token), { cache: 'no-store' });
+    if (res.status === 410) {
+      $('#root').innerHTML =
+        '<div class="err"><h1 style="font-size:20px;margin-bottom:8px">This link has expired</h1>' +
+        '<p>Tracking links close shortly after an order is finished.</p></div>';
+      clearInterval(poll);
+      return;
+    }
     if (!res.ok) throw new Error('not found');
     d = await res.json();
   } catch {
@@ -96,8 +107,8 @@ async function load() {
   $('#root').innerHTML = `
     <div class="hero">
       <div class="lbl">YOUR ORDER</div>
-      <h1>${delivered ? 'Delivered' : d.label}</h1>
-      <div class="sub">${d.pickup.name ?? 'Your order'} → ${d.dropoff.name ?? 'your address'}</div>
+      <h1>${delivered ? 'Delivered' : esc(d.label)}</h1>
+      <div class="sub">${esc(d.pickup.name ?? 'Your order')} → ${esc(d.dropoff.name ?? 'your address')}</div>
       ${!delivered && d.etaMinutes ? `<div class="eta"><b>${d.etaMinutes}</b>
         <span>minutes away</span></div>` : ''}
     </div>
@@ -107,9 +118,9 @@ async function load() {
       ? `<div class="stale">Last location update ${Math.round(d.driverPosition.secondsAgo/60)} min ago</div>` : ''}
 
     ${d.driver ? `<div class="driver">
-      <div class="avatar">${(d.driver.firstName || '?')[0].toUpperCase()}</div>
-      <div><div class="n">${d.driver.firstName}</div>
-        <div class="v">${d.driver.vehicle ?? 'On the way'}</div></div>
+      <div class="avatar">${esc((d.driver.firstName || '?')[0].toUpperCase())}</div>
+      <div><div class="n">${esc(d.driver.firstName)}</div>
+        <div class="v">${esc(d.driver.vehicle ?? 'On the way')}</div></div>
     </div>` : ''}
 
     <div class="card">
@@ -120,7 +131,7 @@ async function load() {
         return `<div class="step ${state}">
           <div class="bead"></div>
           <div><div class="t">${label(code)}</div>
-            ${t?.meta ? `<div class="m">${t.meta}</div>` : ''}
+            ${t?.meta ? `<div class="m">${esc(t.meta)}</div>` : ''}
             ${t ? `<div class="w">${time(t.at)}</div>` : ''}</div>
         </div>`;
       }).join('')}
@@ -161,7 +172,7 @@ function icon(emoji, bg) {
 
 function drawMap(d) {
   const el = document.getElementById('map');
-  if (!el) return;
+  if (!el || !d.dropoffPosition) return;
   if (typeof L === 'undefined') {
     // A blank grey box tells the customer nothing. A link they can tap does.
     el.outerHTML = `<div class="card" style="margin-bottom:18px">
@@ -200,9 +211,10 @@ function drawMap(d) {
   }
 }
 
+const poll = setInterval(() => load(), 10000);
 load();
 // Ten seconds, not fifteen: a moving vehicle looks broken if it jumps.
-setInterval(load, 10000);
+
 </script>
 </body>
 </html>
