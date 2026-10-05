@@ -1,0 +1,776 @@
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#faf9f5;color:#141413}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<title>FEEST Sales Toolkit</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&family=Albert+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+<style>
+/* Layout: brand header + four tabs (Compare, Brand kit, Sign up, Drivers); each tab is an inputs | results worksheet that stacks on phones */
+:root {
+  --bg: #F6F4FB;
+  --surface: #FFFFFF;
+  --ink: #170B3B;
+  --muted: #5B5470;
+  --line: #E4DFF0;
+  --violet: #5B2EFF;
+  --violet-soft: #ECE6FF;
+  --coral: #FF5A36;
+  --butter: #FFE7A3;
+  --s-rest: #5B2EFF;
+  --s-plat: #E8572F;
+  --s-cour: #1F8F6E;
+  --good-bg: #DDF3EA; --good-ink: #0E5A44;
+  --warn-bg: #FFF1C9; --warn-ink: #6B4A00;
+  --display: "Bricolage Grotesque", "Helvetica Neue", Arial, sans-serif;
+  --body: "Albert Sans", "Helvetica Neue", Arial, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #110A24; --surface: #1C1436; --ink: #F1EDFF; --muted: #B4ACD0; --line: #342A57;
+    --violet: #9A84FF; --violet-soft: #2C2156; --coral: #FF7A55; --butter: #FFE7A3;
+    --s-rest: #8468F2; --s-plat: #DC5A30; --s-cour: #279A79;
+    --good-bg: #133A2E; --good-ink: #A6EBCF; --warn-bg: #4A3A0E; --warn-ink: #FFE29A;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #110A24; --surface: #1C1436; --ink: #F1EDFF; --muted: #B4ACD0; --line: #342A57;
+  --violet: #9A84FF; --violet-soft: #2C2156; --coral: #FF7A55; --butter: #FFE7A3;
+  --s-rest: #8468F2; --s-plat: #DC5A30; --s-cour: #279A79;
+  --good-bg: #133A2E; --good-ink: #A6EBCF; --warn-bg: #4A3A0E; --warn-ink: #FFE29A;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+body { background: var(--bg); color: var(--ink); font-family: var(--body); font-size: 16px; line-height: 1.5; }
+.wrap { max-width: 1180px; margin: 0 auto; padding: 28px 18px 64px; display: flex; flex-direction: column; gap: 22px; }
+header { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: flex-end; gap: 16px; }
+.wm { font-family: var(--display); font-weight: 800; letter-spacing: -.045em; line-height: 1; white-space: nowrap; }
+.wm .roll { display: inline-block; transform: rotate(-34deg); color: var(--coral); }
+.brandline { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; }
+h1 { font-family: var(--display); font-size: clamp(26px, 4vw, 36px); line-height: 1.05; margin: 0; letter-spacing: -.02em; text-wrap: balance; }
+.lede { color: var(--muted); max-width: 62ch; margin: 6px 0 0; }
+.eyebrow, .group-title { font-family: var(--mono); font-size: 12px; letter-spacing: .12em; color: var(--muted); text-transform: uppercase; }
+.tabs { display: flex; flex-wrap: wrap; gap: 4px; background: var(--surface); border: 1px solid var(--line); padding: 4px; border-radius: 999px; }
+.tabs button { font: 600 15px var(--body); border: 0; background: transparent; color: var(--ink); padding: 10px 16px; border-radius: 999px; cursor: pointer; min-height: 44px; }
+.tabs button[aria-selected="true"] { background: var(--violet); color: #fff; }
+button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-visible { outline: 3px solid var(--coral); outline-offset: 2px; }
+.banner { background: var(--warn-bg); color: var(--warn-ink); border-radius: 12px; padding: 12px 16px; font-size: 14px; }
+.grid { display: grid; grid-template-columns: minmax(0, 4fr) minmax(0, 7fr); gap: 22px; align-items: start; }
+@media (max-width: 900px) { .grid { grid-template-columns: minmax(0, 1fr); } }
+.panel { background: var(--surface); border: 1px solid var(--line); border-radius: 18px; padding: 20px; display: flex; flex-direction: column; gap: 18px; min-width: 0; }
+.panel h2 { font-family: var(--display); font-size: 22px; margin: 0; letter-spacing: -.01em; }
+.panel h3 { font-family: var(--display); font-size: 18px; margin: 0; }
+.group { display: flex; flex-direction: column; gap: 10px; }
+.field { display: grid; grid-template-columns: minmax(0, 1fr) 128px; gap: 12px; align-items: center; }
+.field.wide { grid-template-columns: minmax(0, 1fr); gap: 6px; }
+.field label { font-size: 15px; }
+.field label small { display: block; color: var(--muted); font-size: 13px; }
+.inp { display: flex; align-items: center; border: 1px solid var(--line); border-radius: 10px; background: var(--bg); padding: 0 10px; min-height: 44px; }
+.inp span { color: var(--muted); font-family: var(--mono); font-size: 13px; }
+.inp input, .inp select { width: 100%; border: 0; background: transparent; color: var(--ink); font: 600 16px var(--mono); padding: 8px 4px; text-align: right; min-width: 0; }
+.inp.text input, .inp select { text-align: left; font-family: var(--body); font-size: 15px; }
+.inp input[type="color"] { height: 34px; padding: 0; cursor: pointer; }
+.seg { display: flex; gap: 4px; background: var(--bg); border: 1px solid var(--line); border-radius: 12px; padding: 4px; }
+.seg button { flex: 1; font: 600 14px var(--body); border: 0; border-radius: 8px; background: transparent; color: var(--ink); min-height: 40px; cursor: pointer; }
+.seg button[aria-pressed="true"] { background: var(--ink); color: var(--bg); }
+.ph { font-family: var(--mono); font-size: 10px; letter-spacing: .08em; background: var(--violet-soft); color: var(--ink); padding: 2px 6px; border-radius: 4px; margin-left: 4px; vertical-align: 2px; white-space: nowrap; }
+details { border: 1px solid var(--line); border-radius: 12px; padding: 4px 14px; }
+details[open] { padding-bottom: 14px; }
+summary { cursor: pointer; font-weight: 700; min-height: 40px; display: flex; align-items: center; }
+details .group { margin-top: 8px; }
+.src { font-size: 13px; color: var(--muted); }
+.src a { color: var(--violet); }
+.hero { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+@media (max-width: 520px) { .hero { grid-template-columns: minmax(0, 1fr); } }
+.stat { background: var(--bg); border-radius: 14px; padding: 16px; }
+.stat .k { font-size: 13px; color: var(--muted); }
+.stat .v { font-family: var(--display); font-size: clamp(26px, 4vw, 34px); font-weight: 800; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+.stat .s { font-size: 13px; color: var(--muted); }
+.stat.primary { background: var(--violet); color: #fff; }
+.stat.primary .k, .stat.primary .s { color: #fff; opacity: .85; }
+/* split chart */
+.legend { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 14px; }
+.legend span { display: inline-flex; align-items: center; gap: 8px; }
+.legend i { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
+.chart { display: flex; flex-direction: column; gap: 12px; }
+.crow { display: grid; grid-template-columns: 112px minmax(0, 1fr); gap: 12px; align-items: center; }
+.crow .nm { font-size: 14px; font-weight: 600; }
+.crow.sel .nm { color: var(--violet); }
+.track { position: relative; display: flex; align-items: center; gap: 8px; }
+.bars { display: flex; height: 26px; gap: 2px; }
+.bars div { height: 100%; position: relative; cursor: default; }
+.bars div:first-child { border-radius: 4px 0 0 4px; }
+.bars div:last-child { border-radius: 0 4px 4px 0; }
+.tot { font: 700 14px var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.tip { position: fixed; z-index: 10; pointer-events: none; background: var(--ink); color: var(--bg); font-size: 13px; padding: 8px 10px; border-radius: 8px; max-width: 240px; }
+.tablewrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-size: 14px; min-width: 620px; }
+th, td { padding: 8px 6px; border-bottom: 1px solid var(--line); text-align: right; font-variant-numeric: tabular-nums; }
+th:first-child, td:first-child { text-align: left; }
+th { font-family: var(--mono); font-size: 11px; letter-spacing: .08em; color: var(--muted); font-weight: 500; text-transform: uppercase; }
+th.sel { color: var(--violet); }
+td { font-family: var(--mono); white-space: nowrap; }
+td:first-child { white-space: normal; }
+td:first-child { font-family: var(--body); }
+td.sel { background: var(--violet-soft); font-weight: 700; }
+.callout { border-radius: 12px; padding: 14px 16px; font-size: 15px; }
+.callout.good { background: var(--good-bg); color: var(--good-ink); }
+.callout.warn { background: var(--warn-bg); color: var(--warn-ink); }
+.benefits { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; }
+.benefit { border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; }
+.benefit b { display: block; font-family: var(--display); font-size: 16px; margin-bottom: 2px; }
+.benefit span { font-size: 14px; color: var(--muted); }
+.actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.btn { font: 600 15px var(--body); border: 0; border-radius: 999px; padding: 11px 18px; min-height: 44px; cursor: pointer; background: var(--violet); color: #fff; }
+.btn.ghost { background: transparent; color: var(--ink); border: 1px solid var(--line); }
+.btn.small { padding: 8px 14px; min-height: 40px; font-size: 14px; }
+.status { font-size: 14px; color: var(--muted); }
+textarea.fallback { width: 100%; min-height: 120px; font: 13px var(--mono); border: 1px solid var(--line); border-radius: 10px; background: var(--bg); color: var(--ink); padding: 10px; }
+.foot { color: var(--muted); font-size: 13px; }
+/* brand kit */
+.kitgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 420px), 1fr)); gap: 18px; }
+.kitcard { background: var(--surface); border: 1px solid var(--line); border-radius: 18px; padding: 16px; display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.kitcard.full { grid-column: 1 / -1; }
+.kithead { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; }
+.kithead h3 { font-family: var(--display); font-size: 17px; margin: 0; }
+.tcrow { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.tcpick { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 4px 6px 4px 12px; min-height: 40px; }
+.tcpick input { width: 30px; height: 26px; border: 0; padding: 0; background: transparent; cursor: pointer; }
+.kithead small { display: block; color: var(--muted); font-size: 13px; font-weight: 400; font-family: var(--body); }
+.stage { overflow-x: auto; background: repeating-conic-gradient(var(--line) 0% 25%, transparent 0% 50%) 50% / 16px 16px; border-radius: 12px; padding: 16px; display: flex; justify-content: center; }
+.uploadrow { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.logo-prev { width: 64px; height: 64px; border-radius: 12px; border: 1px dashed var(--line); display: flex; align-items: center; justify-content: center; overflow: hidden; background: #fff; }
+.logo-prev img { max-width: 100%; max-height: 100%; }
+.dish-prevs { display: flex; gap: 6px; min-height: 64px; align-items: center; }
+.dish-prevs div { width: 64px; height: 64px; border-radius: 10px; background-size: cover; background-position: center; position: relative; }
+.dish-prevs div span { position: absolute; left: 4px; top: 4px; background: rgba(0,0,0,.6); color: #fff; font: 700 11px var(--mono); border-radius: 4px; padding: 0 4px; }
+.ways { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+.ways button { text-align: left; font: 600 14px var(--body); padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); cursor: pointer; min-height: 44px; }
+.ways button[aria-pressed="true"] { border: 2px solid var(--violet); background: var(--violet-soft); }
+/* print art: a fixed brand look, not themed */
+.art { font-family: "Albert Sans", Arial, sans-serif; color: #170B3B; flex-shrink: 0; }
+.art .wm .roll { color: #FF5A36; }
+.monogram { display: flex; align-items: center; justify-content: center; border-radius: 50%; color: #fff; font-family: "Bricolage Grotesque", Arial, sans-serif; font-weight: 800; letter-spacing: -.03em; }
+.logoimg { display: block; max-width: 100%; max-height: 100%; object-fit: contain; }
+.logobox { display: flex; align-items: center; justify-content: center; }
+/* steps */
+.steps { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 250px), 1fr)); gap: 12px; counter-reset: s; }
+.steps li { counter-increment: s; background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px 16px; }
+.steps li::before { content: counter(s); display: inline-flex; width: 28px; height: 28px; border-radius: 50%; background: var(--violet); color: #fff; font: 700 14px var(--mono); align-items: center; justify-content: center; margin-bottom: 8px; }
+.steps b { display: block; font-family: var(--display); font-size: 17px; }
+.steps span { font-size: 14px; color: var(--muted); }
+.check { display: flex; gap: 10px; align-items: flex-start; font-size: 15px; min-height: 32px; }
+.check input { width: 20px; height: 20px; margin-top: 2px; accent-color: var(--violet); }
+</style>
+
+<div class="wrap">
+  <header>
+    <div>
+      <div class="brandline"><span class="wm" style="font-size:44px">fe<span class="roll">e</span>st</span><span class="eyebrow">Sales toolkit</span></div>
+      <h1>FEEST Sales Toolkit</h1>
+      <p class="lede">Compare FEEST with Uber Eats and Mr D on the restaurant's own numbers, build their branded kit on the spot, and sign them up.</p>
+    </div>
+    <div class="tabs" role="tablist" aria-label="Toolkit sections">
+      <button role="tab" id="tab-compare" aria-selected="true" aria-controls="view-compare">Compare</button>
+      <button role="tab" id="tab-kit" aria-selected="false" aria-controls="view-kit">Brand kit</button>
+      <button role="tab" id="tab-signup" aria-selected="false" aria-controls="view-signup">Sign up</button>
+      <button role="tab" id="tab-driver" aria-selected="false" aria-controls="view-driver">Drivers</button>
+    </div>
+  </header>
+
+  <!-- ============ COMPARE ============ -->
+  <section id="view-compare" role="tabpanel" aria-labelledby="tab-compare" class="grid">
+    <div class="panel">
+      <h2>The restaurant's order</h2>
+      <div class="group">
+        <div class="field"><label for="m">Order at in-store menu prices<small>Food only</small></label><div class="inp"><span>R</span><input id="m" type="number" inputmode="decimal" min="0" step="5" value="180"></div></div>
+        <div class="field"><label for="opd">Delivery orders per day</label><div class="inp"><input id="opd" type="number" inputmode="decimal" min="0" step="1" value="25"></div></div>
+        <div class="field"><label for="days">Trading days per month</label><div class="inp"><input id="days" type="number" inputmode="decimal" min="0" max="31" step="1" value="26"></div></div>
+      </div>
+      <div class="group">
+        <div class="group-title">FEEST terms</div>
+        <div class="field wide"><label>Service fee to show<small>All three tiers stay in the table</small></label>
+          <div class="seg" role="group" aria-label="FEEST service fee tier"><button type="button" data-tier="0.10" aria-pressed="false">10%</button><button type="button" data-tier="0.15" aria-pressed="true">15%</button><button type="button" data-tier="0.20" aria-pressed="false">20%</button></div></div>
+        <div class="field wide"><label>Service fee paid by<small>A % of menu price. Customer pays it like an app service fee; or the restaurant pays it as a commission.</small></label>
+          <div class="seg" role="group" aria-label="Who pays the service fee"><button type="button" data-payer="customer" aria-pressed="true">Customer</button><button type="button" data-payer="restaurant" aria-pressed="false">Restaurant</button></div></div>
+        <div class="field"><label for="fdel">FEEST delivery fee <span class="ph">PLACEHOLDER</span><small>Customer pays, on top</small></label><div class="inp"><span>R</span><input id="fdel" type="number" inputmode="decimal" min="0" step="1" value="25"></div></div>
+        <div class="field"><label for="cpay">Courier pay per delivery <span class="ph">PLACEHOLDER</span><small>Used for all platforms</small></label><div class="inp"><span>R</span><input id="cpay" type="number" inputmode="decimal" min="0" step="1" value="30"></div></div>
+        <div class="field"><label for="proc">Payment processing<small>Keychat rate: 3%</small></label><div class="inp"><input id="proc" type="number" inputmode="decimal" min="0" max="20" step="0.1" value="3"><span>%</span></div></div>
+        <div class="field wide"><label>Payment processing paid by</label>
+          <div class="seg" role="group" aria-label="Who pays payment processing"><button type="button" data-proc="feest" aria-pressed="true">FEEST</button><button type="button" data-proc="restaurant" aria-pressed="false">Restaurant</button></div></div>
+      </div>
+      <details>
+        <summary>Uber Eats assumptions</summary>
+        <div class="group">
+          <div class="field"><label for="u-mk">Menu markup on the app<small>Reported 14–40%, mostly about 25%</small></label><div class="inp"><input id="u-mk" type="number" inputmode="decimal" min="0" step="1" value="25"><span>%</span></div></div>
+          <div class="field"><label for="u-com">Commission to Uber<small>Reported 25–35%</small></label><div class="inp"><input id="u-com" type="number" inputmode="decimal" min="0" max="100" step="1" value="30"><span>%</span></div></div>
+          <div class="field"><label for="u-del">Delivery fee<small>Varies by distance</small></label><div class="inp"><span>R</span><input id="u-del" type="number" inputmode="decimal" min="0" step="1" value="15"></div></div>
+          <div class="field"><label for="u-svc">Service fee to customer<small>About 4% in 2024 tests</small></label><div class="inp"><input id="u-svc" type="number" inputmode="decimal" min="0" step="0.5" value="4"><span>%</span></div></div>
+          <div class="field"><label for="u-sof">Small order fee</label><div class="inp"><span>R</span><input id="u-sof" type="number" inputmode="decimal" min="0" step="1" value="5"></div></div>
+          <div class="field"><label for="u-thr">…on app orders under <span class="ph">ESTIMATE</span></label><div class="inp"><span>R</span><input id="u-thr" type="number" inputmode="decimal" min="0" step="10" value="100"></div></div>
+        </div>
+      </details>
+      <details>
+        <summary>Mr D assumptions</summary>
+        <div class="group">
+          <div class="field"><label for="d-mk">Menu markup on the app<small>Reported 25–38%</small></label><div class="inp"><input id="d-mk" type="number" inputmode="decimal" min="0" step="1" value="27"><span>%</span></div></div>
+          <div class="field"><label for="d-com">Commission to Mr D<small>Reported 15–35%, often about 30%</small></label><div class="inp"><input id="d-com" type="number" inputmode="decimal" min="0" max="100" step="1" value="30"><span>%</span></div></div>
+          <div class="field"><label for="d-del">Delivery fee<small>Flat R15 in 2024 tests</small></label><div class="inp"><span>R</span><input id="d-del" type="number" inputmode="decimal" min="0" step="1" value="15"></div></div>
+          <div class="field"><label for="d-svc">Service fee to customer</label><div class="inp"><input id="d-svc" type="number" inputmode="decimal" min="0" step="0.5" value="0"><span>%</span></div></div>
+          <div class="field"><label for="d-sof">Small order fee</label><div class="inp"><span>R</span><input id="d-sof" type="number" inputmode="decimal" min="0" step="1" value="0"></div></div>
+          <div class="field"><label for="d-thr">…on app orders under</label><div class="inp"><span>R</span><input id="d-thr" type="number" inputmode="decimal" min="0" step="10" value="0"></div></div>
+        </div>
+      </details>
+      <p class="src">Uber Eats and Mr D don't publish their SA commissions. Defaults are estimates from press tests and reports: <a href="https://mybroadband.co.za/news/it-services/599120-hidden-price-increase-when-buying-food-through-mr-d-and-uber-eats.html" target="_blank" rel="noopener">MyBroadband, Jun 2025 (markups)</a>, <a href="https://www.financialmail.businessday.co.za/features/2025-11-27-why-your-delivered-meals-and-groceries-cost-more-than-you-think/" target="_blank" rel="noopener">Financial Mail, Nov 2025 (commissions)</a>, <a href="https://mybroadband.co.za/news/it-services/554132-we-raced-uber-eats-and-mr-d-to-kfc-and-back.html" target="_blank" rel="noopener">MyBroadband, Aug 2024 (fees)</a>, <a href="https://mybroadband.co.za/news/it-services/528749-mr-d-beats-uber-eats-in-food-delivery-price-shootout.html" target="_blank" rel="noopener">MyBroadband, Mar 2024 (fees)</a>, <a href="https://wanguapp.com/blog/uber-eats-fees-south-africa" target="_blank" rel="noopener">Wangu, Mar 2026 (commissions)</a>. Ask each restaurant for its real rates.</p>
+    </div>
+
+    <div class="panel" aria-live="polite">
+      <h2>Same food, three ways to sell it</h2>
+      <div class="hero">
+        <div class="stat primary"><div class="k">Restaurant keeps more per month vs Uber Eats</div><div class="v" id="h-rest">–</div><div class="s" id="h-rest-s"></div></div>
+        <div class="stat"><div class="k">Customer pays less per order vs Uber Eats</div><div class="v" id="h-cust">–</div><div class="s" id="h-cust-s"></div></div>
+      </div>
+      <div class="group">
+        <div class="group-title">Where the customer's money goes, per order</div>
+        <div class="legend" aria-hidden="true"><span><i style="background:var(--s-rest)"></i>Restaurant</span><span><i style="background:var(--s-plat)"></i>Platform (incl. payment fees)</span><span><i style="background:var(--s-cour)"></i>Courier</span></div>
+        <div class="chart" id="chart" role="img" aria-label="Stacked bars of what the customer pays on each platform, split into restaurant, platform and courier"></div>
+      </div>
+      <div class="tablewrap">
+        <table id="cmp">
+          <thead><tr><th>Per order</th><th>Uber Eats</th><th>Mr D</th><th data-col="0.10">FEEST 10%</th><th data-col="0.15">FEEST 15%</th><th data-col="0.20">FEEST 20%</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div class="callout warn" id="c-warn" hidden></div>
+      <div class="group">
+        <div class="group-title">What the apps don't give them</div>
+        <div class="benefits">
+          <div class="benefit"><b>Own your customer data</b><span>Every customer saved to a list the restaurant owns.</span></div>
+          <div class="benefit"><b>Run your own loyalty</b><span>Stamps and rewards built into every order. A full card is lunch on the house.</span></div>
+          <div class="benefit"><b>Your own promotions</b><span>Word-of-mouth and WhatsApp campaigns to your own customers.</span></div>
+          <div class="benefit"><b>Your brand on the road</b><span>Your logo on the door, the bag seal and the delivery box.</span></div>
+          <div class="benefit"><b>Menu prices, no markup</b><span>Customers pay what they'd pay at the counter.</span></div>
+          <div class="benefit"><b>Orders, bookings, table QR</b><span>WhatsApp and web orders, 24/7 bookings, scan-to-order at tables.</span></div>
+        </div>
+        <p class="src">Restaurant features from <a href="https://keychat.co.za/feast" target="_blank" rel="noopener">keychat.co.za/feast</a>.</p>
+      </div>
+      <div class="actions"><button class="btn" id="copy-cmp" type="button">Copy comparison for WhatsApp</button><span class="status" id="st-cmp" role="status"></span></div>
+      <textarea class="fallback" id="fb-cmp" hidden aria-label="Comparison text to copy"></textarea>
+    </div>
+  </section>
+
+  <!-- ============ BRAND KIT ============ -->
+  <section id="view-kit" role="tabpanel" aria-labelledby="tab-kit" hidden>
+    <div class="grid">
+      <div class="panel">
+        <h2>The restaurant</h2>
+        <div class="banner" id="kit-example">Showing an example restaurant. Upload the real logo and details to build their kit.</div>
+        <div class="group">
+          <div class="field wide"><label for="k-name">Restaurant name</label><div class="inp text"><input id="k-name" type="text" value="Mama Zee's Kitchen" maxlength="40" autocomplete="off"></div></div>
+          <div class="field wide"><label for="k-logo">Logo<small>PNG with a transparent background works best. It stays on this device.</small></label>
+            <div class="uploadrow"><div class="logo-prev" id="k-logo-prev"></div><input id="k-logo" type="file" accept="image/*"><button class="btn ghost small" type="button" id="k-logo-clear">Clear</button></div></div>
+          <div class="field wide"><label for="k-dish">Dish photos<small>Up to 3. Photo 1 fills the WhatsApp status; photo 2 (or 1) fills the flyer. Photos stay on this device.</small></label>
+            <div class="uploadrow"><div class="dish-prevs" id="k-dish-prev"></div><input id="k-dish" type="file" accept="image/*" multiple><button class="btn ghost small" type="button" id="k-dish-clear">Clear</button></div></div>
+          <div class="field"><label for="k-col">Brand colour</label><div class="inp"><input id="k-col" type="color" value="#0F6B4F"></div></div>
+          <div class="field wide"><label for="k-wa">WhatsApp order number<small>Builds every QR code</small></label><div class="inp text"><input id="k-wa" type="tel" value="082 000 0000" autocomplete="off"></div></div>
+          <div class="field wide"><label for="k-promo">Promo headline</label><div class="inp text"><input id="k-promo" type="text" value="Tuesday: 2 burgers + chips for R99" maxlength="60" autocomplete="off"></div></div>
+          <div class="field wide"><label for="k-fine">Promo small print</label><div class="inp text"><input id="k-fine" type="text" value="Order on WhatsApp. While stocks last." maxlength="80" autocomplete="off"></div></div>
+        </div>
+        <div class="group">
+          <div class="group-title">Delivery bike colourway</div>
+          <div class="ways" role="group" aria-label="Delivery bike colourway">
+            <button type="button" data-way="1" aria-pressed="true">1 · Signature colour</button>
+            <button type="button" data-way="2" aria-pressed="false">2 · White panel, colour box</button>
+            <button type="button" data-way="3" aria-pressed="false">3 · Black panel, colour box</button>
+            <button type="button" data-way="4" aria-pressed="false">4 · Stripes</button>
+            <button type="button" data-way="5" aria-pressed="false">5 · All white, colour lid</button>
+          </div>
+        </div>
+        <p class="src" id="k-link"></p>
+        <p class="status" id="st-kit" role="status"></p>
+      </div>
+      <div class="kitgrid">
+        <div class="kitcard full"><div class="kithead"><h3>Delivery bike and top box<small>Restaurant logo on the box and side panel. QR goes on the rear of the box.</small></h3><div class="tcrow"><label class="tcpick">Text colour <input type="color" data-tc="box" aria-label="Text colour"></label><button class="btn ghost small" type="button" data-tc-reset="box">Reset</button><button class="btn small" type="button" data-export="art-bike" data-file="delivery-bike">Download PNG</button></div></div><div class="stage"><div id="art-bike"></div></div></div>
+        <div class="kitcard"><div class="kithead"><h3>Door sticker<small>120 mm round</small></h3><div class="tcrow"><label class="tcpick">Text colour <input type="color" data-tc="sticker" aria-label="Text colour"></label><button class="btn ghost small" type="button" data-tc-reset="sticker">Reset</button><button class="btn small" type="button" data-export="art-sticker" data-file="door-sticker">Download PNG</button></div></div><div class="stage"><div id="art-sticker"></div></div></div>
+        <div class="kitcard"><div class="kithead"><h3>WhatsApp status / Instagram story<small>1080 × 1920</small></h3><div class="tcrow"><label class="tcpick">Text colour <input type="color" data-tc="status" aria-label="Text colour"></label><button class="btn ghost small" type="button" data-tc-reset="status">Reset</button><button class="btn small" type="button" data-export="art-status" data-file="whatsapp-status">Download PNG</button></div></div><div class="stage"><div id="art-status"></div></div></div>
+        <div class="kitcard"><div class="kithead"><h3>Promo flyer<small>A5, restaurant promo space</small></h3><div class="tcrow"><label class="tcpick">Text colour <input type="color" data-tc="flyer" aria-label="Text colour"></label><button class="btn ghost small" type="button" data-tc-reset="flyer">Reset</button><button class="btn small" type="button" data-export="art-flyer" data-file="promo-flyer">Download PNG</button></div></div><div class="stage"><div id="art-flyer"></div></div></div>
+        <div class="kitcard"><div class="kithead"><h3>Top box rear panel<small>QR to the restaurant's chat</small></h3><div class="tcrow"><label class="tcpick">Text colour <input type="color" data-tc="rear" aria-label="Text colour"></label><button class="btn ghost small" type="button" data-tc-reset="rear">Reset</button><button class="btn small" type="button" data-export="art-rear" data-file="box-rear-panel">Download PNG</button></div></div><div class="stage"><div id="art-rear"></div></div></div>
+        <div class="kitcard full"><div class="kithead"><h3>Packaging seal<small>150 × 50 mm tamper strip</small></h3><div class="tcrow"><label class="tcpick">Text colour <input type="color" data-tc="seal" aria-label="Text colour"></label><button class="btn ghost small" type="button" data-tc-reset="seal">Reset</button><button class="btn small" type="button" data-export="art-seal" data-file="packaging-seal">Download PNG</button></div></div><div class="stage"><div id="art-seal"></div></div></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ SIGN UP ============ -->
+  <section id="view-signup" role="tabpanel" aria-labelledby="tab-signup" hidden>
+    <div class="panel" style="margin-bottom:22px">
+      <h2>Sign-up in one visit</h2>
+      <ol class="steps">
+        <li><b>Qualify</b><span>Owner or manager present? Do they deliver today, and through which apps?</span></li>
+        <li><b>Run the numbers</b><span>Compare tab with their order value, orders a day and app rates.</span></li>
+        <li><b>Build their kit</b><span>Brand kit tab: their logo on the bike, door, seal and status.</span></li>
+        <li><b>Sign</b><span>Agreement, fee tier, banking, order WhatsApp number, logo file.</span></li>
+        <li><b>Onboard</b><span>Office loads the menu, sets payouts and Google profile within [5] days.</span></li>
+        <li><b>Go live</b><span>Sticker on the door, seals at the till, test order with the owner.</span></li>
+      </ol>
+    </div>
+    <div class="grid">
+      <div class="panel">
+        <h2>Restaurant details</h2>
+        <div class="group">
+          <div class="field wide"><label for="s-owner">Owner or manager</label><div class="inp text"><input id="s-owner" type="text" autocomplete="off"></div></div>
+          <div class="field wide"><label for="s-phone">Owner's mobile</label><div class="inp text"><input id="s-phone" type="tel" autocomplete="off"></div></div>
+          <div class="field wide"><label for="s-addr">Street address</label><div class="inp text"><input id="s-addr" type="text" autocomplete="off"></div></div>
+          <div class="field wide"><label for="s-cuisine">Cuisine / type</label><div class="inp text"><input id="s-cuisine" type="text" autocomplete="off"></div></div>
+          <div class="field wide"><label for="s-apps">Delivery apps today</label><div class="inp"><select id="s-apps"><option>None</option><option>Uber Eats</option><option>Mr D</option><option>Uber Eats and Mr D</option><option>Own drivers</option></select></div></div>
+          <div class="field wide"><label for="s-mode">Wants</label><div class="inp"><select id="s-mode"><option>Delivery and collection</option><option>Delivery only</option><option>Collection only</option></select></div></div>
+          <div class="field wide"><label for="s-next">Next step and date</label><div class="inp text"><input id="s-next" type="text" placeholder="e.g. Menu PDF by Thursday" autocomplete="off"></div></div>
+        </div>
+        <p class="src">Restaurant name, WhatsApp number and logo come from the Brand kit tab. The fee tier and numbers come from Compare.</p>
+      </div>
+      <div class="panel">
+        <h2>Before you leave the store</h2>
+        <div class="group" id="s-checks">
+          <label class="check"><input type="checkbox">Agreement signed, fee tier agreed</label>
+          <label class="check"><input type="checkbox">Banking details for payouts</label>
+          <label class="check"><input type="checkbox">Menu PDF or photos, with in-store prices</label>
+          <label class="check"><input type="checkbox">Logo file (PNG or vector)</label>
+          <label class="check"><input type="checkbox">WhatsApp number that will receive orders</label>
+          <label class="check"><input type="checkbox">Trading hours and delivery radius</label>
+          <label class="check"><input type="checkbox">Google Business Profile login, or owner will add us</label>
+          <label class="check"><input type="checkbox">POPIA consent to message their customers</label>
+          <label class="check"><input type="checkbox">Kit preview shown and approved by the owner</label>
+          <label class="check"><input type="checkbox">Onboarding slot booked</label>
+        </div>
+        <p class="src">Ticks are only on this device. Log the visit in HubSpot.</p>
+        <div class="actions"><button class="btn" id="copy-signup" type="button">Copy sign-up summary</button><span class="status" id="st-signup" role="status"></span></div>
+        <textarea class="fallback" id="fb-signup" hidden aria-label="Sign-up summary to copy"></textarea>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ DRIVERS ============ -->
+  <section id="view-driver" role="tabpanel" aria-labelledby="tab-driver" class="grid" hidden>
+    <div class="panel">
+      <h2>The driver's month</h2>
+      <div class="group">
+        <div class="group-title">Workload</div>
+        <div class="field"><label for="dpd">Deliveries per day</label><div class="inp"><input id="dpd" type="number" inputmode="decimal" min="0" step="1" value="18"></div></div>
+        <div class="field"><label for="ddays">Days worked per month</label><div class="inp"><input id="ddays" type="number" inputmode="decimal" min="0" max="31" step="1" value="24"></div></div>
+        <div class="field"><label for="hours">Hours online per day</label><div class="inp"><input id="hours" type="number" inputmode="decimal" min="0" max="24" step="0.5" value="9"></div></div>
+      </div>
+      <div class="group">
+        <div class="group-title">Earnings</div>
+        <div class="field"><label for="dpay2">Pay per delivery <span class="ph">PLACEHOLDER</span><small>Same as courier pay on Compare</small></label><div class="inp"><span>R</span><input id="dpay2" type="number" inputmode="decimal" min="0" step="1" value="30"></div></div>
+        <div class="field"><label for="xkm">Extra km per delivery</label><div class="inp"><input id="xkm" type="number" inputmode="decimal" min="0" step="0.5" value="2"><span>km</span></div></div>
+        <div class="field"><label for="kmrate">Rate per extra km <span class="ph">PLACEHOLDER</span></label><div class="inp"><span>R</span><input id="kmrate" type="number" inputmode="decimal" min="0" step="0.5" value="3"></div></div>
+        <div class="field"><label for="tips">Tips per day</label><div class="inp"><span>R</span><input id="tips" type="number" inputmode="decimal" min="0" step="5" value="40"></div></div>
+        <div class="field"><label for="bonus">Incentive bonus per month <span class="ph">PLACEHOLDER</span></label><div class="inp"><span>R</span><input id="bonus" type="number" inputmode="decimal" min="0" step="50" value="500"></div></div>
+      </div>
+      <div class="group">
+        <div class="group-title">Costs</div>
+        <div class="field"><label for="rent">Bike rental per week <span class="ph">PLACEHOLDER</span><small>0 if they own the bike</small></label><div class="inp"><span>R</span><input id="rent" type="number" inputmode="decimal" min="0" step="10" value="650"></div></div>
+        <div class="field"><label for="energy">Fuel or charging per day</label><div class="inp"><span>R</span><input id="energy" type="number" inputmode="decimal" min="0" step="5" value="20"></div></div>
+        <div class="field"><label for="data">Data and airtime per month</label><div class="inp"><span>R</span><input id="data" type="number" inputmode="decimal" min="0" step="10" value="150"></div></div>
+      </div>
+    </div>
+    <div class="panel" aria-live="polite">
+      <h2>What the driver takes home</h2>
+      <div class="hero">
+        <div class="stat primary"><div class="k">Take-home per month</div><div class="v" id="d-net">–</div></div>
+        <div class="stat"><div class="k">Take-home per hour</div><div class="v" id="d-hour">–</div></div>
+      </div>
+      <div class="tablewrap">
+        <table style="min-width:0">
+          <thead><tr><th></th><th>Per day</th><th>Per month</th></tr></thead>
+          <tbody>
+            <tr><td>Delivery pay</td><td id="dt-pay-d"></td><td id="dt-pay-m"></td></tr>
+            <tr><td>Tips</td><td id="dt-tip-d"></td><td id="dt-tip-m"></td></tr>
+            <tr><td>Incentive bonus</td><td>–</td><td id="dt-bon-m"></td></tr>
+            <tr><td>Costs</td><td id="dt-cost-d"></td><td id="dt-cost-m"></td></tr>
+            <tr><td><b>Take-home</b></td><td id="dt-net-d"></td><td id="dt-net-m"></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="callout warn" id="d-warn" hidden></div>
+      <div class="actions"><button class="btn" id="copy-driver" type="button">Copy summary for WhatsApp</button><span class="status" id="st-driver" role="status"></span></div>
+      <textarea class="fallback" id="fb-driver" hidden aria-label="Driver summary to copy"></textarea>
+    </div>
+  </section>
+
+  <p class="foot">All results are estimates from the numbers entered, not a quote or a guarantee. Competitor figures are estimates from public reporting.</p>
+</div>
+<div class="tip" id="tip" hidden></div>
+
+<script>
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  var num = function (id) { var v = parseFloat($(id).value); return isFinite(v) ? v : 0; };
+  function grp(n) { return n.toString().replace(/\B(?=(\d{3})+(?!\d))/g, " "); }
+  function R(n) { return (n < 0 ? "−R " : "R ") + grp(Math.round(Math.abs(n))); }
+  function R2(n) { var a = Math.abs(n), c = Math.round(a * 100), w = Math.floor(c / 100), d = c % 100; return (n < 0 ? "−R " : "R ") + grp(w) + "." + (d < 10 ? "0" : "") + d; }
+  function esc(s) { return String(s).replace(/[&<>"']/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]; }); }
+  function store(k, v) { try { localStorage.setItem(k, v); } catch (e) {} }
+  function load(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
+
+  /* ---------- pricing model (pure) ---------- */
+  function marketplace(a, M, cpay) {
+    var app = M * (1 + a.mk / 100);
+    var small = app < a.thr ? a.sof : 0;
+    var svc = app * a.svc / 100;
+    var cust = app + a.del + svc + small;
+    var rest = app * (1 - a.com / 100);
+    return { cust: cust, menu: app, markup: app - M, fees: a.del + svc + small, rest: rest, courier: cpay, plat: cust - rest - cpay };
+  }
+  function feest(t, M, f) {
+    var fee = M * t;
+    var cust = M + f.del + (f.payer === "customer" ? fee : 0);
+    var proc = cust * f.proc / 100;
+    var rest = M - (f.payer === "restaurant" ? fee : 0) - (f.procBy === "restaurant" ? proc : 0);
+    return { cust: cust, menu: M, markup: 0, fees: f.del + (f.payer === "customer" ? fee : 0), rest: rest, courier: f.cpay, plat: cust - rest - f.cpay, feestNet: cust - rest - f.cpay - (f.procBy === "feest" ? proc : 0) };
+  }
+  window.FEEST_MODEL = { marketplace: marketplace, feest: feest };
+
+  var state = { tier: 0.15, payer: "customer", procBy: "feest", way: "1", logo: null, dishes: [], tc: {} };
+  var tcEff = {};
+  function tc(key, def) { tcEff[key] = state.tc[key] || def; return tcEff[key]; }
+  function dish(i, style, label, onDark) {
+    var src = state.dishes[i] || state.dishes[0];
+    if (src) return '<div role="img" aria-label="Dish photo" style="' + style + ';background-image:url(' + src + ');background-size:cover;background-position:center"></div>';
+    return '<div style="' + style + ';display:flex;align-items:center;justify-content:center;font-size:11px;font-family:JetBrains Mono,monospace;color:' + (onDark ? "#fff" : "#5B5470") + '">' + label + '</div>';
+  }
+  var lastCmp = "", lastDriver = "";
+  var tip = $("tip");
+
+  function segs(sel, attr, key) {
+    document.querySelectorAll(sel).forEach(function (b) {
+      b.addEventListener("click", function () {
+        state[key] = attr === "data-tier" ? parseFloat(b.getAttribute(attr)) : b.getAttribute(attr);
+        document.querySelectorAll(sel).forEach(function (x) { x.setAttribute("aria-pressed", x === b); });
+        renderCompare(); if (key === "way") renderKit();
+      });
+    });
+  }
+  segs("[data-tier]", "data-tier", "tier");
+  segs("[data-payer]", "data-payer", "payer");
+  segs("[data-proc]", "data-proc", "procBy");
+  segs("[data-way]", "data-way", "way");
+
+  function renderCompare() {
+    var M = num("m"), n = num("opd") * num("days"), cpay = num("cpay");
+    var uber = marketplace({ mk: num("u-mk"), com: num("u-com"), del: num("u-del"), svc: num("u-svc"), sof: num("u-sof"), thr: num("u-thr") }, M, cpay);
+    var mrd = marketplace({ mk: num("d-mk"), com: num("d-com"), del: num("d-del"), svc: num("d-svc"), sof: num("d-sof"), thr: num("d-thr") }, M, cpay);
+    var f = { del: num("fdel"), cpay: cpay, proc: num("proc"), payer: state.payer, procBy: state.procBy };
+    var tiers = [0.10, 0.15, 0.20];
+    var cols = [{ name: "Uber Eats", r: uber }, { name: "Mr D", r: mrd }].concat(tiers.map(function (t) { return { name: "FEEST " + Math.round(t * 100) + "%", r: feest(t, M, f), t: t }; }));
+    var sel = cols.filter(function (c) { return c.t === state.tier; })[0];
+
+    // hero
+    var dRest = (sel.r.rest - uber.rest) * n, dCust = uber.cust - sel.r.cust;
+    $("h-rest").textContent = R(dRest);
+    $("h-rest-s").textContent = sel.name + ": restaurant gets " + R2(sel.r.rest) + " per order vs " + R2(uber.rest) + " on Uber Eats";
+    $("h-cust").textContent = R2(dCust);
+    $("h-cust-s").textContent = "Customer pays " + R2(sel.r.cust) + " on " + sel.name + " vs " + R2(uber.cust) + " on Uber Eats";
+
+    // chart: one scale for all rows
+    var max = Math.max.apply(null, cols.map(function (c) { return c.r.cust; }));
+    var html = "";
+    cols.forEach(function (c) {
+      var r = c.r, w = function (v) { return (Math.max(0, v) / max * 100).toFixed(2) + "%"; };
+      html += '<div class="crow' + (c === sel ? " sel" : "") + '"><div class="nm">' + c.name + '</div><div class="track"><div class="bars" style="width:calc((100% - 86px) * ' + (r.cust / max).toFixed(4) + ')">' +
+        '<div style="background:var(--s-rest);flex:' + Math.max(0, r.rest) + '" data-tip="' + c.name + " · Restaurant " + R2(r.rest) + '"></div>' +
+        '<div style="background:var(--s-plat);flex:' + Math.max(0, r.plat) + '" data-tip="' + c.name + " · Platform " + R2(r.plat) + '"></div>' +
+        '<div style="background:var(--s-cour);flex:' + Math.max(0, r.courier) + '" data-tip="' + c.name + " · Courier " + R2(r.courier) + '"></div>' +
+        '</div><span class="tot">' + R2(r.cust) + '</span></div></div>';
+    });
+    $("chart").innerHTML = html;
+
+    // table
+    var rows = [
+      ["Customer pays", function (r) { return R2(r.cust); }],
+      ["…menu price on the app", function (r) { return R2(r.menu); }],
+      ["…of which markup", function (r) { return R2(r.markup); }],
+      ["…delivery and service fees", function (r) { return R2(r.fees); }],
+      ["Restaurant receives", function (r) { return R2(r.rest); }],
+      ["Restaurant keeps, % of in-store price", function (r) { return M > 0 ? Math.round(r.rest / M * 100) + "%" : "–"; }],
+      ["Platform keeps (incl. payment fees)", function (r) { return R2(r.plat); }],
+      ["Courier", function (r) { return R2(r.courier); }],
+      ["Restaurant receives per month", function (r) { return R(r.rest * n); }]
+    ];
+    $("cmp").querySelectorAll("th[data-col]").forEach(function (th) { th.className = parseFloat(th.getAttribute("data-col")) === state.tier ? "sel" : ""; });
+    $("cmp").querySelector("tbody").innerHTML = rows.map(function (row) {
+      return "<tr><td>" + row[0] + "</td>" + cols.map(function (c) { return '<td class="' + (c === sel ? "sel" : "") + '">' + row[1](c.r) + "</td>"; }).join("") + "</tr>";
+    }).join("");
+
+    var w = $("c-warn");
+    var losing = cols.filter(function (c) { return c.t && c.r.feestNet < 0; });
+    if (losing.length) { w.hidden = false; w.textContent = "FEEST loses money per order at " + losing.map(function (c) { return c.name; }).join(", ") + ": fees don't cover courier pay and payment processing. Raise the delivery fee or lower courier pay."; }
+    else w.hidden = true;
+
+    lastCmp = "Your restaurant on FEEST vs the apps (estimate)\n" +
+      "Order of " + R(M) + " at your menu prices, " + num("opd") + " orders/day\n\n" +
+      "Uber Eats: customer pays " + R2(uber.cust) + ", you get " + R2(uber.rest) + "\n" +
+      "Mr D: customer pays " + R2(mrd.cust) + ", you get " + R2(mrd.rest) + "\n" +
+      sel.name + ": customer pays " + R2(sel.r.cust) + ", you get " + R2(sel.r.rest) + "\n\n" +
+      "That's " + R(dRest) + " more for you per month than Uber Eats, and your customer saves " + R2(dCust) + " per order.\n" +
+      "Plus: you own your customer list, run your own loyalty and promotions, and your brand rides on every delivery.";
+    store("feest-cpay", $("cpay").value);
+  }
+
+  document.querySelectorAll("#view-compare input").forEach(function (el) { el.addEventListener("input", renderCompare); });
+  $("chart").addEventListener("mousemove", function (e) {
+    var t = e.target.getAttribute && e.target.getAttribute("data-tip");
+    if (t) { tip.hidden = false; tip.textContent = t; tip.style.left = Math.min(e.clientX + 14, window.innerWidth - 250) + "px"; tip.style.top = (e.clientY + 14) + "px"; } else tip.hidden = true;
+  });
+  $("chart").addEventListener("mouseleave", function () { tip.hidden = true; });
+
+  /* ---------- brand kit ---------- */
+  function waNumber() { var d = $("k-wa").value.replace(/\D/g, ""); if (d.charAt(0) === "0") d = "27" + d.slice(1); return d; }
+  function waLink() { return "https://wa.me/" + waNumber() + "?text=" + encodeURIComponent("hi " + $("k-name").value); }
+  function initials(s) { var p = s.trim().split(/\s+/).filter(function (w) { return /[A-Za-z0-9]/.test(w); }); return ((p[0] || "R").charAt(0) + (p[1] ? p[1].charAt(0) : "")).toUpperCase(); }
+  function logo(size, onDark) {
+    if (state.logo) return '<div class="logobox" style="width:' + size + 'px;height:' + Math.round(size * 0.62) + 'px"><img class="logoimg" src="' + state.logo + '" alt="' + esc($("k-name").value) + ' logo"></div>';
+    var c = $("k-col").value;
+    return '<div class="monogram" style="width:' + Math.round(size * 0.62) + 'px;height:' + Math.round(size * 0.62) + 'px;background:' + (onDark ? "#fff" : c) + ';color:' + (onDark ? c : "#fff") + ';font-size:' + Math.round(size * 0.26) + 'px">' + esc(initials($("k-name").value)) + '</div>';
+  }
+  function wm(px, light, c) { return '<span class="wm" style="font-size:' + px + 'px;color:' + (c || (light ? "#fff" : "#170B3B")) + '">fe<span class="roll">e</span>st</span>'; }
+  function qr(size) { return '<canvas class="qr" data-size="' + size + '" width="' + size + '" height="' + size + '" style="width:' + size + 'px;height:' + size + 'px;background:#fff;border-radius:6px"></canvas>'; }
+  function drawQRs() {
+    var url = waLink();
+    document.querySelectorAll("#view-kit canvas.qr").forEach(function (cv) {
+      var s = +cv.getAttribute("data-size"), dpr = 3, ctx;
+      cv.width = s * dpr; cv.height = s * dpr; ctx = cv.getContext("2d"); ctx.scale(dpr, dpr);
+      ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, s, s);
+      if (typeof window.qrcode !== "function") { ctx.fillStyle = "#170B3B"; ctx.font = "600 12px Arial"; ctx.textAlign = "center"; ctx.fillText("QR", s / 2, s / 2 + 4); return; }
+      var q = window.qrcode(0, "M"); q.addData(url); q.make();
+      var n = q.getModuleCount(), pad = 2, cell = s / (n + pad * 2);
+      ctx.fillStyle = "#170B3B";
+      for (var r = 0; r < n; r++) for (var c = 0; c < n; c++) if (q.isDark(r, c)) ctx.fillRect((c + pad) * cell, (r + pad) * cell, Math.ceil(cell), Math.ceil(cell));
+    });
+  }
+
+  function bikeSVG(way, col) {
+    var box = col, lid = col, panel = col, panelEdge = "none", stripes = false;
+    if (way === "2") { panel = "#FFFFFF"; lid = "#FFFFFF"; panelEdge = "#D9D9DE"; }
+    if (way === "3") { panel = "#1D1D22"; lid = "#1D1D22"; }
+    if (way === "4") { stripes = true; lid = col; }
+    if (way === "5") { box = "#FFFFFF"; panel = "#FFFFFF"; panelEdge = "#D9D9DE"; }
+    var boxFill = stripes ? "url(#stripes)" : box;
+    return '<svg viewBox="0 0 640 400" width="640" height="400" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">' +
+      '<defs><pattern id="stripes" width="36" height="10" patternUnits="userSpaceOnUse"><rect width="36" height="10" fill="#FFFFFF"/><rect width="18" height="10" fill="' + col + '"/></pattern></defs>' +
+      '<ellipse cx="330" cy="378" rx="260" ry="10" fill="#000" opacity=".08"/>' +
+      // rear wheel
+      '<circle cx="160" cy="318" r="60" fill="#1D1D22"/><circle cx="160" cy="318" r="40" fill="#3A3A42"/><circle cx="160" cy="318" r="14" fill="#9A9AA5"/>' +
+      // front wheel
+      '<circle cx="500" cy="318" r="60" fill="#1D1D22"/><circle cx="500" cy="318" r="40" fill="#3A3A42"/><circle cx="500" cy="318" r="14" fill="#9A9AA5"/>' +
+      // swingarm + stand
+      '<path d="M160 318 L300 286" stroke="#2A2A30" stroke-width="16" stroke-linecap="round"/>' +
+      '<path d="M300 300 L282 368" stroke="#2A2A30" stroke-width="6" stroke-linecap="round"/>' +
+      // rear rack
+      '<path d="M120 196 H290 L330 214" stroke="#2A2A30" stroke-width="8" stroke-linecap="round" fill="none"/>' +
+      // body / battery
+      '<path d="M250 206 H430 L462 226 L440 300 H272 L240 250 Z" fill="#1D1D22"/>' +
+      // side panel (hexagon)
+      '<path d="M300 222 H392 L414 262 L392 300 H300 L278 262 Z" fill="' + panel + '" stroke="' + panelEdge + '" stroke-width="2"/>' +
+      // seat
+      '<rect x="214" y="184" width="196" height="26" rx="12" fill="#121216"/>' +
+      // front fork, bars, light
+      '<path d="M500 318 L452 150" stroke="#2A2A30" stroke-width="14" stroke-linecap="round"/>' +
+      '<path d="M420 132 L482 146" stroke="#121216" stroke-width="9" stroke-linecap="round"/>' +
+      '<path d="M436 128 L428 96 M474 138 L486 104" stroke="#121216" stroke-width="4" stroke-linecap="round"/>' +
+      '<circle cx="428" cy="92" r="9" fill="#121216"/><circle cx="488" cy="100" r="9" fill="#121216"/>' +
+      '<circle cx="478" cy="176" r="20" fill="#121216"/><circle cx="478" cy="176" r="12" fill="#E8E8EC"/>' +
+      '<path d="M446 262 Q500 236 548 266" stroke="#1D1D22" stroke-width="10" fill="none" stroke-linecap="round"/>' +
+      '<path d="M104 262 Q150 236 206 252" stroke="#1D1D22" stroke-width="10" fill="none" stroke-linecap="round"/>' +
+      // top box
+      '<rect x="96" y="70" width="210" height="126" rx="10" fill="' + boxFill + '" stroke="' + (box === "#FFFFFF" || stripes ? "#D9D9DE" : "none") + '" stroke-width="2"/>' +
+      '<rect x="90" y="60" width="222" height="22" rx="8" fill="' + lid + '" stroke="' + (lid === "#FFFFFF" ? "#D9D9DE" : "none") + '" stroke-width="2"/>' +
+      '<rect x="96" y="172" width="210" height="24" fill="#170B3B"/>' +
+      '</svg>';
+  }
+
+  function renderKit() {
+    var name = esc($("k-name").value || "Your restaurant"), col = $("k-col").value, promo = esc($("k-promo").value), fine = esc($("k-fine").value);
+    var way = state.way, panelDark = way === "1" || way === "3" || way === "4";
+    var boxLight = way === "5" || way === "4";
+    $("kit-example").hidden = !!state.logo;
+    var cBox = tc("box", "#ffffff"), cSt = tc("sticker", "#ffffff"), cStat = tc("status", "#ffffff"), cFly = tc("flyer", "#170b3b"), cRear = tc("rear", way === "5" ? "#170b3b" : "#ffffff"), cSeal = tc("seal", "#170b3b");
+
+    // bike: SVG shapes + HTML overlays so exports keep the brand fonts
+    $("art-bike").innerHTML = '<div class="art" style="position:relative;width:640px;height:400px;background:#F4F3F7;border-radius:12px">' + bikeSVG(way, col) +
+      '<div style="position:absolute;left:96px;top:84px;width:210px;height:88px;display:flex;align-items:center;justify-content:center">' +
+        (boxLight && way === "4" ? '<div style="background:#fff;border-radius:10px;padding:6px 10px">' + logo(120, false) + '</div>' : logo(150, !boxLight)) + '</div>' +
+      '<div style="position:absolute;left:96px;top:172px;width:210px;height:24px;display:flex;align-items:center;justify-content:center;gap:6px;color:' + cBox + ';font-size:9.5px;font-weight:700;letter-spacing:.02em;white-space:nowrap">ORDER DIRECT ON WHATSAPP · ' + wm(12, true, cBox) + '</div>' +
+      '<div style="position:absolute;left:300px;top:226px;width:92px;height:70px;display:flex;align-items:center;justify-content:center">' + logo(84, panelDark ? (panelDark && col.toLowerCase() !== "#1d1d22") : false) + '</div>' +
+      '</div>';
+
+    // door sticker
+    $("art-sticker").innerHTML = '<div class="art" style="width:340px;height:340px;border-radius:50%;background:' + col + ';box-shadow:inset 0 0 0 10px ' + col + ', inset 0 0 0 13px #FFE7A3;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;color:' + cSt + ';text-align:center">' +
+      '<div style="background:#fff;border-radius:14px;padding:10px 14px;display:flex;align-items:center;justify-content:center;min-width:150px;min-height:76px">' + logo(150, false) + '</div>' +
+      '<div style="font-weight:700;font-size:15px;max-width:230px;line-height:1.25">Order ' + name + ' direct.<br>Menu prices, delivered.</div>' +
+      qr(84) +
+      '<div style="display:flex;align-items:baseline;gap:6px;font-size:12px;color:' + cSt + ';font-weight:600">on WhatsApp with ' + wm(24, true, cSt) + '</div></div>';
+
+    // status
+    $("art-status").innerHTML = '<div class="art" style="width:288px;height:512px;background:' + col + ';border-radius:14px;padding:22px;display:flex;flex-direction:column;gap:14px;color:' + cStat + '">' +
+      '<div style="background:#fff;border-radius:12px;padding:10px;display:flex;justify-content:center;min-height:72px;align-items:center">' + logo(140, false) + '</div>' +
+      dish(0, "flex-grow:1;border-radius:12px;background-color:rgba(255,255,255,.14)", "[Dish photo 1]", true) +
+      '<div style="font-family:Bricolage Grotesque,Arial,sans-serif;font-weight:800;font-size:28px;line-height:1.02;letter-spacing:-.02em">' + promo + '</div>' +
+      '<div style="font-size:13px;opacity:.9">' + fine + '</div>' +
+      '<div style="background:#fff;color:#170B3B;border-radius:12px;padding:10px 12px;display:flex;align-items:center;gap:10px">' + qr(64) +
+        '<div style="font-size:13px;line-height:1.3"><b>Say hi to order</b><br>' + esc($("k-wa").value) + '<div style="display:flex;align-items:baseline;gap:4px;font-size:11px;color:#5B5470">on ' + wm(16, false) + '</div></div></div></div>';
+
+    // flyer with promo space
+    $("art-flyer").innerHTML = '<div class="art" style="width:340px;height:482px;background:#fff;border-radius:6px;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 1px 0 #E4DFF0">' +
+      '<div style="padding:18px 20px 10px;display:flex;justify-content:space-between;align-items:center">' + logo(120, false) + '<div style="background:#FFE7A3;border-radius:999px;padding:4px 10px;font-size:11px;font-weight:700">Now delivering</div></div>' +
+      dish(1, "margin:0 20px;height:150px;border-radius:12px;background-color:" + col + "22", "[Dish photo 2]", false) +
+      '<div style="margin:14px 20px 0;border:2px dashed ' + col + ';border-radius:12px;padding:12px 14px"><div style="font-size:10px;font-weight:700;letter-spacing:.12em;color:' + cFly + '">THIS WEEK AT ' + name.toUpperCase() + '</div><div style="font-family:Bricolage Grotesque,Arial,sans-serif;font-weight:800;font-size:22px;line-height:1.05;margin-top:4px;color:' + cFly + '">' + promo + '</div><div style="font-size:11px;color:' + cFly + ';opacity:.8;margin-top:4px">' + fine + '</div></div>' +
+      '<div style="margin-top:auto;background:#5B2EFF;color:#fff;padding:14px 20px;display:flex;gap:12px;align-items:center">' + qr(80) +
+        '<div style="font-size:13px;line-height:1.35"><b>Scan or say hi on WhatsApp</b><br>' + esc($("k-wa").value) + '<div style="display:flex;align-items:baseline;gap:6px;margin-top:4px;font-size:11px;color:#FFE7A3">Order on ' + wm(28, true) + '</div></div></div></div>';
+
+    // box rear panel
+    $("art-rear").innerHTML = '<div class="art" style="width:340px;height:230px;border-radius:12px;background:' + (way === "5" ? "#fff" : col) + ';border:2px solid ' + (way === "5" ? "#D9D9DE" : col) + ';display:flex;align-items:center;gap:16px;padding:18px;color:' + cRear + '">' +
+      '<div style="background:#fff;border-radius:10px;padding:6px">' + qr(120) + '</div>' +
+      '<div style="display:flex;flex-direction:column;gap:8px"><div style="font-family:Bricolage Grotesque,Arial,sans-serif;font-weight:800;font-size:22px;line-height:1.05">Hungry? Order ' + name + ' direct.</div><div style="font-size:12px">Scan to say hi on WhatsApp</div><div style="font-size:11px;display:flex;align-items:baseline;gap:4px">with ' + wm(18, way !== "5", cRear) + '</div></div></div>';
+
+    // seal
+    $("art-seal").innerHTML = '<div class="art" style="width:540px;height:180px;border-radius:12px;background:#fff;border:3px solid ' + col + ';display:flex;align-items:center;gap:16px;padding:0 18px">' +
+      '<div style="width:130px;display:flex;justify-content:center">' + logo(130, false) + '</div>' +
+      '<div style="flex-grow:1;display:flex;flex-direction:column;gap:4px"><div style="font-family:Bricolage Grotesque,Arial,sans-serif;font-weight:800;font-size:22px;line-height:1.05;color:' + cSeal + '">Sealed at ' + name + '.</div><div style="font-size:13px;color:' + cSeal + ';opacity:.75">Order again at menu price. Scan to say hi.</div><div style="display:flex;align-items:baseline;gap:4px;font-size:11px;color:' + cSeal + ';opacity:.75">on WhatsApp with ' + wm(22, false, cSeal) + '</div></div>' +
+      qr(110) + '</div>';
+
+    drawQRs();
+    document.querySelectorAll("[data-tc]").forEach(function (inp) { var v = tcEff[inp.getAttribute("data-tc")]; if (v) inp.value = v.toLowerCase(); });
+    $("k-link").textContent = "Every QR opens: " + waLink();
+    $("k-logo-prev").innerHTML = state.logo ? '<img src="' + state.logo + '" alt="">' : '<span class="src">No logo</span>';
+    $("k-dish-prev").innerHTML = state.dishes.length ? state.dishes.map(function (d, i) { return '<div style="background-image:url(' + d + ')"><span>' + (i + 1) + '</span></div>'; }).join("") : '<span class="src">No photos</span>';
+  }
+  ["k-name", "k-col", "k-wa", "k-promo", "k-fine"].forEach(function (id) { $(id).addEventListener("input", renderKit); });
+  $("k-logo").addEventListener("change", function () {
+    var f = this.files && this.files[0]; if (!f) return;
+    if (!/^image\//.test(f.type)) { $("st-kit").textContent = "That file isn't an image. Use a PNG, JPG or SVG."; return; }
+    var rd = new FileReader();
+    rd.onload = function () { state.logo = rd.result; $("st-kit").textContent = "Logo added to every piece."; renderKit(); };
+    rd.onerror = function () { $("st-kit").textContent = "Couldn't read that file. Try another image."; };
+    rd.readAsDataURL(f);
+  });
+  document.querySelectorAll("[data-tc]").forEach(function (inp) { inp.addEventListener("input", function () { state.tc[inp.getAttribute("data-tc")] = inp.value; renderKit(); }); });
+  document.querySelectorAll("[data-tc-reset]").forEach(function (b) { b.addEventListener("click", function () { delete state.tc[b.getAttribute("data-tc-reset")]; renderKit(); }); });
+  $("k-logo-clear").addEventListener("click", function () { state.logo = null; $("k-logo").value = ""; renderKit(); });
+
+  // Dish photos: downscale phone photos so rendering and export stay fast
+  function shrink(file) {
+    return new Promise(function (res, rej) {
+      var rd = new FileReader();
+      rd.onerror = rej;
+      rd.onload = function () {
+        var img = new Image();
+        img.onerror = rej;
+        img.onload = function () {
+          var max = 1400, s = Math.min(1, max / Math.max(img.width, img.height));
+          var cv = document.createElement("canvas"); cv.width = Math.round(img.width * s); cv.height = Math.round(img.height * s);
+          cv.getContext("2d").drawImage(img, 0, 0, cv.width, cv.height);
+          res(cv.toDataURL("image/jpeg", 0.85));
+        };
+        img.src = rd.result;
+      };
+      rd.readAsDataURL(file);
+    });
+  }
+  $("k-dish").addEventListener("change", function () {
+    var files = Array.prototype.filter.call(this.files || [], function (f) { return /^image\//.test(f.type); }).slice(0, 3);
+    if (!files.length) { $("st-kit").textContent = "Choose JPG or PNG photos."; return; }
+    $("st-kit").textContent = "Adding photos…";
+    Promise.all(files.map(shrink)).then(function (urls) {
+      state.dishes = urls; $("st-kit").textContent = urls.length + (urls.length === 1 ? " photo" : " photos") + " added."; renderKit();
+    }, function () { $("st-kit").textContent = "Couldn't read one of those photos. Try another."; });
+  });
+  $("k-dish-clear").addEventListener("click", function () { state.dishes = []; $("k-dish").value = ""; renderKit(); });
+
+  var downloadsP = (window.claude && window.claude.use) ? window.claude.use("downloads") : Promise.resolve(null);
+  function slug(s) { return (s || "restaurant").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40) || "restaurant"; }
+  document.querySelectorAll("[data-export]").forEach(function (b) {
+    b.addEventListener("click", function () {
+      var el = $(b.getAttribute("data-export")).firstElementChild, st = $("st-kit");
+      if (!el || typeof window.html2canvas !== "function") { st.textContent = "Export isn't available here. Take a screenshot instead."; return; }
+      st.textContent = "Preparing the image…";
+      downloadsP.then(function (dl) {
+        if (!dl) { st.textContent = "Downloads aren't available in this view. Take a screenshot instead."; return; }
+        return window.html2canvas(el, { scale: 3, backgroundColor: null, logging: false }).then(function (cv) {
+          return new Promise(function (res) { cv.toBlob(res, "image/png"); });
+        }).then(function (blob) {
+          return dl.save({ filename: slug($("k-name").value) + "-" + b.getAttribute("data-file") + ".png", data: blob });
+        }).then(function () { st.textContent = "Saved."; }, function (e) {
+          st.textContent = e && e.code === "declined" ? "Download cancelled." : "Couldn't save the image. Try again, or take a screenshot.";
+        });
+      });
+    });
+  });
+
+  /* ---------- sign up ---------- */
+  $("copy-signup").addEventListener("click", function () {
+    var t = "FEEST sign-up: " + $("k-name").value + "\n" +
+      "Owner: " + $("s-owner").value + " (" + $("s-phone").value + ")\n" +
+      "Address: " + $("s-addr").value + "\n" +
+      "Type: " + $("s-cuisine").value + " | Apps today: " + $("s-apps").value + " | Wants: " + $("s-mode").value + "\n" +
+      "Order WhatsApp: " + $("k-wa").value + "\n" +
+      "Fee tier: " + Math.round(state.tier * 100) + "% (" + (state.payer === "customer" ? "customer pays" : "restaurant pays") + ")\n" +
+      "Avg order " + R(num("m")) + ", " + num("opd") + " orders/day\n" +
+      "Bike colourway: option " + state.way + "\n" +
+      "Checklist: " + Array.prototype.filter.call(document.querySelectorAll("#s-checks input"), function (c) { return c.checked; }).length + "/10 done\n" +
+      "Next: " + $("s-next").value;
+    copy(t, "st-signup", "fb-signup");
+  });
+
+  /* ---------- drivers ---------- */
+  function driverModel(i) {
+    var perDelivery = i.dpay + i.xkm * i.kmrate, payDay = i.dpd * perDelivery, grossM = (payDay + i.tips) * i.ddays + i.bonus;
+    var costM = i.rent * 52 / 12 + i.energy * i.ddays + i.data, netM = grossM - costM, hoursM = i.hours * i.ddays;
+    return { perDelivery: perDelivery, payDay: payDay, grossM: grossM, costM: costM, netM: netM, perHour: hoursM > 0 ? netM / hoursM : 0 };
+  }
+  window.FEEST_MODEL.driverModel = driverModel;
+  function renderDriver() {
+    var i = { dpd: num("dpd"), ddays: num("ddays"), hours: num("hours"), dpay: num("dpay2"), xkm: num("xkm"), kmrate: num("kmrate"), tips: num("tips"), bonus: num("bonus"), rent: num("rent"), energy: num("energy"), data: num("data") };
+    var m = driverModel(i), cd = i.ddays > 0 ? m.costM / i.ddays : 0;
+    $("d-net").textContent = R(m.netM); $("d-hour").textContent = R2(m.perHour);
+    $("dt-pay-d").textContent = R(m.payDay); $("dt-pay-m").textContent = R(m.payDay * i.ddays);
+    $("dt-tip-d").textContent = R(i.tips); $("dt-tip-m").textContent = R(i.tips * i.ddays);
+    $("dt-bon-m").textContent = R(i.bonus);
+    $("dt-cost-d").textContent = R(-cd); $("dt-cost-m").textContent = R(-m.costM);
+    $("dt-net-d").textContent = R(i.ddays > 0 ? m.netM / i.ddays : 0); $("dt-net-m").textContent = R(m.netM);
+    $("d-warn").hidden = m.netM >= 0; $("d-warn").textContent = "At these numbers the driver's costs are higher than their earnings.";
+    lastDriver = "Drive with FEEST (estimate)\n" + i.dpd + " deliveries/day x " + i.ddays + " days, " + i.hours + " hrs/day\n" +
+      "Pay per delivery: " + R2(m.perDelivery) + " + tips\nEarnings per month: " + R(m.grossM) + "\nCosts per month: " + R(m.costM) +
+      "\nTake-home per month: " + R(m.netM) + " (" + R2(m.perHour) + "/hour)";
+  }
+  document.querySelectorAll("#view-driver input").forEach(function (el) { el.addEventListener("input", renderDriver); });
+  $("cpay").addEventListener("input", function () { $("dpay2").value = $("cpay").value; renderDriver(); });
+  $("dpay2").addEventListener("input", function () { $("cpay").value = $("dpay2").value; renderCompare(); });
+
+  /* ---------- shared ---------- */
+  function copy(text, statusId, fbId) {
+    var done = function () { $(statusId).textContent = "Copied. Paste it into WhatsApp."; $(fbId).hidden = true; };
+    var fail = function () { var fb = $(fbId); fb.hidden = false; fb.value = text; fb.focus(); fb.select(); $(statusId).textContent = "Select the text below and copy it."; };
+    try { navigator.clipboard.writeText(text).then(done, fail); } catch (e) { fail(); }
+  }
+  $("copy-cmp").addEventListener("click", function () { copy(lastCmp, "st-cmp", "fb-cmp"); });
+  $("copy-driver").addEventListener("click", function () { copy(lastDriver, "st-driver", "fb-driver"); });
+
+  var tabs = ["compare", "kit", "signup", "driver"];
+  function select(which) {
+    tabs.forEach(function (t) { $("tab-" + t).setAttribute("aria-selected", t === which); $("view-" + t).hidden = t !== which; });
+    store("feest-tab", which);
+    if (which === "kit") renderKit();
+  }
+  tabs.forEach(function (t) { $("tab-" + t).addEventListener("click", function () { select(t); }); });
+  var h = location.hash.replace("#", ""), start = tabs.indexOf(h) >= 0 ? h : (load("feest-tab") || "compare");
+  if (tabs.indexOf(start) < 0) start = "compare";
+
+  renderCompare(); renderDriver(); renderKit(); select(start);
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(renderKit);
+  window.addEventListener("load", drawQRs);
+})();
+</script>
+
+</body></html>
