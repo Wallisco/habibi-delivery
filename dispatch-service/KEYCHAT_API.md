@@ -43,6 +43,18 @@ the first name and vehicle shown to a customer tracking their order.
 
 ---
 
+## Staging
+
+Integrate against `https://habibi-staging.quikr.co.za` with your `hbk_test_…`
+key. Simulated drivers pick up every order and deliver it in about 2–3
+minutes: accepted → assigned → collected (tracking link) → code_issued →
+delivered. `dispatchNow: true` skips the ready gate (production ignores it),
+and the tracking page shows a TEST badge.
+
+Test hooks, anywhere in `externalId`: `SIMFAIL` is collected and then closed as
+failed (`delivery.failed`, actor `simulator`); `SIMSLOW` takes three times as
+long at every step.
+
 ## 1. Quote — before the customer pays
 
 `POST /v1/keychat/quote`

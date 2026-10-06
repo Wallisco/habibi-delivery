@@ -24,6 +24,7 @@
   .wrap{max-width:520px;margin:0 auto}
 
   .hero{background:var(--forest);border-radius:20px;padding:24px;color:#fff;margin-bottom:18px}
+  .testbadge{display:inline-block;background:#FFD23F;color:#3A2E00;font-weight:800;font-size:11px;letter-spacing:.08em;padding:2px 8px;border-radius:99px;margin-left:6px;vertical-align:1px}
   .hero .lbl{font-size:11px;font-weight:800;letter-spacing:.7px;color:rgba(255,255,255,.6)}
   .hero h1{font-size:26px;font-weight:800;letter-spacing:-.6px;margin:6px 0 4px}
   .hero .sub{font-size:14px;color:rgba(255,255,255,.75);line-height:1.5}
@@ -106,7 +107,7 @@ async function load() {
 
   $('#root').innerHTML = `
     <div class="hero">
-      <div class="lbl">YOUR ORDER</div>
+      <div class="lbl">YOUR ORDER${d.test ? ' <span class="testbadge">TEST</span>' : ''}</div>
       <h1>${delivered ? 'Delivered' : esc(d.label)}</h1>
       <div class="sub">${esc(d.pickup.name ?? 'Your order')} → ${esc(d.dropoff.name ?? 'your address')}</div>
       ${!delivered && d.etaMinutes ? `<div class="eta"><b>${d.etaMinutes}</b>

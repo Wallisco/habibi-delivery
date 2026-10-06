@@ -13,6 +13,7 @@
 import { registerPartnerAuth } from './auth.js';
 import { OpsUsers, registerOpsAuth } from './opsAuth.js';
 import { IdempotencyStore, idempotent } from './idempotency.js';
+import { Simulator } from './simulator.js';
 import Fastify from 'fastify';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -35,7 +36,13 @@ import { Dispatcher } from './dispatch.js';
 import { OtpService } from './otp.js';
 
 export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/dispatch.db',
-  partnerAuth = true, partnerKeys = null, opsAuth = true } = {}) {
+  partnerAuth = true, partnerKeys = null, opsAuth = true,
+  staging = process.env.DISPATCH_ENV === 'staging', simSpeed = 1 } = {}) {
+  // Staging (habibi-staging.quikr.co.za) is where Keychat integrates: simulated
+  // drivers, dispatchNow honoured, orders released within a minute, TEST badge.
+  // Production ignores dispatchNow; the ready gate decides. Local runs and
+  // tests (NODE_ENV not production) keep dispatchNow for convenience.
+  const allowDispatchNow = staging || process.env.NODE_ENV !== 'production';
   // Caddy on the same box forwards the real client address. Trusting only
   // loopback means login throttling sees each person, not one shared 127.0.0.1.
   const app = Fastify({ logger, trustProxy: process.env.TRUST_PROXY ?? '127.0.0.1' });
@@ -85,6 +92,7 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
 
   const dispatcher = new Dispatcher({
     readyGate: gate, supply, jobs,
+    maxHoldMs: staging ? 60_000 : null,
     onOffer: ({ batchId, jobs: batchJobs, driverId, expiresAt, stops, route,
                 marginal, storeCount, sameCustomer }) => {
       const margin = new Map((marginal ?? []).map((m) => [m.jobId, m.marginalKm]));
@@ -270,6 +278,7 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
     const routing = await routeJob({ pickup: b.pickup, dropoff: b.dropoff });
     // The partner does not choose our ids or tokens.
     const { id: _id, trackingToken: _t, ...input } = b;
+    if (!allowDispatchNow) delete input.dispatchNow;
     const job = jobs.create({
       ...input,
       deliverKm: routing.deliverKm,
@@ -278,6 +287,7 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
     job.distanceSource = routing.source;
     job.routing = routing;
     gate.noteOrder(job.storeId, job.createdAt);
+    sim?.onJob(job);
     emit('delivery.accepted', {
       jobId: job.id, externalId: job.externalId, quoteId: job.quoteId,
       etaMinutes: Math.round(
@@ -918,15 +928,8 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
    * delivery that could not close on its own, so they are counted per driver
    * and a rate well above their peers is a fraud signal rather than bad luck.
    */
-  app.post('/v1/ops/orders/:jobId/close', async (req, reply) => {
-    const job = jobs.get(req.params.jobId);
-    if (!job) return reply.code(404).send({ error: 'Unknown order' });
-    if (['DELIVERED', 'FAILED', 'CANCELLED'].includes(job.status)) {
-      return reply.code(409).send({ error: `Already ${job.status}` });
-    }
-    const actor = req.body?.actor ?? 'ops';
-    const reason = req.body?.reason ?? 'Closed by the back office';
-    const outcome = req.body?.outcome ?? 'DELIVERED';   // DELIVERED | FAILED | CANCELLED
+  /** Close an order by hand (back office) or from the staging simulator. */
+  function closeJob(job, { actor, reason, outcome }) {
 
     if (outcome === 'DELIVERED') {
       const waitMinutes = job.readyAt && job.collectedAt
@@ -967,6 +970,16 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
         });
       }
     }
+  }
+
+  app.post('/v1/ops/orders/:jobId/close', async (req, reply) => {
+    const job = jobs.get(req.params.jobId);
+    if (!job) return reply.code(404).send({ error: 'Unknown order' });
+    if (['DELIVERED', 'FAILED', 'CANCELLED'].includes(job.status)) {
+      return reply.code(409).send({ error: `Already ${job.status}` });
+    }
+    closeJob(job, { actor: req.body?.actor ?? 'ops', reason: req.body?.reason ?? 'Closed by the back office',
+      outcome: req.body?.outcome ?? 'DELIVERED' });   // DELIVERED | FAILED | CANCELLED
     return { ok: true, status: job.status, grade: job.proofGrade ?? null };
   });
 
@@ -1196,6 +1209,7 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
     const acct = job.driverId ? accounts.get(job.driverId) : null;
     const d = job.driverId ? supply.get(job.driverId) : null;
     return {
+      ...(staging ? { test: true } : {}),
       status: job.status,
       label: ORDER_STATES.find((s) => s.code === job.status)?.label ?? job.status,
       pickup: { name: job.pickup?.name ?? null },
@@ -1252,7 +1266,7 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
     return readFileSync(join(HERE, '..', 'public', 'track.html'), 'utf8');
   });
 
-  app.get('/health', async () => ({ ok: true, uptime: process.uptime() }));
+  app.get('/health', async () => ({ ok: true, env: staging ? 'staging' : 'production', uptime: process.uptime() }));
   app.get('/v1/ops/stats', async () => ({
     readyGate: gate.snapshot(),
     jobs: {
@@ -1269,7 +1283,9 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
     restoredOnBoot: restored,
   }));
 
-  app.decorate('engine', { opsUsers, idem, gate, supply, jobs, dispatcher, otp, outbound, pendingOffers, db, metrics, rates, keychat, accounts, messages, ledger });
+  const sim = staging ? new Simulator({ app, engine: { supply, jobs, accounts, pendingOffers }, closeJob, speed: simSpeed, log: app.log }) : null;
+
+  app.decorate('engine', { opsUsers, idem, sim, gate, supply, jobs, dispatcher, otp, outbound, pendingOffers, db, metrics, rates, keychat, accounts, messages, ledger });
   return app;
 }
 
@@ -1278,6 +1294,7 @@ if (process.argv[1]?.endsWith('server.js')) {
   const app = build({ logger: true });
   app.engine.dispatcher.start();
   app.engine.keychat.start();
+  if (app.engine.sim) { app.engine.sim.start(); app.log.warn('STAGING: simulated drivers are running'); }
 
   // Close the database cleanly so WAL is checkpointed rather than left behind.
   for (const sig of ['SIGINT', 'SIGTERM']) {

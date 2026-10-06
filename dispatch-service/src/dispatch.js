@@ -32,7 +32,10 @@ export const W = {
 };
 
 export class Dispatcher {
-  constructor({ readyGate, supply, jobs, onOffer, now = () => Date.now() }) {
+  constructor({ readyGate, supply, jobs, onOffer, now = () => Date.now(), maxHoldMs = null }) {
+    // Staging only: release every order within this long, so an integration
+    // test never waits on a 25-minute prep prior.
+    this.maxHoldMs = maxHoldMs;
     this.gate = readyGate;
     this.supply = supply;
     this.jobs = jobs;
@@ -67,6 +70,7 @@ export class Dispatcher {
   isEligible(job, nowMs = this.now()) {
     if (job.status !== 'PENDING') return false;
     if (job.dispatchNow) return true;
+    if (this.maxHoldMs != null && nowMs - job.createdAt >= this.maxHoldMs) return true;
     const ageMin = (nowMs - job.createdAt) / 60000;
     // Assume a typical nearby driver for the gate decision; the per-driver
     // travel time is applied again in the cost function.

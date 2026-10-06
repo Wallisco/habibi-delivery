@@ -163,7 +163,31 @@ deactivating them or setting a new password signs them out everywhere.
 The `/track/*` paths stay public deliberately — customers open them from
 WhatsApp without logging in.
 
-### 2.7 Automatic deploys
+### 2.7 Staging for Keychat
+
+Keychat integrates against staging, never production. Same server, its own
+database and port, and simulated drivers who deliver every order in about 2–3
+minutes through the real driver endpoints, so every webhook and the tracking
+page behave exactly as they will in production.
+
+```bash
+bash /opt/dispatch/dispatch-service/deploy/add-staging.sh habibi-staging.quikr.co.za
+```
+
+Point a DNS A record for `habibi-staging.quikr.co.za` at the server first. The
+script prints a `hbk_test_…` key once: give it to Keychat. Set Keychat's test
+webhook URL in `/opt/dispatch-staging/dispatch-service/.env`.
+
+| | Staging | Production |
+|---|---|---|
+| Drivers | simulated (`SIMFAIL`, `SIMSLOW` in `externalId`) | real |
+| `dispatchNow` | honoured | ignored |
+| Ready gate | releases within 1 minute | as predicted |
+| Tracking page | TEST badge | — |
+
+`testjobs.sh` relies on `dispatchNow`, so run it against staging.
+
+### 2.8 Automatic deploys
 
 In GitHub → **Settings → Secrets and variables → Actions**, add:
 
@@ -173,8 +197,9 @@ In GitHub → **Settings → Secrets and variables → Actions**, add:
 | `DEPLOY_USER` | `root`, or a sudo user |
 | `DEPLOY_KEY` | a private SSH key whose public half is in the server's `authorized_keys` |
 
-Now every push to `main` that touches `dispatch-service/` backs up the database,
-pulls, installs, restarts and health-checks. If the health check fails the
+Now every push to `main` that touches `dispatch-service/` deploys staging, then
+(only if staging is healthy) backs up the production database, pulls, installs,
+restarts and health-checks production. If the health check fails the
 workflow prints the last 40 log lines and goes red.
 
 ---
