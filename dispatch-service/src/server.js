@@ -12,6 +12,7 @@
 
 import { registerPartnerAuth } from './auth.js';
 import { OpsUsers, registerOpsAuth } from './opsAuth.js';
+import { IdempotencyStore, idempotent } from './idempotency.js';
 import Fastify from 'fastify';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -47,6 +48,7 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
   // route so nothing in the back office is reachable without a session.
   const opsUsers = new OpsUsers(db);
   registerOpsAuth(app, opsUsers, { enabled: opsAuth });
+  const idem = new IdempotencyStore(db);
   const gate = new ReadyGate({ bufferMin: Number(process.env.READY_BUFFER_MIN ?? 0), db });
   const supply = new SupplyRegistry(db);
   const jobs = new JobStore(db);
@@ -256,7 +258,9 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
     });
   });
 
-  app.post('/v1/keychat/jobs', async (req, reply) => {
+  // Idempotency-Key: a retried create returns the first response, not a
+  // second job (see idempotency.js). Keychat should send its order id.
+  app.post('/v1/keychat/jobs', idempotent(idem, 'jobs.create', async (req, reply) => {
     const b = req.body ?? {};
     if (!b.storeId || !b.pickup || !b.dropoff) {
       return reply.code(400).send({ error: 'storeId, pickup and dropoff required' });
@@ -285,13 +289,18 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
       dispatchAtMinutes: Number(gate.releaseOffsetMinutes(
         job.storeId, routing.collectMinutes, job.merchantPrepMinutes).toFixed(1)),
     });
-  });
+  }));
 
   // The label print event. This is the ready-gate training signal and the
   // reason we can beat the incumbents' prep estimates.
   app.post('/v1/keychat/jobs/:id/ready', async (req, reply) => {
     const job = jobs.get(req.params.id);
     if (!job) return reply.code(404).send({ error: 'Unknown job' });
+    // A POS that prints twice, or a retried call, must not count the same
+    // prep time twice in the ready gate or send a second webhook.
+    if (job.readyAt) {
+      return { ok: true, duplicate: true, prepMinutes: Number(((job.readyAt - job.createdAt) / 60000).toFixed(1)) };
+    }
     jobs.markReady(job.id);
     gate.observe(job.storeId, (job.readyAt - job.createdAt) / 60000, { source: 'print' });
     emit('delivery.merchant_ready', { jobId: job.id });
@@ -1260,7 +1269,7 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
     restoredOnBoot: restored,
   }));
 
-  app.decorate('engine', { opsUsers, gate, supply, jobs, dispatcher, otp, outbound, pendingOffers, db, metrics, rates, keychat, accounts, messages, ledger });
+  app.decorate('engine', { opsUsers, idem, gate, supply, jobs, dispatcher, otp, outbound, pendingOffers, db, metrics, rates, keychat, accounts, messages, ledger });
   return app;
 }
 

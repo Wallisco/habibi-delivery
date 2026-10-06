@@ -146,6 +146,34 @@ Response:
   "dispatchAtMinutes": 15.5 }
 ```
 
+### Retries: send an `Idempotency-Key`
+
+Send your order id as the `Idempotency-Key` header on every create:
+
+```
+POST /v1/keychat/jobs
+x-api-key: hbk_live_…
+Idempotency-Key: KC-1001
+```
+
+If the call times out, **retry with the same key and the same body**. You get
+the original response back (with `idempotent-replayed: true`), not a second
+job and a second driver.
+
+| Retry | Result |
+|---|---|
+| Same key, same body | The first response, replayed. Same `jobId`. |
+| Same key, different body | `422`. Use a new key for a new order. |
+| Same key while the first call is still running | `409` with `retry-after: 1`. |
+| No header | A new job every time (the old behaviour). |
+
+Keys are kept for 48 hours and are scoped to your API key. Only successful
+creates are stored, so a `400` can be fixed and resent under the same key.
+
+`POST /jobs/:jobId/ready` is safe to repeat without a key: a second ready for
+the same job returns `{ "ok": true, "duplicate": true }` and is not counted
+twice.
+
 ## 3. Order ready — from the POS
 
 `POST /v1/keychat/jobs/:jobId/ready`
@@ -229,8 +257,5 @@ at 10% national share — about twenty-five times the entire infrastructure bill
 
 ## Not built yet
 
-- **No authentication on inbound endpoints.** Anyone who can reach the port can
-  create jobs. This is the blocker before anything leaves a private network.
-- No idempotency keys, so a retried `POST /jobs` creates a duplicate.
 - No signature verification on inbound calls from Keychat.
 - `delivery.failed` is defined but the disposition flow behind it is not built.
