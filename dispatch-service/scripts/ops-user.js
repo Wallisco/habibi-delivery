@@ -11,6 +11,8 @@
  * Without --password a strong one is generated and printed once.
  */
 import { randomBytes } from 'node:crypto';
+import { existsSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { Db } from '../src/db.js';
 import { OpsUsers, ROLES } from '../src/opsAuth.js';
 
@@ -24,7 +26,16 @@ const usage = () => {
   process.exit(1);
 };
 
-const db = new Db(process.env.DB_PATH ?? './data/dispatch.db');
+// Trim stray whitespace and Windows line endings: a .env saved on Windows
+// gives "dispatch.db\r", which silently creates a second, empty database.
+const dbPath = String(process.env.DB_PATH ?? './data/dispatch.db').replace(/[\r\n]+$/, '').trim();
+if (!existsSync(dbPath)) {
+  console.error(`No database at ${resolve(dbPath)}. The service's database is the DB_PATH in its .env
+(usually /var/lib/dispatch/dispatch.db). Run:  DB_PATH=/var/lib/dispatch/dispatch.db node scripts/ops-user.js ...`);
+  process.exit(1);
+}
+console.log(`Database: ${resolve(dbPath)}`);
+const db = new Db(dbPath);
 const users = new OpsUsers(db);
 const generated = () => randomBytes(12).toString('base64url');
 
