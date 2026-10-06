@@ -10,23 +10,61 @@
  * R750k a month at 10% national share -- about twenty-five times the entire
  * infrastructure bill. OSRM on one instance handles thousands of routes a
  * second against South African OSM data, for the price of the instance.
+ * deploy/setup-osrm.sh builds and runs it on the server.
  *
- *   docker run -p 5000:5000 osrm/osrm-backend osrm-routed --algorithm mld /data/sa.osrm
- *   OSRM_URL=http://localhost:5000 npm start
+ *   OSRM_URL=http://127.0.0.1:5000 npm start
  *
- * WHEN OSRM IS NOT CONFIGURED
+ * WHEN OSRM IS NOT CONFIGURED OR NOT ANSWERING
  * Falls back to straight-line distance times a detour factor. That is accurate
  * enough to RANK dispatch candidates, which is all the cost function needs, but
- * it is not accurate enough to bill on. Every quote reports which was used, so
- * a reconciliation dispute can be settled by looking at `distanceSource`.
+ * it is not accurate enough to bill on. Every quote and job records which was
+ * used (`source`), the back office shows how many fell back, and the statement
+ * carries it per order, so a dispute is settled by looking at `distanceSource`.
+ *
+ * Routes are cached briefly: a quote and the job created a minute later ask
+ * for the same legs, and so do dispatch candidates at the same store.
  */
 
 import { metresBetween, DETOUR_FACTOR, URBAN_KMH } from './supply.js';
 
-const OSRM_URL = process.env.OSRM_URL ?? null;
-const TIMEOUT_MS = Number(process.env.OSRM_TIMEOUT_MS ?? 2500);
+const osrmUrl = () => (process.env.OSRM_URL ?? '').replace(/\/+$/, '') || null;
+const timeoutMs = () => Number(process.env.OSRM_TIMEOUT_MS ?? 2500);
 
-export const ROUTING_MODE = OSRM_URL ? 'osrm' : 'estimated';
+const CACHE_MAX = 5000;
+const CACHE_TTL_MS = 30 * 60 * 1000;
+const cache = new Map();   // key -> { at, value }, insertion order = LRU
+
+/** Live counters for the back office and /health. */
+const stats = { osrm: 0, fallback: 0, cacheHits: 0, lastError: null, lastErrorAt: null, lastOkAt: null };
+
+export function routingStatus() {
+  return {
+    mode: osrmUrl() ? 'osrm' : 'estimated',
+    osrmConfigured: !!osrmUrl(),
+    ...stats,
+    cacheSize: cache.size,
+  };
+}
+
+/** Test hook. */
+export function resetRouting() {
+  cache.clear();
+  Object.assign(stats, { osrm: 0, fallback: 0, cacheHits: 0, lastError: null, lastErrorAt: null, lastOkAt: null });
+}
+
+/**
+ * Accept {lat,lng} or {latitude,longitude}; return {lat,lng} numbers, or null
+ * when the point is missing or not on the planet.
+ */
+export function point(p) {
+  if (!p || typeof p !== 'object') return null;
+  const lat = Number(p.lat ?? p.latitude);
+  const lng = Number(p.lng ?? p.longitude);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+  if (lat < -90 || lat > 90 || lng < -180 || lng > 180) return null;
+  if (lat === 0 && lng === 0) return null;   // the classic "no GPS" default
+  return { lat, lng };
+}
 
 function fallback(from, to) {
   const km = (metresBetween(from, to) / 1000) * DETOUR_FACTOR;
@@ -37,33 +75,65 @@ function fallback(from, to) {
   };
 }
 
+const key = (a, b) => `${a.lat.toFixed(5)},${a.lng.toFixed(5)};${b.lat.toFixed(5)},${b.lng.toFixed(5)}`;
+
+function remember(k, value) {
+  cache.delete(k);
+  cache.set(k, { at: Date.now(), value });
+  if (cache.size > CACHE_MAX) cache.delete(cache.keys().next().value);
+}
+
 /**
  * Road distance and driving time between two points.
  * Never throws: a routing outage must degrade the price, not drop the order.
  */
-export async function route(from, to) {
+export async function route(fromIn, toIn) {
+  const from = point(fromIn), to = point(toIn);
   if (!from || !to) return { km: 0, minutes: 0, source: 'unknown' };
-  if (!OSRM_URL) return fallback(from, to);
+  const base = osrmUrl();
+  if (!base) { stats.fallback += 1; return fallback(from, to); }
+
+  const k = key(from, to);
+  const hit = cache.get(k);
+  if (hit && Date.now() - hit.at < CACHE_TTL_MS) {
+    stats.cacheHits += 1;
+    cache.delete(k); cache.set(k, hit);
+    return hit.value;
+  }
 
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), timeoutMs());
+  const fail = (why) => {
+    stats.fallback += 1; stats.lastError = why; stats.lastErrorAt = Date.now();
+    return fallback(from, to);
+  };
   try {
     const coords = `${from.lng},${from.lat};${to.lng},${to.lat}`;
-    const res = await fetch(
-      `${OSRM_URL}/route/v1/driving/${coords}?overview=false&alternatives=false`,
+    const res = await fetch(`${base}/route/v1/driving/${coords}?overview=false&alternatives=false`,
       { signal: controller.signal });
-    if (!res.ok) return fallback(from, to);
+    if (!res.ok) return fail(`OSRM answered ${res.status}`);
     const body = await res.json();
     const r = body?.routes?.[0];
-    if (!r) return fallback(from, to);
-    return {
-      km: Number((r.distance / 1000).toFixed(2)),
-      minutes: Number((r.duration / 60).toFixed(1)),
-      source: 'osrm',
-    };
-  } catch {
+    if (body?.code !== 'Ok' || !r) return fail(`OSRM: ${body?.code ?? 'no route'}`);
+
+    // OSRM snaps each point to the nearest road. A point dropped in the sea or
+    // on a farm 5 km from any road gives a confident, wrong answer. If the
+    // road route is shorter than the straight line, or absurdly longer, the
+    // snap went wrong: do not bill on it.
+    const crowKm = metresBetween(from, to) / 1000;
+    const km = r.distance / 1000;
+    const snapM = Math.max(...(body.waypoints ?? []).map((w) => Number(w.distance) || 0), 0);
+    if (km + 0.05 < crowKm * 0.95 || (crowKm > 0.3 && km > crowKm * 4 + 3) || snapM > 500) {
+      return fail(`OSRM route rejected (road ${km.toFixed(2)} km, straight ${crowKm.toFixed(2)} km, snap ${Math.round(snapM)} m)`);
+    }
+
+    const value = { km: Number(km.toFixed(2)), minutes: Number((r.duration / 60).toFixed(1)), source: 'osrm' };
+    stats.osrm += 1; stats.lastOkAt = Date.now();
+    remember(k, value);
+    return value;
+  } catch (err) {
     // Timeout, connection refused, malformed response -- all the same answer.
-    return fallback(from, to);
+    return fail(err?.name === 'AbortError' ? `OSRM timed out after ${timeoutMs()} ms` : `OSRM unreachable: ${err?.message ?? err}`);
   } finally {
     clearTimeout(timer);
   }

@@ -22,7 +22,7 @@ import { Db } from './db.js';
 import { Metrics } from './metrics.js';
 import { computeEarnings, costToServe } from './fees.js';
 import { RateBook, RATE_FIELDS, MRD_DEFAULT, DAY_NAMES } from './rates.js';
-import { routeJob, ROUTING_MODE } from './routing.js';
+import { routeJob, routingStatus, point } from './routing.js';
 import { routeStops } from './batching.js';
 import { KeychatClient, buildQuote, buildStatement } from './keychat.js';
 import { DriverAccounts, ONBOARDING, REQUIRED_DOCS, HUBS, SHIFT_SLOTS,
@@ -220,9 +220,15 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
    */
   app.post('/v1/keychat/quote', async (req, reply) => {
     const b = req.body ?? {};
-    const { storeId, zone, pickup, dropoff } = b;
-    if (!pickup || !dropoff || !storeId) {
+    const { storeId, zone } = b;
+    if (!b.pickup || !b.dropoff || !storeId) {
       return reply.code(400).send({ error: 'storeId, pickup and dropoff are required' });
+    }
+    // lat/lng or latitude/longitude, as documented; everything downstream
+    // (routing, dispatch, tracking) works in lat/lng.
+    const pickup = point(b.pickup), dropoff = point(b.dropoff);
+    if (!pickup || !dropoff) {
+      return reply.code(400).send({ error: 'pickup and dropoff need valid coordinates (lat/lng or latitude/longitude)' });
     }
 
     const routing = await routeJob({ pickup, dropoff });
@@ -273,6 +279,12 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
     if (!b.storeId || !b.pickup || !b.dropoff) {
       return reply.code(400).send({ error: 'storeId, pickup and dropoff required' });
     }
+    const pickupAt = point(b.pickup), dropoffAt = point(b.dropoff);
+    if (!pickupAt || !dropoffAt) {
+      return reply.code(400).send({ error: 'pickup and dropoff need valid coordinates (lat/lng or latitude/longitude)' });
+    }
+    b.pickup = { ...b.pickup, ...pickupAt };
+    b.dropoff = { ...b.dropoff, ...dropoffAt };
     // We route it ourselves. Keychat's ETA is for their customer; our distance
     // is what the fee is built on, and it has to be defensible in a dispute.
     const routing = await routeJob({ pickup: b.pickup, dropoff: b.dropoff });
@@ -722,7 +734,7 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
     for (const e of all) byType[e.type] = (byType[e.type] ?? 0) + 1;
 
     return {
-      routing: { mode: ROUTING_MODE, osrmConfigured: ROUTING_MODE === 'osrm' },
+      routing: routingStatus(),
       webhook: { configured: keychat.configured, queued: keychat.queue.length },
       events: db.outboundStats(),
       types: byType,
@@ -1266,7 +1278,7 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
     return readFileSync(join(HERE, '..', 'public', 'track.html'), 'utf8');
   });
 
-  app.get('/health', async () => ({ ok: true, env: staging ? 'staging' : 'production', uptime: process.uptime() }));
+  app.get('/health', async () => ({ ok: true, env: staging ? 'staging' : 'production', routing: routingStatus().mode, uptime: process.uptime() }));
   app.get('/v1/ops/stats', async () => ({
     readyGate: gate.snapshot(),
     jobs: {

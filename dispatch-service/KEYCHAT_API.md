@@ -249,19 +249,10 @@ Check both with `GET /v1/ops/integration`.
 
 ### Running OSRM
 
-```bash
-wget https://download.geofabrik.de/africa/south-africa-latest.osm.pbf
-docker run -t -v "${PWD}:/data" osrm/osrm-backend \
-  osrm-extract -p /opt/car.lua /data/south-africa-latest.osm.pbf
-docker run -t -v "${PWD}:/data" osrm/osrm-backend \
-  osrm-partition /data/south-africa-latest.osrm
-docker run -t -v "${PWD}:/data" osrm/osrm-backend \
-  osrm-customize /data/south-africa-latest.osrm
-docker run -d -p 5000:5000 -v "${PWD}:/data" osrm/osrm-backend \
-  osrm-routed --algorithm mld /data/south-africa-latest.osrm
-
-OSRM_URL=http://localhost:5000 npm start
-```
+`deploy/setup-osrm.sh` builds and runs it on the server (see DEPLOY.md, stage 4).
+Every quote and job says which distance it used in `routing.source`: `osrm`
+(road distance, billable) or `estimated` (straight line × 1.35, when OSRM is
+down or its answer fails a sanity check). The statement carries it per order.
 
 One instance handles thousands of routes a second. Routing every dispatch
 candidate through a commercial maps API instead would cost roughly R750k a month

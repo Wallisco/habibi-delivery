@@ -252,30 +252,27 @@ Without this, every quote is marked `"source": "estimated"` — straight-line
 distance times 1.35. Fine for ranking dispatch candidates, **not fine to bill
 on**.
 
-On the server:
+On the server, as root:
 
 ```bash
-apt-get install -y docker.io
-mkdir -p /opt/osrm && cd /opt/osrm
-wget https://download.geofabrik.de/africa/south-africa-latest.osm.pbf
-
-docker run -t -v "${PWD}:/data" osrm/osrm-backend \
-  osrm-extract -p /opt/car.lua /data/south-africa-latest.osm.pbf
-docker run -t -v "${PWD}:/data" osrm/osrm-backend \
-  osrm-partition /data/south-africa-latest.osrm
-docker run -t -v "${PWD}:/data" osrm/osrm-backend \
-  osrm-customize /data/south-africa-latest.osrm
-
-docker run -d --restart always -p 127.0.0.1:5000:5000 -v "${PWD}:/data" \
-  --name osrm osrm/osrm-backend osrm-routed --algorithm mld \
-  /data/south-africa-latest.osrm
+bash /opt/dispatch/dispatch-service/deploy/setup-osrm.sh
 ```
 
-The extract step needs several GB of RAM and takes 20–40 minutes. If your VPS is
-small, run those three steps on your laptop and copy the `.osrm*` files up.
+It installs Docker, downloads South Africa from Geofabrik, builds the car graph,
+checks a known Milnerton route before switching over, runs OSRM on
+`127.0.0.1:5000` only, points production and staging at it and restarts them.
+A monthly cron job rebuilds with fresh map data and only switches if the test
+route passes. The previous build is kept for rollback.
 
-Then set `OSRM_URL=http://127.0.0.1:5000` in `.env`, restart, and check the
-**Integration** tab. Routing should read `osrm`.
+The build needs roughly 6–8 GB of memory at its peak and takes 20–60 minutes;
+on a smaller server the script adds an 8 GB swap file first. Running it needs
+about 2–3 GB.
+
+Check: `/health` shows `"routing":"osrm"`, and the **Integration** tab shows how
+many routes came from OSRM and how many fell back. A route is refused (and the
+order marked `estimated`) if OSRM is down or slow, or if its answer can't be
+right: shorter than the straight line, absurdly long, or a point more than
+500 m from any road.
 
 ---
 

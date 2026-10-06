@@ -874,8 +874,10 @@ async function loadIntegration(){
   const shown = EVENT_TYPE==='ALL' ? d.recent : d.recent.filter((e)=>e.type===EVENT_TYPE);
   $('#tab-integration').innerHTML = `
     <div class="grid">
-      ${kpi('Routing', d.routing.mode, d.routing.osrmConfigured?'OSRM configured'
-        :'straight-line fallback — do not bill on this', d.routing.osrmConfigured?'':'warn')}
+      ${kpi('Routing', d.routing.mode, d.routing.osrmConfigured
+        ? `${d.routing.osrm} road routes · ${d.routing.fallback} fell back to estimates${d.routing.lastError?` · last problem: ${d.routing.lastError}`:''}`
+        : 'straight-line fallback — do not bill on this',
+        !d.routing.osrmConfigured ? 'warn' : d.routing.fallback > d.routing.osrm * 0.05 ? 'bad' : '')}
       ${kpi('Keychat webhook', d.webhook.configured?'connected':'not set',
         d.webhook.configured?d.webhook.queued+' queued':'events recorded, not delivered',
         d.webhook.configured?'':'warn')}
