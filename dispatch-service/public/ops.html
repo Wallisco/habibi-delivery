@@ -28,6 +28,8 @@
   .live{display:flex;gap:8px;align-items:center;font-size:12px;font-weight:700;
         color:var(--green);background:var(--wash);padding:7px 12px;border-radius:99px}
   .dot{width:8px;height:8px;border-radius:50%;background:var(--live)}
+  .who{font-size:12.5px;color:var(--muted)}
+  .err{color:var(--red);font-size:13px;margin-top:8px}
 
   nav{display:flex;gap:4px;border-bottom:2px solid var(--line);margin-bottom:20px;overflow-x:auto}
   nav button{background:none;border:none;border-bottom:3px solid transparent;border-radius:0;
@@ -117,6 +119,8 @@
         <option value="30">30 days</option><option value="90">90 days</option>
       </select>
       <button class="go" id="refresh">Refresh</button>
+      <span class="who" id="who"></span>
+      <button class="sm" id="signout">Sign out</button>
     </div>
   </header>
   <nav id="tabs"></nav>
@@ -127,9 +131,35 @@
   <div id="tab-messages" class="hidden"></div>
   <div id="tab-pricing" class="hidden"></div>
   <div id="tab-integration" class="hidden"></div>
+  <div id="tab-staff" class="hidden"></div>
 </div>
 
 <script>
+/*
+ * Every string from the API is HTML-escaped before the page sees it. The page
+ * builds its screens with innerHTML, and driver messages, names, notes and
+ * customer addresses come from outside, so escaping at the one door is what
+ * keeps a crafted message from running script in a signed-in session.
+ * (Error text is left alone: it is only ever shown with textContent.)
+ * A 401 means the session ended, so go back to sign-in.
+ */
+(() => {
+  const ESC = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+  const deepEsc = (v, key) => {
+    if (typeof v === 'string') return key === 'error' ? v : v.replace(/[&<>"']/g, (c) => ESC[c]);
+    if (Array.isArray(v)) return v.map((x) => deepEsc(x));
+    if (v && typeof v === 'object') { const o = {}; for (const k of Object.keys(v)) o[k] = deepEsc(v[k], k); return o; }
+    return v;
+  };
+  const raw = window.fetch.bind(window);
+  window.fetch = async (...args) => {
+    const res = await raw(...args);
+    if (res.status === 401) { location.href = '/ops/login'; return new Promise(() => {}); }
+    const json = res.json.bind(res);
+    res.json = async () => deepEsc(await json());
+    return res;
+  };
+})();
 const $ = (s) => document.querySelector(s);
 const r = (v, d = 1) => (v == null ? '–' : Number(v).toFixed(d));
 const R = (v) => (v == null ? '–' : 'R' + Number(v).toLocaleString('en-ZA', {maximumFractionDigits:0}));
@@ -586,7 +616,7 @@ async function setOnboarding(id,state){
 /* ---------------------------------------------------------------- earnings */
 async function loadEarnings(){
   const d = await (await fetch('/v1/ops/drivers?days='+days())).json();
-  const st = await (await fetch('/v1/keychat/statement?days='+days())).json();
+  const st = await (await fetch('/v1/ops/statement?days='+days())).json();
   const totalPay = d.drivers.reduce((a,v)=>a+v.earnings,0);
   $('#tab-earnings').innerHTML = `
     <div class="grid">
@@ -881,10 +911,70 @@ async function loadIntegration(){
         : empty(EVENT_TYPE==='ALL'?'No events yet.':`No ${EVENT_TYPE} events.`)}</section>`;
 }
 
+/* ------------------------------------------------------------- staff */
+
+let ME = null;
+async function loadStaff(){
+  const d = await (await fetch('/v1/ops/users')).json();
+  const roleNote = { viewer:'reads everything, changes nothing', ops:'orders, drivers, documents, messages',
+    finance:'rates, surge and the driver ledger', admin:'everything, plus staff logins' };
+  $('#tab-staff').innerHTML = `
+    <section><h2>Staff logins</h2>
+      <div class="hint">Roles: ${d.roles.map((x)=>`<b>${x}</b> ${roleNote[x]}`).join(' · ')}.
+        Changing a role, deactivating someone or setting a new password signs them out everywhere.</div>
+      ${table(['Name','Email','Role','Status','Last sign-in',''], d.users.map((u)=>[
+        u.name, u.email,
+        `<td><select data-uid="${u.id}" data-k="role">${d.roles.map((x)=>`<option ${x===u.role?'selected':''}>${x}</option>`).join('')}</select></td>`,
+        `<td><span class="tag ${u.active?'g':'r'}">${u.active?'active':'off'}</span></td>`,
+        u.lastLoginAt ? new Date(u.lastLoginAt).toLocaleString('en-ZA') : 'never',
+        `<td><button class="sm" data-act="staffSave" data-id="${u.id}">Save role</button>
+          <button class="sm" data-act="staffToggle" data-id="${u.id}" data-on="${u.active?1:0}">${u.active?'Deactivate':'Reactivate'}</button>
+          <button class="sm" data-act="staffPw" data-id="${u.id}">New password</button></td>`]))}
+      <div class="err" id="staffErr"></div>
+    </section>
+    <section><h2>Add a login</h2>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
+        <input id="nu_name" placeholder="Name" autocomplete="off">
+        <input id="nu_email" type="email" placeholder="Email" autocomplete="off">
+        <select id="nu_role">${d.roles.map((x)=>`<option ${x==='ops'?'selected':''}>${x}</option>`).join('')}</select>
+        <input id="nu_pw" type="text" placeholder="Temporary password (10+ chars)" autocomplete="off">
+        <button class="go" data-act="staffAdd">Add login</button>
+      </div>
+      <div class="hint">Give them the password in person or by phone, not in the same message as the email.</div>
+    </section>
+    <section><h2>Recent changes</h2>
+      ${d.audit.length ? table(['When','Who','What','Result'], d.audit.map((a)=>[
+        new Date(a.at).toLocaleString('en-ZA'), a.who ?? '–',
+        a.action==='request' ? `${a.method} ${a.path}` : a.action, String(a.status ?? '')])) : empty('Nothing yet.')}
+    </section>`;
+}
+async function staffCall(method, url, body){
+  const res = await fetch(url, { method, headers:{'content-type':'application/json'}, body: JSON.stringify(body) });
+  if (!res.ok) { $('#staffErr').textContent = (await res.json().catch(()=>({}))).error || 'That did not work. Try again.'; return false; }
+  loadStaff(); return true;
+}
+document.addEventListener('click', (e) => {
+  const b = e.target.closest('[data-act^="staff"]'); if (!b) return;
+  const id = b.dataset.id;
+  if (b.dataset.act === 'staffSave') staffCall('PATCH', '/v1/ops/users/'+id, { role: document.querySelector(`select[data-uid="${id}"]`).value });
+  if (b.dataset.act === 'staffToggle') staffCall('PATCH', '/v1/ops/users/'+id, { active: b.dataset.on !== '1' });
+  if (b.dataset.act === 'staffPw') {
+    const pw = Array.from(crypto.getRandomValues(new Uint8Array(9)), (x) => 'abcdefghjkmnpqrstuvwxyz23456789'[x % 31]).join('');
+    staffCall('PATCH', '/v1/ops/users/'+id, { password: pw }).then((ok) => { if (ok) $('#staffErr').textContent = 'New password: ' + pw + ' (shown once; give it to them directly).'; });
+  }
+  if (b.dataset.act === 'staffAdd') staffCall('POST', '/v1/ops/users', { name: $('#nu_name').value, email: $('#nu_email').value, role: $('#nu_role').value, password: $('#nu_pw').value });
+});
+$('#signout').onclick = async () => { await fetch('/v1/ops/logout', { method: 'POST' }); location.href = '/ops/login'; };
+
 const LOADERS={overview:loadOverview,orders:loadOrders,drivers:loadDrivers,earnings:loadEarnings,
-  messages:loadMessages,pricing:loadPricing,integration:loadIntegration};
+  messages:loadMessages,pricing:loadPricing,integration:loadIntegration,staff:loadStaff};
 $('#refresh').onclick=()=>LOADERS[active]?.();
 $('#days').onchange=()=>LOADERS[active]?.();
+fetch('/v1/ops/me').then((r)=>r.json()).then((d)=>{
+  ME = d.user; if (!ME) return;
+  $('#who').innerHTML = ME.name + ' · ' + ME.role;  // already escaped
+  if (ME.role === 'admin') { TABS.push(['staff','Staff']); renderTabs(); }
+});
 renderTabs(); loadOverview();
 setInterval(()=>{ if(['orders','messages'].includes(active)) LOADERS[active](); }, 6000);
 setInterval(()=>{ if(active==='overview') loadOverview(); }, 20000);

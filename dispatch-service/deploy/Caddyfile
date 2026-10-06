@@ -10,15 +10,8 @@ api.yourdomain.co.za {
 		reverse_proxy 127.0.0.1:3000
 	}
 
-	# Everything else, including /ops, once basic auth is configured.
-	# Generate the hash with: caddy hash-password
-	# handle {
-	#   basicauth {
-	#     ops $2a$14$REPLACE_WITH_HASH
-	#   }
-	#   reverse_proxy 127.0.0.1:3000
-	# }
-
+	# Everything else. /ops and /v1/ops/* need a staff login (the service
+	# enforces it); /v1/keychat/* needs the partner API key.
 	handle {
 		reverse_proxy 127.0.0.1:3000
 	}

@@ -210,7 +210,7 @@ test('tips are never reduced by stacking', () => {
 test('a declined offer becomes available again after the cooldown', async (t) => {
   const { build } = await import('../src/server.js');
   const { TIMEOUT_COOLDOWN_MS } = await import('../src/dispatch.js');
-  const app = build({ dbPath: ':memory:', partnerAuth: false });
+  const app = build({ dbPath: ':memory:', partnerAuth: false, opsAuth: false });
   t.after(() => app.close());
 
   const res = await app.inject({ method: 'POST', url: '/v1/driver/signin',
@@ -250,7 +250,7 @@ test('a declined offer becomes available again after the cooldown', async (t) =>
 
 test('a second order from the same kitchen prefers the driver already there', async (t) => {
   const { build } = await import('../src/server.js');
-  const app = build({ dbPath: ':memory:', partnerAuth: false });
+  const app = build({ dbPath: ':memory:', partnerAuth: false, opsAuth: false });
   t.after(() => app.close());
 
   const ids = [];

@@ -11,6 +11,7 @@
  */
 
 import { registerPartnerAuth } from './auth.js';
+import { OpsUsers, registerOpsAuth } from './opsAuth.js';
 import Fastify from 'fastify';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -33,13 +34,19 @@ import { Dispatcher } from './dispatch.js';
 import { OtpService } from './otp.js';
 
 export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/dispatch.db',
-  partnerAuth = true, partnerKeys = null } = {}) {
-  const app = Fastify({ logger });
+  partnerAuth = true, partnerKeys = null, opsAuth = true } = {}) {
+  // Caddy on the same box forwards the real client address. Trusting only
+  // loopback means login throttling sees each person, not one shared 127.0.0.1.
+  const app = Fastify({ logger, trustProxy: process.env.TRUST_PROXY ?? '127.0.0.1' });
   registerPartnerAuth(app, { enabled: partnerAuth, keys: partnerKeys });
 
   // dbPath ':memory:' gives an isolated database per instance, which is what
   // the tests want. Anything else is a file that survives a restart.
   const db = new Db(dbPath);
+  // Staff logins for /ops and every /v1/ops/* route. Registered before any
+  // route so nothing in the back office is reachable without a session.
+  const opsUsers = new OpsUsers(db);
+  registerOpsAuth(app, opsUsers, { enabled: opsAuth });
   const gate = new ReadyGate({ bufferMin: Number(process.env.READY_BUFFER_MIN ?? 0), db });
   const supply = new SupplyRegistry(db);
   const jobs = new JobStore(db);
@@ -679,6 +686,13 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
     return buildStatement(jobs.all(), { from: Date.now() - days * 86400000, to: Date.now() });
   });
 
+  // The same statement for the back office, behind staff login rather than
+  // the partner key (the page has no business holding a partner key).
+  app.get('/v1/ops/statement', async (req) => {
+    const days = Number(req.query?.days ?? 7);
+    return buildStatement(jobs.all(), { from: Date.now() - days * 86400000, to: Date.now() });
+  });
+
   app.get('/v1/ops/integration', async (req) => {
     const type = req.query?.type ?? null;
     const all = db.recentOutbound(300);
@@ -1246,7 +1260,7 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
     restoredOnBoot: restored,
   }));
 
-  app.decorate('engine', { gate, supply, jobs, dispatcher, otp, outbound, pendingOffers, db, metrics, rates, keychat, accounts, messages, ledger });
+  app.decorate('engine', { opsUsers, gate, supply, jobs, dispatcher, otp, outbound, pendingOffers, db, metrics, rates, keychat, accounts, messages, ledger });
   return app;
 }
 

@@ -147,14 +147,18 @@ https://api.yourdomain.co.za/health   →  {"ok":true,...}
 https://api.yourdomain.co.za/ops      →  the back office
 ```
 
-**Before you tell anyone that URL:** `/ops` exposes driver personal data and
-nothing authenticates it. Turn on Caddy basic auth now.
+**Before you tell anyone that URL:** create the first back-office login. `/ops`
+and every `/v1/ops/*` route need a signed-in staff member; with no logins,
+nobody gets in.
 
 ```bash
-caddy hash-password          # paste your chosen password, copy the hash
-nano /etc/caddy/Caddyfile    # uncomment the basicauth block, paste the hash
-systemctl reload caddy
+cd /opt/dispatch/dispatch-service
+sudo -u dispatch bash -c 'set -a; . ./.env; set +a; node scripts/ops-user.js add --email you@feest.co.za --name "Your Name" --role admin'
 ```
+
+It prints a password once. Sign in at `/ops/login`, then add everyone else on
+the **Staff** tab (roles: viewer, ops, finance, admin). Changing someone's role,
+deactivating them or setting a new password signs them out everywhere.
 
 The `/track/*` paths stay public deliberately — customers open them from
 WhatsApp without logging in.
@@ -187,7 +191,7 @@ Confirm:
 
 ```bash
 sudo -u dispatch sqlite3 /var/lib/dispatch/dispatch.db ".tables"
-curl -s localhost:3000/v1/ops/stats | grep -o '"persistence".*'
+curl -s localhost:3000/health   # /v1/ops/* now needs a signed-in session
 ```
 
 ### 3.2 Backups
@@ -365,14 +369,14 @@ sounds.
 ## Order of operations, if you want the short version
 
 1. Push to GitHub. **Today.**
-2. Stand up the server, turn on basic auth. **This week.**
+2. Stand up the server, create the first back-office login. **This week.**
 3. Build the preview APK, put it on a real driver's phone. **This week.**
 4. Add OSRM before you quote anyone a price you intend to bill.
 5. Store submission only once authentication exists.
 
-**Do not skip step 2's basic auth.** An unauthenticated `/ops` on a public
-domain is driver ID numbers, phone numbers and home delivery addresses exposed
-to anyone who finds the URL. That is a POPIA breach, not an inconvenience.
+**Do not skip step 2's first login.** Until it exists nobody can use `/ops`,
+which is the safe failure: an open back office would expose driver ID numbers,
+phone numbers and home delivery addresses, a POPIA breach.
 
 ---
 
