@@ -236,6 +236,25 @@ export class Db {
    * but are not reloaded into memory — otherwise the working set grows without
    * bound and every restart gets slower.
    */
+  /**
+   * Finished jobs from the last few weeks. Without these, a restart (every
+   * deploy) emptied the back office's order list, statements and driver
+   * histories even though every row was still here.
+   */
+  loadRecentFinishedJobs(sinceMs) {
+    return this.sql.prepare(`
+      SELECT payload FROM jobs
+      WHERE status IN ('DELIVERED','CANCELLED','FAILED') AND created_at >= ?
+      ORDER BY created_at
+    `).all(sinceMs).map((r) => JSON.parse(r.payload));
+  }
+
+  /** Any job by id, live or long finished. */
+  loadJob(id) {
+    const r = this.sql.prepare('SELECT payload FROM jobs WHERE id = ?').get(id);
+    return r ? JSON.parse(r.payload) : null;
+  }
+
   loadOpenJobs() {
     return this.sql.prepare(`
       SELECT payload FROM jobs

@@ -73,6 +73,9 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
   const restored = {
     drivers: supply.hydrate(db.loadDrivers()),
     jobs: jobs.hydrate(db.loadOpenJobs()),
+    // Last five weeks of finished orders: driver pay weeks, statements and
+    // the order list all need them after a restart.
+    recentFinishedJobs: jobs.hydrate(db.loadRecentFinishedJobs(Date.now() - 35 * 86400000)),
     prepSamples: 0,
   };
   restored.rateCards = rates.hydrate(db.loadRateCards());
@@ -675,6 +678,14 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
 
   /* -------------------------------------------------------- back office */
 
+  /**
+   * Every job created since `from`, from the database (which has them all),
+   * with the live in-memory copy laid over the top for anything in flight.
+   * Back-office history reads this, never memory alone: memory is only what
+   * has been loaded since the last restart.
+   */
+  const jobsSince = (from) => metrics.jobsSince(from).map((j) => jobs.get(j.id) ?? j);
+
   const since = (req) => {
     const days = Number(req.query?.days ?? 7);
     return Date.now() - days * 24 * 3600 * 1000;
@@ -714,14 +725,14 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
 
   app.get('/v1/keychat/statement', async (req) => {
     const days = Number(req.query?.days ?? 7);
-    return buildStatement(jobs.all(), { from: Date.now() - days * 86400000, to: Date.now() });
+    return buildStatement(jobsSince(Date.now() - days * 86400000), { from: Date.now() - days * 86400000, to: Date.now() });
   });
 
   // The same statement for the back office, behind staff login rather than
   // the partner key (the page has no business holding a partner key).
   app.get('/v1/ops/statement', async (req) => {
     const days = Number(req.query?.days ?? 7);
-    return buildStatement(jobs.all(), { from: Date.now() - days * 86400000, to: Date.now() });
+    return buildStatement(jobsSince(Date.now() - days * 86400000), { from: Date.now() - days * 86400000, to: Date.now() });
   });
 
   app.get('/v1/ops/integration', async (req) => {
@@ -831,7 +842,7 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
     const status = req.query?.status ?? null;
     const q = String(req.query?.q ?? '').trim().toLowerCase();
 
-    const inWindow = jobs.all().filter((j) => j.createdAt >= from);
+    const inWindow = jobsSince(from);
 
     /**
      * Match on anything an operator would have in front of them: the order
@@ -895,7 +906,8 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
   });
 
   app.get('/v1/ops/orders/:jobId', async (req, reply) => {
-    const j = jobs.get(req.params.jobId);
+    // Older orders are not in memory after a restart; read them from disk.
+    const j = jobs.get(req.params.jobId) ?? db.loadJob(req.params.jobId);
     if (!j) return reply.code(404).send({ error: 'Unknown order' });
     return {
       order: { ...j, trackingToken: isCollected(j) ? j.trackingToken : null },
