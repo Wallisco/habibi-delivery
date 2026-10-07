@@ -7,8 +7,13 @@ import { build } from '../src/server.js';
 const STORE = { lat: -33.833, lng: 18.531 };
 const HOME = { lat: -33.81, lng: 18.55 };          // ~3.1 km straight line
 
-/** A stand-in for osrm-routed. `reply` decides each answer. */
-async function fakeOsrm(t, reply) {
+/**
+ * A stand-in for osrm-routed. `reply` decides each answer.
+ * `timeoutMs` is generous by default: with every test file running in
+ * parallel, a first reply can take longer than 300 ms, and the test failed
+ * now and then for that reason alone. Only the "hangs" case needs it short.
+ */
+async function fakeOsrm(t, reply, { timeoutMs = 2000 } = {}) {
   let calls = 0;
   const srv = createServer((req, res) => {
     calls += 1;
@@ -20,7 +25,7 @@ async function fakeOsrm(t, reply) {
   await new Promise((r) => srv.listen(0, '127.0.0.1', r));
   const prev = { url: process.env.OSRM_URL, to: process.env.OSRM_TIMEOUT_MS };
   process.env.OSRM_URL = `http://127.0.0.1:${srv.address().port}`;
-  process.env.OSRM_TIMEOUT_MS = '300';
+  process.env.OSRM_TIMEOUT_MS = String(timeoutMs);
   resetRouting();
   t.after(() => {
     srv.closeAllConnections?.(); srv.close();
@@ -51,7 +56,8 @@ test('road distance from OSRM, cached for the job after the quote', async (t) =>
 });
 
 test('OSRM down, slow or wrong: fall back and say so', async (t) => {
-  await fakeOsrm(t, (url, n) => (n === 1 ? { status: 500, body: {} } : n === 2 ? 'hang' : { body: { code: 'NoRoute', routes: [] } }));
+  await fakeOsrm(t, (url, n) => (n === 1 ? { status: 500, body: {} } : n === 2 ? 'hang' : { body: { code: 'NoRoute', routes: [] } }),
+    { timeoutMs: 300 });
   for (const why of ['answered 500', 'timed out', 'NoRoute']) {
     resetRouting();
     const r = await route(STORE, { lat: HOME.lat + Math.random() / 1000, lng: HOME.lng });
