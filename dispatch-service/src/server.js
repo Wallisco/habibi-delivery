@@ -74,6 +74,8 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
   const messages = new Messages(db);
   const ledger = new Ledger(db);
   const CUSTOMER_DELIVERY_FEE = Number(process.env.CUSTOMER_DELIVERY_FEE ?? 40);
+  // A driver is carrying a job in these states. OFFERED is not theirs yet.
+  const ACTIVE = ['ASSIGNED', 'AT_STORE', 'IN_TRANSIT', 'AT_CUSTOMER'];
 
   // Restore state. Ready-gate history matters most: without it every store is
   // cold again after a restart and the gate falls back to a 25 minute prior.
@@ -93,6 +95,12 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
   for (const s of db.loadPrepSamples()) {
     gate.observe(s.storeId, s.prepMinutes, { source: s.source, persist: false });
     restored.prepSamples += 1;
+  }
+  // Drivers come back OFFLINE with no active job (db.loadDrivers). Anyone still
+  // holding an open job gets it back, so dispatch can't offer them a second
+  // run while the first is in their box.
+  for (const driverId of new Set(jobs.all().filter((j) => j.driverId && ACTIVE.includes(j.status)).map((j) => j.driverId))) {
+    refreshDriverActive(driverId);
   }
 
   // Outbound queues. In production these are webhooks to Keychat and
@@ -460,6 +468,91 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
     return 'NAVIGATE_STORE';
   }
 
+  /* ------------------------------------------ the driver's current job */
+
+  /** Every job this driver is carrying right now, oldest first. */
+  function driverRun(driverId) {
+    return jobs.all()
+      .filter((j) => j.driverId === driverId && ACTIVE.includes(j.status))
+      .sort((a, b) => a.createdAt - b.createdAt);
+  }
+
+  /**
+   * Point the driver's supply record at what they still carry. Called whenever
+   * a job leaves them, by delivery or by the office, so they are freed exactly
+   * when the box is empty and never left holding a closed job.
+   */
+  function refreshDriverActive(driverId) {
+    const d = driverId ? supply.get(driverId) : null;
+    if (!d) return;
+    const run = driverRun(driverId);
+    supply.upsert(driverId, run.length
+      ? { activeJobId: run[0].id, activeBatchId: run[0].batchId ?? null }
+      : { activeJobId: null, activeBatchId: null,
+          state: d.state === SUPPLY.ROAMING_ACTIVE ? SUPPLY.RETURNING : d.state });
+  }
+
+  const stopView = (s) => ({ kind: s.kind, name: s.name, storeId: s.storeId ?? null,
+    jobIds: s.jobIds, lat: s.at.lat, lng: s.at.lng });
+
+  /**
+   * Where the driver is in the run, counted the way the app counts: a single
+   * order is [pickup, drop-off]; a run is its stop list.
+   */
+  function runPosition(run) {
+    if (run.length === 1) return { stops: [], stopIndex: run[0].collectedAt ? 1 : 0 };
+    const stops = routeStops(run).map(stopView);
+    const byId = new Map(run.map((j) => [j.id, j]));
+    const i = stops.findIndex((s) => (s.kind === 'PICKUP'
+      ? s.jobIds.some((id) => !byId.get(id)?.collectedAt)
+      : true));
+    return { stops, stopIndex: Math.max(0, i) };
+  }
+
+  /**
+   * Why a job the app still holds is no longer this driver's.
+   *   CANCELLED   the order was cancelled
+   *   CLOSED      the office closed it (failed, or marked delivered by hand)
+   *   REASSIGNED  it went back to dispatch or to another driver
+   *   CLEARED     the office cleared it from this driver ("Clear driver's job")
+   *   DELIVERED   this driver delivered it: a normal finish, nothing to explain
+   */
+  function endedFor(jobId, driverId) {
+    const job = jobs.get(jobId) ?? db.loadJob(jobId);
+    if (!job) return { jobId, reason: 'CLOSED', at: null };
+    // The last thing that happened to this job that names this driver; older
+    // jobs without notes fall back to their last status change.
+    const history = job.history ?? [];
+    const last = [...history].reverse().find((h) => h.driverId === driverId) ?? history.at(-1) ?? {};
+    const at = last.at ?? null;
+    if (last.kind === 'CLEARED') return { jobId, reason: 'CLEARED', at };
+    if (job.status === 'DELIVERED') {
+      return { jobId, reason: last.kind === 'DRIVER' && job.driverId === driverId ? 'DELIVERED' : 'CLOSED', at };
+    }
+    if (job.status === 'CANCELLED') return { jobId, reason: 'CANCELLED', at };
+    if (job.status === 'FAILED') return { jobId, reason: 'CLOSED', at };
+    return { jobId, reason: 'REASSIGNED', at };
+  }
+
+  /**
+   * The app asks every 10 seconds and on every screen change: what am I
+   * carrying, and what happened to the jobs I think I have? This is what gets
+   * a driver out of a job the office cancelled, closed or took away.
+   */
+  app.get('/v1/driver/current', async (req) => {
+    const me = req.driverId;
+    const run = driverRun(me);
+    const held = String(req.query?.jobs ?? '').split(',').map((s) => s.trim()).filter(Boolean).slice(0, 10);
+    const carrying = new Set(run.map((j) => j.id));
+    return {
+      jobs: run.map(publicJob),
+      batchId: run[0]?.batchId ?? null,
+      ...(run.length ? runPosition(run) : { stops: [], stopIndex: 0 }),
+      stage: run[0] ? stageOf(run[0]) : null,
+      ended: held.filter((id) => !carrying.has(id)).map((id) => endedFor(id, me)),
+    };
+  });
+
   // Job history. A driver must be able to see what they are on and what they
   // have done -- for their own pay reconciliation as much as anything.
   app.get('/v1/driver/:id/jobs', async (req) => {
@@ -597,24 +690,12 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
     if (req.body?.tip != null) job.tip = Number(req.body.tip);
     job.earnings = priceJob(job, { waitMinutes });
     job.costToServe = costToServe(job.earnings);
-    jobs.setStatus(jobId, 'DELIVERED');
+    jobs.setStatus(jobId, 'DELIVERED', {}, { driverId: job.driverId, by: 'driver', kind: 'DRIVER' });
 
-    const d = supply.get(job.driverId);
-    if (d) {
-      // A run is only finished when every drop on it is done. Freeing the
-      // driver after the first would let dispatch offer them a new job while
-      // they still have food in the box.
-      const remaining = job.batchId
-        ? jobs.all().filter((j) => j.batchId === job.batchId
-            && !['DELIVERED', 'FAILED', 'CANCELLED'].includes(j.status))
-        : [];
-      supply.upsert(job.driverId, {
-        activeJobId: remaining[0]?.id ?? null,
-        activeBatchId: remaining.length ? job.batchId : null,
-        state: remaining.length ? d.state
-          : (d.state === SUPPLY.ROAMING_ACTIVE ? SUPPLY.RETURNING : d.state),
-      });
-    }
+    // A run is only finished when every drop on it is done. Freeing the
+    // driver after the first would let dispatch offer them a new job while
+    // they still have food in the box.
+    refreshDriverActive(job.driverId);
     const payoutHeld = grade === PROOF_GRADE.B || flagged;
     db.saveEvidence({
       jobId, grade, flagged, payoutHeld,
@@ -960,7 +1041,9 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
    * and a rate well above their peers is a fraud signal rather than bad luck.
    */
   /** Close an order by hand (back office) or from the staging simulator. */
-  function closeJob(job, { actor, reason, outcome }) {
+  function closeJob(job, { actor, reason, outcome, kind = 'OFFICE' }) {
+    // Kept on the history entry, so the driver's app can say why it ended.
+    const note = { driverId: job.driverId ?? null, by: actor, reason, kind };
 
     if (outcome === 'DELIVERED') {
       const waitMinutes = job.readyAt && job.collectedAt
@@ -969,7 +1052,7 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
       job.proofGrade = 'D';
       job.earnings = priceJob(job, { waitMinutes });
       job.costToServe = costToServe(job.earnings);
-      jobs.setStatus(job.id, 'DELIVERED');
+      jobs.setStatus(job.id, 'DELIVERED', {}, note);
       db.saveEvidence({ jobId: job.id, grade: 'D', flagged: false, payoutHeld: false,
         bundle: { override: true, actor, reason } });
       emit('delivery.delivered', {
@@ -987,20 +1070,31 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
     } else {
       job.failedAt = Date.now();
       job.failReason = reason;
-      jobs.setStatus(job.id, outcome);
+      jobs.setStatus(job.id, outcome, {}, note);
       emit('delivery.failed', { jobId: job.id, externalId: job.externalId, reason, actor });
     }
 
-    // Free the driver either way, or they are stuck holding a closed job.
-    if (job.driverId) {
-      const d = supply.get(job.driverId);
-      if (d?.activeJobId === job.id) {
-        supply.upsert(job.driverId, {
-          activeJobId: null,
-          state: d.state === SUPPLY.ROAMING_ACTIVE ? SUPPLY.RETURNING : d.state,
-        });
-      }
+    // Free the driver either way, or they are stuck holding a closed job. In a
+    // run they stay busy with the orders still in the box.
+    refreshDriverActive(job.driverId);
+  }
+
+  /**
+   * Take a job off its driver and put it back in the pool. The driver who had
+   * it is never offered it again: whatever went wrong, someone else should go.
+   */
+  function requeueJob(job, { actor, reason, kind }) {
+    const previous = job.driverId ?? null;
+    dispatcher.offers.delete(job.id);
+    if (previous) {
+      const seen = dispatcher.declinedBy.get(job.id) ?? new Map();
+      seen.set(previous, Infinity);
+      dispatcher.declinedBy.set(job.id, seen);
     }
+    jobs.setStatus(job.id, 'PENDING', { driverId: null, batchId: null },
+      { driverId: previous, by: actor, reason, kind });
+    refreshDriverActive(previous);
+    return previous;
   }
 
   app.post('/v1/ops/orders/:jobId/close', async (req, reply) => {
@@ -1076,20 +1170,69 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
   app.post('/v1/ops/orders/:jobId/reassign', async (req, reply) => {
     const job = jobs.get(req.params.jobId);
     if (!job) return reply.code(404).send({ error: 'Unknown order' });
-    const previous = job.driverId;
-    if (previous) {
-      const d = supply.get(previous);
-      if (d?.activeJobId === job.id) supply.upsert(previous, { activeJobId: null });
-    }
-    dispatcher.offers.delete(job.id);
-    // Do not re-offer to the driver who could not complete it.
-    if (previous) {
-      const seen = dispatcher.declinedBy.get(job.id) ?? new Set();
-      seen.add(previous);
-      dispatcher.declinedBy.set(job.id, seen);
-    }
-    jobs.setStatus(job.id, 'PENDING', { driverId: null });
+    const previous = requeueJob(job, { actor: req.body?.actor ?? 'ops',
+      reason: req.body?.reason ?? 'Reassigned by the back office', kind: 'REASSIGNED' });
     return { ok: true, status: 'PENDING', previousDriver: previous };
+  });
+
+  /* ------------------------------------------- back office: stuck drivers */
+
+  const reasonOf = (req) => String(req.body?.reason ?? '').trim();
+
+  /**
+   * Sign a driver out of the app. Every token they hold stops working, so the
+   * phone's next call (within 10 seconds) gets 401 and goes to sign-in. They
+   * go offline so no offer is sent to a phone nobody is signed in on. A job
+   * they are carrying stays theirs: clear it separately if it needs to move.
+   */
+  app.post('/v1/ops/drivers/:id/sign-out', async (req, reply) => {
+    const id = req.params.id;
+    if (!accounts.get(id)) return reply.code(404).send({ error: 'Unknown driver' });
+    const reason = reasonOf(req);
+    if (!reason) return reply.code(400).send({ error: 'Give a reason.' });
+    const revoked = driverTokens.revokeAll(id);
+    if (supply.get(id)) supply.upsert(id, { state: SUPPLY.OFFLINE });
+    for (const [jobId, offer] of [...dispatcher.offers]) {
+      if (offer.driverId === id) dispatcher.decline(jobId, id, { timedOut: true });
+    }
+    pendingOffers.delete(id);
+    accounts.addNote(id, `Signed out by the office: ${reason}`, req.body?.actor ?? 'ops');
+    return { ok: true, revoked, activeJobs: driverRun(id).map((j) => j.id) };
+  });
+
+  /**
+   * Clear a driver's job: everything they are carrying. `requeue` sends the
+   * orders back to dispatch for someone else (not once the food is collected:
+   * it is in this driver's box). `close` ends them with an outcome. Either way
+   * the driver is free, and their app returns to Home within 10 seconds.
+   */
+  app.post('/v1/ops/drivers/:id/clear-job', async (req, reply) => {
+    const id = req.params.id;
+    if (!accounts.get(id)) return reply.code(404).send({ error: 'Unknown driver' });
+    const { action } = req.body ?? {};
+    const outcome = req.body?.outcome ?? 'CANCELLED';
+    const reason = reasonOf(req);
+    if (!['requeue', 'close'].includes(action)) {
+      return reply.code(400).send({ error: 'action must be requeue or close' });
+    }
+    if (action === 'close' && !['DELIVERED', 'FAILED', 'CANCELLED'].includes(outcome)) {
+      return reply.code(400).send({ error: 'outcome must be DELIVERED, FAILED or CANCELLED' });
+    }
+    if (!reason) return reply.code(400).send({ error: 'Give a reason.' });
+    const run = driverRun(id);
+    if (!run.length) return reply.code(409).send({ error: 'This driver is not carrying a job.' });
+    const actor = req.body?.actor ?? 'ops';
+    if (action === 'requeue') {
+      const collected = run.filter(isCollected).map((j) => j.id);
+      if (collected.length) {
+        return reply.code(409).send({ error: 'The food is already collected. Close the order instead.', collected });
+      }
+      for (const j of run) requeueJob(j, { actor, reason, kind: 'CLEARED' });
+    } else {
+      for (const j of run) closeJob(j, { actor, reason, outcome, kind: 'CLEARED' });
+    }
+    refreshDriverActive(id);
+    return { ok: true, action, jobs: run.map((j) => j.id), ...(action === 'close' ? { outcome } : {}) };
   });
 
   /* ------------------------------------------- back office: vehicle ledger */
@@ -1314,7 +1457,7 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
     restoredOnBoot: restored,
   }));
 
-  const sim = staging ? new Simulator({ app, engine: { supply, jobs, accounts, pendingOffers }, closeJob, speed: simSpeed, log: app.log }) : null;
+  const sim = staging ? new Simulator({ app, engine: { supply, jobs, accounts, pendingOffers, driverTokens }, closeJob, speed: simSpeed, log: app.log }) : null;
 
   app.decorate('engine', { opsUsers, driverTokens, idem, sim, gate, supply, jobs, dispatcher, otp, outbound, pendingOffers, db, metrics, rates, keychat, accounts, messages, ledger });
   return app;

@@ -141,10 +141,15 @@ export class JobStore {
   pending() { return this.all().filter((j) => j.status === 'PENDING'); }
   pendingInZone(zone) { return this.pending().filter((j) => j.zone === zone); }
 
-  setStatus(id, status, patch = {}) {
+  /**
+   * @param note  optional, kept on the history entry: { driverId, by, reason, kind }.
+   *              This is how a driver's app learns why a job left them
+   *              (cancelled, closed, reassigned, cleared by the office).
+   */
+  setStatus(id, status, patch = {}, note = null) {
     const j = this.byId.get(id);
     if (!j) return null;
-    j.history.push({ at: Date.now(), from: j.status, to: status });
+    j.history.push({ at: Date.now(), from: j.status, to: status, ...(note ?? {}) });
     Object.assign(j, patch, { status });
     this.db?.saveJob(j);
     return j;
