@@ -70,6 +70,64 @@ const button = (r, label) => r.root.findAll((n) => n.props.accessibilityRole ===
   && n.findAll((c) => c.props.children === label).length > 0)[0];
 const collectButton = (r) => button(r, 'I have all 2 bags');
 
+async function renderAtStore(app) {
+  global.__photoApp = app;
+  const RunScreen = require('../src/screens/RunScreen').default;
+  let r;
+  await act(async () => { r = create(<RunScreen navigation={{ navigate() {}, addListener: () => () => {}, setOptions() {} }} />); });
+  return r;
+}
+const advance = async (ms) => { await act(async () => { jest.advanceTimersByTime(ms); }); await act(async () => {}); };
+
+test('photo check trial: the driver sees "Checking", then what was not seen, and can still collect', async () => {
+  jest.useFakeTimers();
+  const answers = [
+    { checks: { J1: { status: 'pending', missing: [] } } },
+    { checks: { J1: { status: 'missing', missing: [{ name: 'Sprite', qty: 1 }], note: null } } },
+  ];
+  const photoCheck = jest.fn(async () => answers.shift() ?? answers[answers.length - 1]);
+  const app = appAtStore(jest.fn(async () => 'file:///order.jpg'));
+  app.jobs = [{ ...job, photoCheck: true }];
+  app.api = { collect: jest.fn(), photoCheck };
+  const r = await renderAtStore(app);
+  const text = () => JSON.stringify(r.toJSON());
+
+  await act(async () => { await button(r, 'Take a photo of the order').props.onPress(); });
+  expect(text()).toContain('Checking your photo…');
+  await advance(2000);
+  expect(text()).toContain('Checking your photo…');
+  await advance(2000);
+  expect(text()).toContain('Not seen in your photo: 1 × Sprite. Check before you leave.');
+  expect(photoCheck).toHaveBeenCalledWith(['J1']);
+  expect(collectButton(r).props.accessibilityState.disabled).toBe(false);   // never blocks
+  act(() => r.unmount());
+  jest.useRealTimers();
+});
+
+test("photo check trial: a match says so; a store that isn't in the trial never asks", async () => {
+  jest.useFakeTimers();
+  const photoCheck = jest.fn(async () => ({ checks: { J1: { status: 'complete', missing: [] } } }));
+  const on = appAtStore(jest.fn(async () => 'file:///order.jpg'));
+  on.jobs = [{ ...job, photoCheck: true }];
+  on.api = { collect: jest.fn(), photoCheck };
+  let r = await renderAtStore(on);
+  await act(async () => { await button(r, 'Take a photo of the order').props.onPress(); });
+  await advance(2000);
+  expect(JSON.stringify(r.toJSON())).toContain('Photo matches the order.');
+  act(() => r.unmount());
+
+  const asked = jest.fn();
+  const off = appAtStore(jest.fn(async () => 'file:///order.jpg'));
+  off.api = { collect: jest.fn(), photoCheck: asked };
+  r = await renderAtStore(off);
+  await act(async () => { await button(r, 'Take a photo of the order').props.onPress(); });
+  await advance(10000);
+  expect(asked).not.toHaveBeenCalled();
+  expect(JSON.stringify(r.toJSON())).not.toContain('Checking your photo');
+  act(() => r.unmount());
+  jest.useRealTimers();
+});
+
 test('at the store, "I have all the bags" stays locked until the photo is taken', async () => {
   jest.useFakeTimers();
   const take = jest.fn(async () => 'file:///order.jpg');

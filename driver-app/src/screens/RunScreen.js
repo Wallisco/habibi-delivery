@@ -8,6 +8,10 @@ import { metresBetween, insideGeofence } from '../lib/proof';
 import { C, T, R, SP, S, Z } from '../theme';
 import { stepOf, STEP } from '../lib/currentJob';
 
+/** Waiting for the photo check: every 2 s, for up to 30 s (upload included). */
+const PHOTO_CHECK_POLL_MS = 2000;
+const PHOTO_CHECK_TRIES = 15;
+
 /** "3 × Pizza Margherita" / "1 × Coke 500ml" (same as dispatch-service/src/items.js). */
 const itemLine = (it) => `${it.qty} × ${it.name}${it.size ? ` ${it.size}` : ''}`;
 
@@ -90,6 +94,39 @@ export default function RunScreen({ navigation }) {
     const uri = await takeCollectionPhoto?.(stopJobs.map((j) => j.id));
     if (uri) setPhoto(uri);
   };
+
+  // Stores in the photo-check trial: dispatch compares the photo with the
+  // order and the result appears here within seconds. It only ever warns.
+  const [check, setCheck] = useState(null);   // { status, missing }
+  const wantsCheck = stopJobs.some((j) => j.photoCheck);
+  const checkIds = stopJobs.map((j) => j.id).join(',');
+  useEffect(() => {
+    setCheck(null);
+    if (!photo || !wantsCheck || !api?.photoCheck) return undefined;
+    setCheck({ status: 'pending' });
+    let tries = 0;
+    const t = setInterval(async () => {
+      tries += 1;
+      try {
+        const res = await api.photoCheck(checkIds.split(','));
+        const results = Object.values(res?.checks ?? {}).filter(Boolean);
+        if (results.length && results.every((c) => c.status !== 'pending')) {
+          clearInterval(t);
+          const missing = results.flatMap((c) => c.missing ?? []);
+          if (results.some((c) => c.status === 'missing')) setCheck({ status: 'missing', missing });
+          else if (results.every((c) => c.status === 'complete')) setCheck({ status: 'complete' });
+          else if (results.every((c) => c.status === 'not_configured')) setCheck(null);
+          else setCheck({ status: 'unclear' });
+          return;
+        }
+      } catch { /* no signal yet: keep trying */ }
+      if (tries >= PHOTO_CHECK_TRIES) {
+        clearInterval(t);
+        setCheck((c) => (c?.status === 'pending' ? { status: 'unclear' } : c));
+      }
+    }, PHOTO_CHECK_POLL_MS);
+    return () => clearInterval(t);
+  }, [photo, wantsCheck, checkIds]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!jobs?.length) {
     return (
@@ -281,9 +318,21 @@ export default function RunScreen({ navigation }) {
               </Pressable>
             </View>
           ) : (
-            <Button title="Take a photo of the order" kind="ghost" onPress={snap}
-              style={{ marginTop: SP.sm }} />
+            <>
+              <Button title="Take a photo of the order" kind="ghost" onPress={snap}
+                style={{ marginTop: SP.sm }} />
+              <Text style={st.hint}>Photograph the items, not the receipt.</Text>
+            </>
           )}
+          {check ? (
+            <Text style={[st.check, st[`check_${check.status}`]]} numberOfLines={2}>
+              {check.status === 'pending' ? 'Checking your photo…'
+                : check.status === 'complete' ? 'Photo matches the order.'
+                : check.status === 'missing'
+                  ? `Not seen in your photo: ${check.missing.map((m) => `${m.qty} × ${m.name}`).join(', ')}. Check before you leave.`
+                  : "Couldn't check the photo."}
+            </Text>
+          ) : null}
           <Button title={`I have all ${totalBags} bag${totalBags === 1 ? '' : 's'}`}
             kind="live" onPress={collectAll} loading={busy} disabled={!inRange || !photo}
             style={{ marginTop: SP.sm }} />
@@ -358,6 +407,11 @@ const st = StyleSheet.create({
   action: { marginTop: SP.sm },
   fill: { flex: 1 },
   photoRow: { flexDirection: 'row', alignItems: 'center', gap: SP.sm, marginTop: SP.sm },
+  check: { ...T.small, fontWeight: '700', marginTop: SP.xs },
+  check_pending: { color: C.muted, fontWeight: '600' },
+  check_complete: { color: C.green },
+  check_missing: { color: C.amber },
+  check_unclear: { color: C.muted, fontWeight: '600' },
   thumb: { width: Z.tap, height: Z.tap, borderRadius: R.sm, backgroundColor: C.wash },
   retake: { minHeight: Z.tap, paddingHorizontal: SP.md, justifyContent: 'center' },
   order: { marginTop: SP.xs },

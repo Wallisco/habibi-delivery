@@ -202,6 +202,9 @@ export function createApi(token, driverId, { onUnauthorized } = {}) {
     sendMessage: (body, jobId) => call(`/v1/driver/${driverId}/messages`,
       { method: 'POST', body: JSON.stringify({ body, jobId }) }),
     markMessagesRead: () => call(`/v1/driver/${driverId}/messages/read`, { method: 'POST' }),
+    // Did the photo match the order? (stores in the photo-check trial)
+    photoCheck: (jobIds) =>
+      call(`/v1/driver/photo-check?jobs=${encodeURIComponent(jobIds.join(','))}`),
     // The photo of the order at collection: raw JPEG from the camera's file.
     // A slow connection gets longer than the usual 8 s.
     uploadCollectionPhoto: async (uri, jobIds) => {
