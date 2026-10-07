@@ -16,6 +16,8 @@ import { DriverTokens, registerDriverAuth } from './driverAuth.js';
 import { markStaging } from './stagingBanner.js';
 import { parseItems } from './items.js';
 import { PhotoStore, isJpeg, MAX_PHOTO_BYTES } from './photos.js';
+import { createPhotoChecker, checkCost } from './photoCheck.js';
+import { StoreSettings } from './stores.js';
 import { tmpdir } from 'node:os';
 import { randomBytes } from 'node:crypto';
 import { IdempotencyStore, idempotent } from './idempotency.js';
@@ -44,6 +46,7 @@ import { OtpService } from './otp.js';
 export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/dispatch.db',
   partnerAuth = true, partnerKeys = null, opsAuth = true, driverAuth = true, driverLegacyTokens,
   photoDir = process.env.PHOTO_DIR, photoRetentionDays = Number(process.env.PHOTO_RETENTION_DAYS ?? 30),
+  photoChecker = null,
   staging = process.env.DISPATCH_ENV === 'staging', simSpeed = 1 } = {}) {
   // Staging (habibi-staging.quikr.co.za) is where Keychat integrates: simulated
   // drivers, dispatchNow honoured, orders released within a minute, TEST badge.
@@ -77,6 +80,11 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
       : join(dirname(dbPath), 'photos')),
     retentionDays: photoRetentionDays,
   });
+  // Per-store switches, and the AI check of the collection photo (a trial,
+  // off for every store until the office switches it on).
+  const stores = new StoreSettings(db);
+  const checker = photoChecker ?? createPhotoChecker({ log: app.log });
+  const checksRunning = new Set();
   // The app uploads the photo as raw JPEG bytes, up to 3 MB.
   app.addContentTypeParser('image/jpeg', { parseAs: 'buffer', bodyLimit: MAX_PHOTO_BYTES },
     (req, body, done) => done(null, body));
@@ -216,6 +224,8 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
       bagCount: j.bagCount, itemCount: j.itemCount, fee: j.fee,
       // What is in the order, for the driver's checklist at the store.
       items: j.items ?? null,
+      // Whether this store checks the collection photo against the items.
+      photoCheck: Boolean(j.items?.length) && stores.photoCheck(j.storeId),
       deliveryMode: j.deliveryMode, proofPolicy: j.proofPolicy,
       distanceKm: j.distanceKm,
       distanceSource: j.distanceSource ?? 'estimated',
@@ -597,7 +607,33 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
     const file = photos.save(req.body);
     const photo = { file, at: Date.now(), bytes: req.body.length, driverId: req.driverId };
     for (const j of list) jobs.update(j.id, { collectionPhoto: photo });
+    // Stores in the trial: check the photo against each order's items, in the
+    // background so the upload answers at once. The app asks for the result.
+    const jpeg = req.body;
+    for (const j of list.filter((x) => x.items?.length && stores.photoCheck(x.storeId))) {
+      jobs.update(j.id, { photoCheck: { status: 'pending', at: Date.now() } });
+      const run = checker.check({ jpeg, items: j.items, bagCount: j.bagCount })
+        .then((result) => { jobs.update(j.id, { photoCheck: result }); })
+        .catch((err) => { app.log.warn({ err: err?.message }, 'photo check crashed'); })
+        .finally(() => checksRunning.delete(run));
+      checksRunning.add(run);
+    }
     return { ok: true, jobs: ids, bytes: photo.bytes };
+  });
+
+  /** The photo check for orders this driver is carrying (or has just finished). */
+  app.get('/v1/driver/photo-check', async (req, reply) => {
+    const ids = String(req.query?.jobs ?? '').split(',').map((s) => s.trim()).filter(Boolean).slice(0, 3);
+    const out = {};
+    for (const id of ids) {
+      const j = jobs.get(id);
+      if (!j) continue;
+      if (j.driverId !== req.driverId) return reply.code(403).send({ error: 'That order is not yours.' });
+      const c = j.photoCheck;
+      // What the driver needs: the verdict and what was not seen. Not tokens.
+      out[id] = c ? { status: c.status, missing: c.missing ?? [], note: c.note ?? null } : null;
+    }
+    return { checks: out };
   });
 
   /**
@@ -1276,6 +1312,78 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
     return reply.type('image/jpeg').send(bytes);
   });
 
+  /** For the trial: was the photo check right about this order? */
+  app.post('/v1/ops/orders/:jobId/photo-check/review', async (req, reply) => {
+    const job = jobs.get(req.params.jobId);
+    if (!job?.photoCheck || ['pending', 'not_configured'].includes(job.photoCheck.status)) {
+      return reply.code(409).send({ error: 'This order has no photo check to review.' });
+    }
+    if (typeof req.body?.correct !== 'boolean') return reply.code(400).send({ error: 'Say whether the check was right: { correct: true | false }' });
+    jobs.update(job.id, { photoCheck: { ...job.photoCheck,
+      review: { correct: req.body.correct, by: req.body.actor ?? 'ops', at: Date.now() } } });
+    return { ok: true };
+  });
+
+  /* ------------------------------------------------ back office: stores */
+
+  /** Photo checks in a window, as the trial report counts them. */
+  function photoCheckStats(sinceMs, storeId = null) {
+    const list = jobs.all().filter((j) => j.photoCheck?.at >= sinceMs
+      && !['pending', 'not_configured'].includes(j.photoCheck.status)
+      && (!storeId || j.storeId === storeId));
+    const by = (s) => list.filter((j) => j.photoCheck.status === s).length;
+    const reviewed = list.filter((j) => j.photoCheck.review);
+    const right = reviewed.filter((j) => j.photoCheck.review.correct).length;
+    const timed = list.filter((j) => j.photoCheck.ms != null);
+    const cost = list.reduce((a, j) => a + checkCost(j.photoCheck.usage), 0);
+    return {
+      checks: list.length,
+      complete: by('complete'), missing: by('missing'), unclear: by('unclear'), errors: by('error'),
+      reviewed: reviewed.length, right,
+      accuracy: reviewed.length ? Number((right / reviewed.length).toFixed(3)) : null,
+      avgSeconds: timed.length ? Number((timed.reduce((a, j) => a + j.photoCheck.ms, 0) / timed.length / 1000).toFixed(1)) : null,
+      costUsd: Number(cost.toFixed(4)),
+      costPerCheckUsd: list.length ? Number((cost / list.length).toFixed(4)) : null,
+      inputTokens: list.reduce((a, j) => a + (j.photoCheck.usage?.input ?? 0), 0),
+      outputTokens: list.reduce((a, j) => a + (j.photoCheck.usage?.output ?? 0), 0),
+    };
+  }
+  const windowStart = (req, defDays) => Date.now() - Math.min(90, Math.max(1, Number(req.query?.days ?? defDays))) * 86400000;
+
+  /** Every store seen in orders lately, with its switches and trial numbers. */
+  app.get('/v1/ops/stores', async (req) => {
+    const settings = stores.all();
+    const since = windowStart(req, 30);
+    const seen = new Set([...metrics.merchants(since).map((m) => m.storeId), ...settings.keys()]);
+    for (const j of jobs.all()) if (j.storeId && j.createdAt >= since) seen.add(j.storeId);
+    return {
+      checkConfigured: checker.configured,
+      stores: [...seen].filter(Boolean).sort().map((storeId) => ({
+        storeId,
+        photoCheck: settings.get(storeId)?.photoCheck ?? false,
+        updatedBy: settings.get(storeId)?.updatedBy ?? null,
+        photoChecks: photoCheckStats(since, storeId),
+      })),
+    };
+  });
+
+  app.put('/v1/ops/stores/:storeId', async (req, reply) => {
+    if (typeof req.body?.photoCheck !== 'boolean') return reply.code(400).send({ error: 'Send { photoCheck: true | false }' });
+    stores.setPhotoCheck(req.params.storeId, req.body.photoCheck, req.body.actor ?? 'ops');
+    return { ok: true, storeId: req.params.storeId, photoCheck: req.body.photoCheck };
+  });
+
+  /** The photo-check trial: accuracy, speed and cost, overall and per store. */
+  app.get('/v1/ops/photo-checks', async (req) => {
+    const since = windowStart(req, 14);
+    const storeIds = [...new Set(jobs.all().filter((j) => j.photoCheck?.at >= since).map((j) => j.storeId))].sort();
+    return {
+      configured: checker.configured,
+      overall: photoCheckStats(since),
+      stores: storeIds.map((storeId) => ({ storeId, ...photoCheckStats(since, storeId) })),
+    };
+  });
+
   /** Delete photos past their retention, and say so on the order. */
   function sweepPhotos() {
     const removed = new Set(photos.sweep());
@@ -1586,7 +1694,8 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
   // A next job handed back goes to the pool; on staging a simulated driver comes for it.
   dispatcher.onHandBack = (job) => sim?.onJob(job);
 
-  app.decorate('engine', { opsUsers, driverTokens, photos, sweepPhotos, idem, sim, gate, supply, jobs, dispatcher, otp, outbound, pendingOffers, db, metrics, rates, keychat, accounts, messages, ledger });
+  app.decorate('engine', { opsUsers, driverTokens, photos, sweepPhotos, stores, checker,
+    photoChecksDone: () => Promise.all([...checksRunning]), idem, sim, gate, supply, jobs, dispatcher, otp, outbound, pendingOffers, db, metrics, rates, keychat, accounts, messages, ledger });
   return app;
 }
 

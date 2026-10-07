@@ -129,6 +129,7 @@
   <div id="tab-drivers" class="hidden"></div>
   <div id="tab-earnings" class="hidden"></div>
   <div id="tab-messages" class="hidden"></div>
+  <div id="tab-stores" class="hidden"></div>
   <div id="tab-pricing" class="hidden"></div>
   <div id="tab-integration" class="hidden"></div>
   <div id="tab-staff" class="hidden"></div>
@@ -231,6 +232,8 @@ document.addEventListener('click', (e) => {
   if (action === 'orderClear')  { ORDER_SEARCH = ''; loadOrders(); }
   if (action === 'eventType')   { EVENT_TYPE = state; loadIntegration(); }
   if (action === 'openLedger')  openLedger(id);
+  if (action === 'photoCheckSwitch') setPhotoCheck(id, state === 'on');
+  if (action === 'photoCheckReview') reviewPhotoCheck(id, state === 'right');
 });
 
 // Enter in the search box should search, not reload the page.
@@ -297,7 +300,7 @@ async function reassignJob(jobId) {
 }
 
 const TABS = [['overview','Overview'],['orders','Orders'],['drivers','Drivers'],
-  ['earnings','Earnings'],['messages','Messages'],['pricing','Pricing'],['integration','Integration']];
+  ['earnings','Earnings'],['messages','Messages'],['stores','Stores'],['pricing','Pricing'],['integration','Integration']];
 let active='overview', unreadCount=0;
 
 function renderTabs(){
@@ -473,6 +476,22 @@ async function openOrder(jobId){
               : o.collectedAt
                 ? '<div style="color:var(--red)">No collection photo</div>'
                 : '<div style="color:var(--muted)">Taken when the driver collects</div>'}</div>
+        ${o.photoCheck ? `<div><div style="font-size:10.5px;font-weight:800;color:var(--muted)">PHOTO CHECK</div>
+          ${{ pending: '<div style="color:var(--muted)">Checking…</div>',
+               complete: '<div><span class="tag g">Matches the order</span></div>',
+               missing: '<div><span class="tag r">Something missing</span></div>',
+               unclear: '<div><span class="tag a">Could not tell</span></div>',
+               error: '<div><span class="tag n">Check failed</span></div>',
+               not_configured: '<div><span class="tag n">Not configured</span></div>' }[o.photoCheck.status] ?? ''}
+          ${o.photoCheck.missing?.length ? '<div style="font-size:12.5px">Not seen: ' + o.photoCheck.missing.map((m) => m.qty + ' × ' + m.name).join(', ') + '</div>' : ''}
+          ${o.photoCheck.note ? '<div style="font-size:11.5px;color:var(--muted)">' + o.photoCheck.note + '</div>' : ''}
+          ${o.photoCheck.ms != null ? '<div style="font-size:11px;color:var(--muted)">' + (o.photoCheck.ms / 1000).toFixed(1) + ' s · ' + (o.photoCheck.model ?? '') + '</div>' : ''}
+          ${['complete','missing','unclear'].includes(o.photoCheck.status) ? (o.photoCheck.review
+            ? '<div style="font-size:12px">Reviewed: ' + (o.photoCheck.review.correct ? 'right' : 'wrong') + '</div>'
+            : `<div style="display:flex;gap:6px;margin-top:4px">
+                 <button class="sm" data-act="photoCheckReview" data-id="${o.id}" data-state="right">Check was right</button>
+                 <button class="sm" data-act="photoCheckReview" data-id="${o.id}" data-state="wrong">Check was wrong</button></div>`) : ''}
+          </div>` : ''}
       </div>
       ${!o.collectedAt && !['DELIVERED','FAILED','CANCELLED'].includes(o.status) ? `
         <div class="hint" style="margin-bottom:12px">The customer tracking link is released when the driver collects the order.</div>` : ''}
@@ -814,6 +833,43 @@ async function sendQuick(driverId,body){
   await post(`/v1/ops/messages/${driverId}`,{body,actor:'ops'}); openThread(driverId);
 }
 
+/* ------------------------------------------------------------------ stores */
+// Per-store switches. Today: the AI check of the collection photo (a trial).
+async function loadStores(){
+  const d = await (await fetch('/v1/ops/stores?days='+days())).json();
+  const pct = (v) => v == null ? '–' : Math.round(v * 100) + '%';
+  const usd = (v) => 'US$' + v.toFixed(v < 1 ? 3 : 2);
+  $('#tab-stores').innerHTML = `
+    <section><h2>Stores</h2>
+      <div class="hint">Photo check: when the driver photographs an order at collection, Claude compares the
+        photo with the item list and warns the driver if something is not in it. It never stops a collection.
+        A trial: switch it on per store, then mark each check right or wrong on the order.</div>
+      ${d.checkConfigured ? '' : '<div class="hint" style="color:var(--red)">No ANTHROPIC_API_KEY on this server: checks report "not configured".</div>'}
+      ${d.stores.length ? table(['Store','Photo check','Checks','Missing','Unclear','Reviewed','Right','Avg time','Cost',''],
+        d.stores.map((x) => {
+          const p = x.photoChecks;
+          return [`<span class="mono">${x.storeId}</span>`,
+            `<span class="tag ${x.photoCheck?'g':'n'}">${x.photoCheck?'On':'Off'}</span>`,
+            num(p.checks), num(p.missing), num(p.unclear), num(p.reviewed), num(pct(p.accuracy)),
+            num(p.avgSeconds != null ? p.avgSeconds + ' s' : '–'),
+            num(p.checks ? usd(p.costUsd) + ' (' + usd(p.costPerCheckUsd) + ' each)' : '–'),
+            `<td><button class="sm ${x.photoCheck?'':'go'}" data-act="photoCheckSwitch" data-id="${x.storeId}"
+              data-state="${x.photoCheck?'off':'on'}">${x.photoCheck?'Switch off':'Switch on'}</button></td>`];
+        })) : empty('No stores with orders in this period yet.')}
+    </section>`;
+}
+async function setPhotoCheck(storeId, on){
+  const res = await fetch('/v1/ops/stores/' + encodeURIComponent(storeId), { method: 'PUT',
+    headers: { 'content-type': 'application/json' }, body: JSON.stringify({ photoCheck: on }) });
+  if (!res.ok) { alert((await res.json()).error ?? 'Could not change the store.'); return; }
+  loadStores();
+}
+async function reviewPhotoCheck(jobId, correct){
+  const res = await post('/v1/ops/orders/' + jobId + '/photo-check/review', { correct });
+  if (!res.ok) { alert((await res.json()).error ?? 'Could not save the review.'); return; }
+  openOrder(jobId);
+}
+
 /* ----------------------------------------------------------------- pricing */
 let RATES=null,SURGE=null;
 async function loadPricing(){
@@ -992,7 +1048,7 @@ document.addEventListener('click', (e) => {
 $('#signout').onclick = async () => { await fetch('/v1/ops/logout', { method: 'POST' }); location.href = '/ops/login'; };
 
 const LOADERS={overview:loadOverview,orders:loadOrders,drivers:loadDrivers,earnings:loadEarnings,
-  messages:loadMessages,pricing:loadPricing,integration:loadIntegration,staff:loadStaff};
+  messages:loadMessages,stores:loadStores,pricing:loadPricing,integration:loadIntegration,staff:loadStaff};
 $('#refresh').onclick=()=>LOADERS[active]?.();
 $('#days').onchange=()=>LOADERS[active]?.();
 fetch('/v1/ops/me').then((r)=>r.json()).then((d)=>{

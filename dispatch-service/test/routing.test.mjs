@@ -57,7 +57,7 @@ test('road distance from OSRM, cached for the job after the quote', async (t) =>
 
 test('OSRM down, slow or wrong: fall back and say so', async (t) => {
   await fakeOsrm(t, (url, n) => (n === 1 ? { status: 500, body: {} } : n === 2 ? 'hang' : { body: { code: 'NoRoute', routes: [] } }),
-    { timeoutMs: 300 });
+    { timeoutMs: 1000 });   // short enough for the hang, long enough under parallel load
   for (const why of ['answered 500', 'timed out', 'NoRoute']) {
     resetRouting();
     const r = await route(STORE, { lat: HOME.lat + Math.random() / 1000, lng: HOME.lng });
