@@ -29,14 +29,6 @@
         color:var(--green);background:var(--wash);padding:7px 12px;border-radius:99px}
   .dot{width:8px;height:8px;border-radius:50%;background:var(--live)}
   .who{font-size:12.5px;color:var(--muted)}
-  .items{background:var(--white);border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin-bottom:14px;max-width:520px}
-  .itbl{width:100%;border-collapse:collapse;font-size:13px}
-  .itbl td{padding:5px 4px;border-top:1px solid var(--line);vertical-align:top}
-  .itbl tr:first-child td{border-top:0}
-  .itbl td.q{width:38px;font-weight:800;color:var(--green)}
-  .itbl td.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
-  .itbl tfoot td{font-weight:800;border-top:2px solid var(--line)}
-  .itbl .nt{font-size:11.5px;color:var(--muted)}
   .err{color:var(--red);font-size:13px;margin-top:8px}
 
   nav{display:flex;gap:4px;border-bottom:2px solid var(--line);margin-bottom:20px;overflow-x:auto}
@@ -466,15 +458,6 @@ async function openOrder(jobId){
             href="https://www.google.com/maps/search/?api=1&query=${o.dropoff.lat},${o.dropoff.lng}">
             ${o.dropoff.lat.toFixed(5)}, ${o.dropoff.lng.toFixed(5)} ↗</a></div>` : ''}</div>
       </div>
-      ${o.items?.length ? `<div class="items">
-        <div style="font-size:10.5px;font-weight:800;color:var(--muted);margin-bottom:6px">
-          IN THE BAG · ${o.itemCount} item${o.itemCount===1?'':'s'}${o.bagCount>1?` in ${o.bagCount} bags`:''}</div>
-        <table class="itbl"><tbody>${o.items.map((it)=>`<tr>
-          <td class="q">${it.qty}×</td>
-          <td>${it.name}${it.notes?`<div class="nt">${it.notes}</div>`:''}</td>
-          <td class="num">${it.unitPrice!=null?R2(it.qty*it.unitPrice):''}</td></tr>`).join('')}
-        </tbody>${o.orderValue!=null?`<tfoot><tr><td></td><td>Order value</td><td class="num">${R2(o.orderValue)}</td></tr></tfoot>`:''}</table>
-      </div>` : `<div class="hint" style="margin-bottom:12px">No order lines were sent with this order.</div>`}
       ${!o.collectedAt && !['DELIVERED','FAILED','CANCELLED'].includes(o.status) ? `
         <div class="hint" style="margin-bottom:12px">The customer tracking link is released when the driver collects the order.</div>` : ''}
       ${o.collectedAt && !['DELIVERED','FAILED','CANCELLED'].includes(o.status) ? `

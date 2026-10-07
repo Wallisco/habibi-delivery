@@ -41,34 +41,6 @@ export function sensibleTimestamp(v) {
   return n;
 }
 
-/**
- * Order lines from Keychat: what is in the bag. The driver checks the bag
- * against these at the counter; the back office shows them with prices.
- *   [{ name, qty, unitPrice?, notes? }]
- * Bad lines are dropped, not fatal: a typo in one line must not lose the order.
- */
-export const MAX_ITEMS = 60;
-export function normaliseItems(raw) {
-  if (!Array.isArray(raw)) return [];
-  return raw.slice(0, MAX_ITEMS).map((it) => {
-    const name = String(it?.name ?? '').replace(/\s+/g, ' ').trim().slice(0, 80);
-    const qty = Math.floor(Number(it?.qty ?? it?.quantity ?? 1));
-    const price = it?.unitPrice ?? it?.price;
-    const unitPrice = price === undefined || price === null || price === '' ? null : Number(price);
-    return {
-      name, qty,
-      unitPrice: Number.isFinite(unitPrice) && unitPrice >= 0 ? Number(unitPrice.toFixed(2)) : null,
-      notes: it?.notes ? String(it.notes).trim().slice(0, 120) : null,
-    };
-  }).filter((it) => it.name && Number.isFinite(it.qty) && it.qty > 0 && it.qty <= 99);
-}
-
-/** Order value from the lines, or null when any line has no price. */
-export function itemsTotal(items) {
-  if (!items.length || items.some((i) => i.unitPrice === null)) return null;
-  return Number(items.reduce((a, i) => a + i.qty * i.unitPrice, 0).toFixed(2));
-}
-
 export class JobStore {
   constructor(db = null) { this.byId = new Map(); this.byToken = new Map(); this.db = db; }
 
@@ -110,14 +82,7 @@ export class JobStore {
       pickup: input.pickup,
       dropoff: input.dropoff,
       bagCount: input.bagCount ?? 1,
-      items: normaliseItems(input.items),
-      // Units in the bag. From the lines when Keychat sends them.
-      itemCount: (() => {
-        const lines = normaliseItems(input.items);
-        return lines.length ? lines.reduce((a, i) => a + i.qty, 0) : (input.itemCount ?? 1);
-      })(),
-      orderValue: input.orderValue != null && Number.isFinite(Number(input.orderValue))
-        ? Number(input.orderValue) : itemsTotal(normaliseItems(input.items)),
+      itemCount: input.itemCount ?? 1,
 
       // Road distance. Keychat routes the order for its own ETA, so we take
       // their number when they send it rather than paying a routing API to

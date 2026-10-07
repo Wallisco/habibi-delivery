@@ -94,9 +94,6 @@ export default function JobDetailScreen({ route, navigation }) {
           value={(job.dropoff?.name ?? '–').split(',')[0]} />
         <Row label="Distance" value={`${job.distanceKm ?? '–'} km`} />
         <Row label="Bags" value={String(job.bagCount ?? 1)} />
-        {job.items?.length ? (
-          <Row label="Items" value={job.items.map((it) => `${it.qty}× ${it.name}`).join('\n')} />
-        ) : null}
         <Row label="Proof"
           value={job.proofGrade === 'FLAGGED' ? 'Under review' : `Grade ${job.proofGrade ?? '–'}`} />
       </Card>

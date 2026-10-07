@@ -175,9 +175,6 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
       earningsPreview: priceJob(j),
       tip: j.tip ?? 0,
       bagCount: j.bagCount, itemCount: j.itemCount, fee: j.fee,
-      // What is in the bag, for the counter check. No prices: the driver
-      // doesn't need them and the order value is the merchant's business.
-      items: (j.items ?? []).map(({ name, qty, notes }) => ({ name, qty, notes })),
       deliveryMode: j.deliveryMode, proofPolicy: j.proofPolicy,
       distanceKm: j.distanceKm,
       distanceSource: j.distanceSource ?? 'estimated',
