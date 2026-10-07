@@ -487,6 +487,14 @@ async function openOrder(jobId){
                error: '<div><span class="tag n">Check failed</span></div>',
                not_configured: '<div><span class="tag n">Not configured</span></div>' }[o.photoCheck.status] ?? ''}
           ${o.photoCheck.missing?.length ? '<div style="font-size:12.5px">Not seen: ' + o.photoCheck.missing.map((m) => m.qty + ' × ' + m.name).join(', ') + '</div>' : ''}
+          ${o.photoCheck.seen?.length && o.items?.length ? '<div style="font-size:11.5px;margin-top:4px">' + o.items.map((it) => {
+              const s = o.photoCheck.seen.find((x) => x.name === it.name);
+              const got = s ? s.qty : '?';
+              const ok = s && s.qty >= it.qty;
+              return '<div style="color:' + (ok ? 'var(--green)' : 'var(--red)') + '">' + got + ' of ' + it.qty + ' × ' + it.name + (it.size ? ' ' + it.size : '') + '</div>';
+            }).join('') + '</div>' : ''}
+          ${o.photoCheck.visible?.length ? '<div style="font-size:11px;color:var(--muted);margin-top:4px">In the photo: ' + o.photoCheck.visible.map((v) => v.qty + ' × ' + v.item).join(', ') + '</div>' : ''}
+          ${o.photoCheck.status === 'error' ? '<div style="font-size:11.5px;color:var(--red)">Why: ' + (o.photoCheck.reason ?? '') + (o.photoCheck.detail ? ' · ' + o.photoCheck.detail : '') + '</div>' : ''}
           ${o.photoCheck.note ? '<div style="font-size:11.5px;color:var(--muted)">' + o.photoCheck.note + '</div>' : ''}
           ${o.photoCheck.ms != null ? '<div style="font-size:11px;color:var(--muted)">' + (o.photoCheck.ms / 1000).toFixed(1) + ' s · ' + (o.photoCheck.model ?? '') + (o.photoCheck.effort ? ' · ' + o.photoCheck.effort : '') + '</div>' : ''}
           ${o.photoCheck.previous ? '<div style="font-size:11px;color:var(--muted)">Before re-check: ' + o.photoCheck.previous.status + (o.photoCheck.previous.missing?.length ? ' (not seen: ' + o.photoCheck.previous.missing.map((m) => m.qty + ' × ' + m.name).join(', ') + ')' : '') + '</div>' : ''}

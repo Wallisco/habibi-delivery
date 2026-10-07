@@ -97,6 +97,7 @@ test('no key, a refusal or an API error never throws: the check says so', async 
   const failed = await createPhotoChecker({ client: fakeClient(null, { fail: Object.assign(new Error('overloaded'), { status: 529 }) }) })
     .check({ jpeg: JPEG, items: ITEMS });
   assert.deepEqual([failed.status, failed.reason], ['error', '529']);
+  assert.equal(failed.detail, 'overloaded', 'the API says why, so the office can see it');
 });
 
 test('cost is worked out from the tokens at $4 / $20 per million', () => {

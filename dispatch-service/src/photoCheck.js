@@ -122,7 +122,10 @@ export function createPhotoChecker({
       return { ...base, ...verdictFrom(out, items), visible: out.visible, note: out.note.slice(0, 300) };
     } catch (err) {
       log?.warn?.({ status: err?.status, err: err?.message }, 'photo check failed');
-      return { at, ms: Date.now() - at, status: 'error', reason: String(err?.status ?? err?.name ?? 'error') };
+      // The API's own message says why (bad key, no access, a bad setting);
+      // it never contains the key or the photo.
+      return { at, ms: Date.now() - at, status: 'error', reason: String(err?.status ?? err?.name ?? 'error'),
+        detail: String(err?.message ?? '').slice(0, 300) };
     }
   }
 
