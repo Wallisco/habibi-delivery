@@ -2,6 +2,7 @@
 import { S, transition, acceptsJobKind, estimateRoamingPremium } from '../src/lib/supplyState.js';
 import { metresBetween, insideGeofence, availableProofActions, meetsFloor,
          GRADE, DELIVERY_MODE, driverMaySwitchToLeaveAtDoor } from '../src/lib/proof.js';
+import { reconcile, stepOf, dropJobs, endedMessage, STEP } from '../src/lib/currentJob.js';
 
 let pass=0, fail=0;
 const t=(name,cond)=>{ if(cond){pass++;console.log('  PASS '+name);} else {fail++;console.log('  FAIL '+name);} };
@@ -54,6 +55,67 @@ const wine={...job, deliveryMode:DELIVERY_MODE.LEAVE_AT_DOOR,
 const wineActions = availableProofActions({job:wine,position:near,online:true,otpAttempts:0});
 t('age-restricted leave-at-door forced back to OTP',
   wineActions.actions.some(x=>x.key==='OTP') && !wineActions.actions.some(x=>x.key==='PHOTO'));
+
+/* ------------------------------------------------ never stuck: current job */
+console.log('never stuck: the four delivery steps');
+const STORE={latitude:-33.8312,longitude:18.6512}, DOOR={latitude:-33.8401,longitude:18.6588};
+const AWAY={latitude:STORE.latitude+0.0054,longitude:STORE.longitude};
+const one={id:'J1',orderNumber:'KFC-1',pickup:{...STORE,name:'KFC'},dropoff:{...DOOR,name:'14 Pienaar Rd'}};
+const steps=[
+  ['to store',   {stopIndex:0, position:AWAY},  STEP.TO_STORE],
+  ['at store',   {stopIndex:0, position:STORE}, STEP.AT_STORE],
+  ['to customer',{stopIndex:1, position:STORE}, STEP.TO_CUSTOMER],
+  ['at door',    {stopIndex:1, position:DOOR},  STEP.AT_DOOR],
+];
+const cancelled={ok:true, body:{jobs:[], stops:[], stopIndex:0, ended:[{jobId:'J1', reason:'CANCELLED'}]}};
+for (const [name, where, step] of steps) {
+  const local={jobs:[one], stops:[], ...where};
+  t(`${name}: recognised as ${step}`, stepOf(local)===step);
+  const r=reconcile(local, cancelled);
+  t(`${name}: an office cancel ends the run with the message`,
+    r.action==='end' && r.message==='The office cancelled this order. No action needed.');
+}
+
+console.log('never stuck: every reason has one plain sentence');
+const endWith=(reason)=>reconcile({jobs:[one]}, {ok:true, body:{jobs:[], ended:[{jobId:'J1', reason}]}});
+t('closed', endWith('CLOSED').message==='The office closed this order. No action needed.');
+t('reassigned', endWith('REASSIGNED').message==='This order was given to another driver. No action needed.');
+t('cleared', endWith('CLEARED').message==='The office took this order off you. No action needed.');
+t('delivered by me ends quietly', endWith('DELIVERED').action==='end' && endWith('DELIVERED').message===null);
+t('unknown reason still ends, as closed', endWith('SOMETHING_NEW').message===endedMessage('CLOSED'));
+
+console.log('never stuck: signal, sign-out, nothing changed');
+t('no signal changes nothing', reconcile({jobs:[one]}, {ok:false, status:0}).action==='none');
+t('a 500 changes nothing', reconcile({jobs:[one]}, {ok:false, status:500}).action==='none');
+t('401 signs out', reconcile({jobs:[one]}, {ok:false, status:401}).action==='signout');
+t('401 signs out with no job too', reconcile({jobs:[]}, {ok:false, status:401}).action==='signout');
+t('still mine: nothing to do', reconcile({jobs:[one]}, {ok:true, body:{jobs:[one], ended:[]}}).action==='none');
+t('a finished drop the phone already marked done is not re-ended',
+  reconcile({jobs:[{...one, done:true}]}, {ok:true, body:{jobs:[], ended:[]}}).action==='none');
+
+console.log('never stuck: restore');
+const lost=reconcile({jobs:[]}, {ok:true, body:{jobs:[one], stops:[], stopIndex:1, batchId:null, stage:'NAVIGATE_CUSTOMER'}});
+t('dispatch has a job the phone lost: restore it', lost.action==='restore' && lost.jobs[0].id==='J1');
+t('restored at the right stop', lost.stopIndex===1 && lost.stage==='NAVIGATE_CUSTOMER');
+t('nothing anywhere: nothing to do', reconcile({jobs:[]}, {ok:true, body:{jobs:[], ended:[]}}).action==='none');
+
+console.log('never stuck: part of a run');
+const A={...one, id:'A', orderNumber:'KFC-A'}, B={...one, id:'B', orderNumber:'KFC-B'}, C={...one, id:'C', orderNumber:'KFC-C'};
+const P={kind:'PICKUP', name:'KFC', jobIds:['A','B','C'], lat:STORE.latitude, lng:STORE.longitude};
+const D=(id)=>({kind:'DROPOFF', name:id, jobIds:[id], lat:DOOR.latitude, lng:DOOR.longitude});
+const run={jobs:[A,B,C], stops:[P,D('A'),D('B'),D('C')], stopIndex:2};
+const part=reconcile(run, {ok:true, body:{jobs:[A,C], ended:[{jobId:'B', reason:'CANCELLED'}]}});
+t('one of three cancelled: drop it, keep going', part.action==='drop' && part.jobIds.join()==='B');
+t('says which order', part.message==='Order KFC-B was cancelled by the office. Carry on with the rest.');
+const after=dropJobs(run, ['B']);
+t('its stop is gone', after.stops.length===3 && after.stops.every((s)=>!s.jobIds.includes('B')));
+t('the driver moves on to the next drop', after.stops[after.stopIndex].jobIds.join()==='C');
+t('a stop before the current one going keeps the place',
+  dropJobs({...run, stopIndex:3}, ['A']).stops[dropJobs({...run, stopIndex:3}, ['A']).stopIndex].jobIds.join()==='C');
+const lastOne=dropJobs({jobs:[A,B], stops:[{...P, jobIds:['A','B']},D('A'),D('B')], stopIndex:1}, ['A']);
+t('down to one order: a single delivery, at its drop-off', lastOne.jobs.length===1 && lastOne.stops.length===0 && lastOne.stopIndex===1);
+t('all three ended: the run ends',
+  reconcile(run, {ok:true, body:{jobs:[], ended:['A','B','C'].map((jobId)=>({jobId, reason:'CLEARED'}))}}).action==='end');
 
 console.log('\n'+pass+' passed, '+fail+' failed');
 process.exit(fail?1:0);

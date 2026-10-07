@@ -1,6 +1,6 @@
 import React from 'react';
 import { StatusBar } from 'expo-status-bar';
-import { NavigationContainer } from '@react-navigation/native';
+import { NavigationContainer, createNavigationContainerRef } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { View, ActivityIndicator } from 'react-native';
@@ -16,6 +16,14 @@ import MessagesScreen from './src/screens/MessagesScreen';
 import { C } from './src/theme';
 
 const Stack = createNativeStackNavigator();
+const navigationRef = createNavigationContainerRef();
+
+/** The office ended the run: back to Home, where the message is shown. */
+function goHome() {
+  if (navigationRef.isReady() && navigationRef.getCurrentRoute()?.name !== 'Shift') {
+    navigationRef.reset({ index: 0, routes: [{ name: 'Shift' }] });
+  }
+}
 
 const navTheme = {
   dark: false,
@@ -32,7 +40,7 @@ const navTheme = {
 };
 
 function Root() {
-  const { ready, token } = useApp();
+  const { ready, token, checkNow } = useApp();
 
   if (!ready) {
     return (
@@ -43,7 +51,8 @@ function Root() {
   }
 
   return (
-    <NavigationContainer theme={navTheme}>
+    // Every screen change asks dispatch what we are carrying (never stuck).
+    <NavigationContainer theme={navTheme} ref={navigationRef} onStateChange={() => checkNow()}>
       <Stack.Navigator
         screenOptions={{
           headerStyle: { backgroundColor: C.mist },
@@ -74,7 +83,7 @@ function Root() {
 export default function App() {
   return (
     <SafeAreaProvider>
-      <AppProvider>
+      <AppProvider onJobEnded={goHome}>
         <StatusBar style="dark" />
         <Root />
       </AppProvider>

@@ -5,6 +5,10 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { S as SUPPLY, transition, estimateRoamingPremium, acceptsJobKind } from '../lib/supplyState';
 import { createApi, makeDemoJob, DEMO } from '../lib/api';
 import { enqueue, drain, isBlocked, readQueue } from '../lib/queue';
+import { reconcile, dropJobs } from '../lib/currentJob';
+
+/** How often the app asks dispatch what it is carrying (spec: within 10 s). */
+export const CURRENT_CHECK_MS = 10000;
 
 const Ctx = createContext(null);
 export const useApp = () => useContext(Ctx);
@@ -64,6 +68,11 @@ function reducer(s, a) {
       const jobs = s.jobs.map((j) => (j.id === a.jobId ? { ...j, done: true } : j));
       return { ...s, jobs };
     }
+    case 'DROP_JOBS': {
+      // The office ended some orders on this run; carry on with the rest.
+      const next = dropJobs(s, a.jobIds);
+      return { ...s, ...next, job: next.jobs[0] ?? null, otpAttempts: 0 };
+    }
     case 'STAGE': return { ...s, stage: a.stage };
     case 'SCANNED': return { ...s, scanned: a.count };
     case 'OTP_FAIL': return { ...s, otpAttempts: s.otpAttempts + 1 };
@@ -116,11 +125,24 @@ function normaliseServerJob(j) {
   };
 }
 
-export function AppProvider({ children }) {
+/**
+ * @param onJobEnded  called when the office ended the whole run, after the
+ *                    message is set: the app goes Home (App.js).
+ */
+export function AppProvider({ children, onJobEnded }) {
   const [state, dispatch] = useReducer(reducer, initial);
-  const api = useRef(createApi(null));
+  // Any 401 from dispatch signs the driver out (see signOut below).
+  const unauthorized = useRef(() => {});
+  const makeApi = (token, driverId) =>
+    createApi(token, driverId, { onUnauthorized: () => unauthorized.current() });
+  const api = useRef(makeApi(null));
   const watcher = useRef(null);
   const offerTimer = useRef(null);
+  // The latest state, for timers and callbacks that outlive a render.
+  const latest = useRef(state);
+  latest.current = state;
+  const jobEnded = useRef(onJobEnded);
+  jobEnded.current = onJobEnded;
 
   const ACTIVE_KEY = 'active_delivery_v1';
 
@@ -133,8 +155,8 @@ export function AppProvider({ children }) {
         const raw = await SecureStore.getItemAsync('driver');
         driver = raw ? JSON.parse(raw) : null;
       } catch { /* first run */ }
-      api.current = createApi(token, driver?.id);
-      const q = await readQueue();
+      api.current = makeApi(token, driver?.id);
+      const q = await readQueue(driver?.id);
 
       // Restore an in-flight delivery. Without this, backgrounding the app or
       // a Metro reload leaves a driver holding food with no destination.
@@ -166,7 +188,7 @@ export function AppProvider({ children }) {
     } else {
       AsyncStorage.removeItem(ACTIVE_KEY).catch(() => {});
     }
-  }, [state.job, state.stage, state.scanned, state.ready]);
+  }, [state.job, state.jobs, state.stops, state.stopIndex, state.stage, state.scanned, state.ready]);
 
   // ------------------------------------------------------------ location
   const startLocation = useCallback(async () => {
@@ -238,10 +260,8 @@ export function AppProvider({ children }) {
     dispatch({ type: 'SUPPLY', state: next });
   }, [state.supply, state.job, startLocation, stopLocation]);
 
-  // ------------------------------------------------- demo offer generator
-  // The server knows what this driver is carrying. If local state and the
-  // server disagree, the server wins -- it survived the restart, we may not
-  // have.
+  // After a restart, come back online if dispatch still has us online. What
+  // we are carrying is the current-job check's business (below).
   const reconciled = useRef(false);
   useEffect(() => {
     if (DEMO || !state.ready || !state.driver || reconciled.current) return;
@@ -249,24 +269,59 @@ export function AppProvider({ children }) {
     (async () => {
       try {
         const shift = await api.current.fetchShift();
-        if (shift.activeJob && !state.job) {
-          dispatch({
-            type: 'ACCEPT',
-            jobs: (shift.activeJobs?.length ? shift.activeJobs : [shift.activeJob])
-              .map(normaliseServerJob),
-            batchId: shift.activeBatchId ?? null,
-            stops: shift.activeStops ?? [],
-            stage: shift.activeStage ?? 'NAVIGATE_STORE',
-          });
-          dispatch({ type: 'TOAST', toast: 'Picked up your delivery where you left off.' });
-        }
         if (shift.state && shift.state !== SUPPLY.OFFLINE) {
           dispatch({ type: 'SUPPLY', state: shift.state });
           startLocation();
         }
       } catch { /* offline; local state stands */ }
     })();
-  }, [state.ready, state.driver, state.job, startLocation]);
+  }, [state.ready, state.driver, startLocation]);
+
+  // ------------------------------------------------------- never stuck
+  // Ask dispatch what we are carrying, every 10 seconds and on every screen
+  // change (App.js). The server wins: if the office cancelled, closed,
+  // reassigned or cleared a job, the driver is told in one sentence and goes
+  // Home; if the office signed them out, they go to sign-in. No signal changes
+  // nothing -- a driver in a dead spot keeps their delivery.
+  const checking = useRef(false);
+  const checkNow = useCallback(async () => {
+    const s = latest.current;
+    if (DEMO || checking.current || !s.ready || !s.token || !api.current.current) return;
+    checking.current = true;
+    let result;
+    try {
+      result = { ok: true, body: await api.current.current(s.jobs.filter((j) => !j.done).map((j) => j.id)) };
+      dispatch({ type: 'CONNECTIVITY', online: true });
+    } catch (e) {
+      result = { ok: false, status: e.status ?? 0 };
+    } finally {
+      checking.current = false;
+    }
+    const now = latest.current;
+    if (now.token !== s.token) return;   // signed out meanwhile
+    const r = reconcile(now, result);
+    if (r.action === 'signout') {
+      unauthorized.current();
+    } else if (r.action === 'end') {
+      dispatch({ type: 'FINISH' });
+      if (r.message) dispatch({ type: 'TOAST', toast: r.message });
+      jobEnded.current?.(r);
+    } else if (r.action === 'drop') {
+      dispatch({ type: 'DROP_JOBS', jobIds: r.jobIds });
+      if (r.message) dispatch({ type: 'TOAST', toast: r.message });
+    } else if (r.action === 'restore') {
+      dispatch({ type: 'ACCEPT', jobs: r.jobs.map(normaliseServerJob), batchId: r.batchId,
+        stops: r.stops, stopIndex: r.stopIndex, stage: r.stage });
+      dispatch({ type: 'TOAST', toast: 'Picked up your delivery where you left off.' });
+    }
+  }, []);
+
+  useEffect(() => {
+    if (DEMO || !state.ready || !state.token) return;
+    checkNow();
+    const t = setInterval(checkNow, CURRENT_CHECK_MS);
+    return () => clearInterval(t);
+  }, [state.ready, state.token, checkNow]);
 
   // Real mode: poll the dispatcher for an offer. Production would use FCM/APNs
   // so an offer wakes the device; polling keeps the app honest without push
@@ -305,7 +360,7 @@ export function AppProvider({ children }) {
     if (!canReceive || state.job || state.offer) return;
 
     offerTimer.current = setTimeout(async () => {
-      const blocked = await isBlocked();
+      const blocked = await isBlocked(state.driver?.id);
       if (blocked.blocked) {
         dispatch({ type: 'TOAST', toast: blocked.reason });
         return;
@@ -322,7 +377,7 @@ export function AppProvider({ children }) {
   // ------------------------------------------------------------- actions
   const signIn = async (phone) => {
     const res = await api.current.signIn(phone);
-    api.current = createApi(res.token, res.driver.id);
+    api.current = makeApi(res.token, res.driver.id);
     try {
       await SecureStore.setItemAsync('token', res.token);
       await SecureStore.setItemAsync('driver', JSON.stringify(res.driver));
@@ -330,14 +385,19 @@ export function AppProvider({ children }) {
     dispatch({ type: 'SIGN_IN', token: res.token, driver: res.driver });
   };
 
+  // Also what a 401 does: the office signed this driver out. Queued offline
+  // completions stay on the phone for when they sign in again.
   const signOut = async () => {
     stopLocation();
+    api.current = makeApi(null);
+    reconciled.current = false;
+    dispatch({ type: 'SIGN_OUT' });
     try {
       await SecureStore.deleteItemAsync('token');
       await SecureStore.deleteItemAsync('driver');
     } catch { /* ignore */ }
-    dispatch({ type: 'SIGN_OUT' });
   };
+  unauthorized.current = signOut;
 
   const acceptOffer = async () => {
     if (!state.offer) return;
@@ -366,22 +426,28 @@ export function AppProvider({ children }) {
   };
 
   const completeJob = async (evidence) => {
+    const driverId = state.driver?.id ?? null;
     if (state.online) {
       try {
         await api.current.postCompletion(evidence);
-      } catch {
-        await enqueue(evidence);
+      } catch (e) {
+        // Refused for good (cancelled or closed meanwhile): nothing to keep.
+        // Anything else -- no signal, a 5xx, signed out -- is kept and synced later.
+        if (![404, 409, 410, 422].includes(e.status)) await enqueue(evidence, driverId);
       }
     } else {
-      await enqueue(evidence);
+      await enqueue(evidence, driverId);
     }
-    const q = await readQueue();
+    const q = await readQueue(driverId);
     dispatch({ type: 'PENDING', count: q.length });
-    dispatch({ type: 'FINISH' });
+    // Only the last drop ends the run; the rest of the box is still to go.
+    const others = latest.current.jobs.filter((j) => !j.done && j.id !== evidence.jobId);
+    dispatch(others.length ? { type: 'JOB_DONE', jobId: evidence.jobId } : { type: 'FINISH' });
   };
 
   const syncNow = async () => {
-    const res = await drain(api.current);
+    const res = await drain(api.current, state.driver?.id);
+    if (res.unauthorized) { signOut(); return; }
     dispatch({ type: 'PENDING', count: res.remaining });
     dispatch({
       type: 'TOAST',
@@ -413,7 +479,7 @@ export function AppProvider({ children }) {
     api: api.current,
     roamingPremium: estimateRoamingPremium(state.supplyRatio),
     setSupply, signIn, signOut, acceptOffer, declineOffer,
-    completeJob, syncNow, loadEarnings,
+    completeJob, syncNow, loadEarnings, checkNow,
     setStage: (stage) => dispatch({ type: 'STAGE', stage }),
     setScanned: (count) => dispatch({ type: 'SCANNED', count }),
     goToStop: (index, stage) => dispatch({ type: 'STOP', index, stage }),

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { View, Text, ScrollView, StyleSheet, Linking, Platform, TextInput } from 'react-native';
+import { View, Text, ScrollView, StyleSheet, Linking, Platform, TextInput, Pressable } from 'react-native';
 import { useApp } from '../state/store';
 import { Card, Button, Row, Pill, Divider, Label } from '../components/UI';
 import MapPanel from '../components/MapPanel';
@@ -25,7 +25,7 @@ const PICKUP_RADIUS_M = 250;
 export default function RunScreen({ navigation }) {
   const {
     jobs, stops, stopIndex, goToStop, markJobDone, position, trail, online,
-    otpAttempts, noteOtpFail, completeJob, api, toastMsg, scanned, setScanned, batchId,
+    otpAttempts, noteOtpFail, completeJob, api, toastMsg, scanned, setScanned, batchId, toast,
   } = useApp();
 
   const [code, setCode] = useState('');
@@ -153,6 +153,15 @@ export default function RunScreen({ navigation }) {
 
   return (
     <ScrollView style={S.screen} contentContainerStyle={S.content}>
+      {/* Messages from dispatch mid-run, e.g. one order of the run cancelled. */}
+      {toast ? (
+        <Pressable onPress={() => toastMsg(null)} accessibilityRole="button">
+          <Card tone="wash" flat style={{ marginBottom: SP.md }}>
+            <Text style={T.body}>{toast}</Text>
+            <Text style={[T.tiny, { marginTop: SP.xs }]}>Tap to dismiss</Text>
+          </Card>
+        </Pressable>
+      ) : null}
       {jobs.length > 1 && (
         <Card tone="forest" style={{ marginBottom: SP.md }}>
           <Text style={st.runLabel}>RUN OF {jobs.length} ORDERS</Text>
