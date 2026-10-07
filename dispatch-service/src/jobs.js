@@ -146,6 +146,15 @@ export class JobStore {
    *              This is how a driver's app learns why a job left them
    *              (cancelled, closed, reassigned, cleared by the office).
    */
+  /** Change fields without a status change (no history entry). */
+  patch(id, fields) {
+    const j = this.byId.get(id);
+    if (!j) return null;
+    Object.assign(j, fields);
+    this.db?.saveJob(j);
+    return j;
+  }
+
   setStatus(id, status, patch = {}, note = null) {
     const j = this.byId.get(id);
     if (!j) return null;

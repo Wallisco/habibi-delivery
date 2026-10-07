@@ -8,7 +8,8 @@
 
 import { SUPPLY, metresBetween, travelMinutes } from './supply.js';
 import { canJoin, routeStops, routeMinutes, marginalDistances, storeCount,
-  isSameCustomer, MAX_BATCH } from './batching.js';
+  isSameCustomer, MAX_BATCH, planRun, planStamp, readyAt } from './batching.js';
+import { warmLegsInBackground, TABLE_MAX_POINTS } from './routing.js';
 
 // A driver is carrying a job in these states.
 const ACTIVE = ['ASSIGNED', 'AT_STORE', 'IN_TRANSIT', 'AT_CUSTOMER'];
@@ -307,8 +308,31 @@ export class Dispatcher {
     return pairs;
   }
 
+  /**
+   * Ask OSRM, in the background, for road times between the stops that could
+   * end up on a run: pending orders, most urgent first, and runs still on the
+   * way to their first pickup. The next tick plans on road times.
+   */
+  warmRunLegs(nowMs = this.now()) {
+    const pts = [];
+    const add = (j) => { pts.push(j.pickup, j.dropoff); };
+    for (const j of this.jobs.all()) {
+      if (j.driverId && ACTIVE.includes(j.status) && !j.collectedAt) add(j);
+    }
+    this.jobs.pending()
+      .sort((a, b) => this.slackMinutes(a, nowMs) - this.slackMinutes(b, nowMs))
+      .forEach(add);
+    warmLegsInBackground(pts.slice(0, TABLE_MAX_POINTS));
+  }
+
+  /** The best route for these orders, with ready times from the ready gate. */
+  planFor(jobs, nowMs = this.now()) {
+    return planRun(jobs, { readyAt: (j) => readyAt(j, this.gate), now: nowMs });
+  }
+
   tick(nowMs = this.now()) {
     this.expireOffers(nowMs);
+    this.warmRunLegs(nowMs);
     const pairs = this.solve(nowMs);
     for (const { batch, driver } of pairs) this.offerBatch(batch, driver, nowMs);
     return pairs.length;
@@ -325,23 +349,28 @@ export class Dispatcher {
     const expiresAt = nowMs + OFFER_TIMEOUT_MS + (batch.length - 1) * 5000;
     const batchId = `RUN-${nowMs.toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
 
+    // On the run: the driver sees the whole trip they would end up doing, in
+    // the order they will do it. The same route is stamped on accept.
+    const carrying = this.runOf(driver.id);
+    const whole = [...carrying, ...batch];
+    const plan = this.planFor(whole, nowMs);
+    const routeOpts = { readyAt: (j) => readyAt(j, this.gate), now: nowMs, fresh: true };
+
     for (const job of batch) {
-      this.offers.set(job.id, { driverId: driver.id, expiresAt, batchId });
+      this.offers.set(job.id, { driverId: driver.id, expiresAt, batchId, plan: planStamp(plan) });
       this.jobs.setStatus(job.id, 'OFFERED', { batchId });
     }
 
-    // On the run: the driver sees the whole trip they would end up doing.
-    const carrying = this.runOf(driver.id);
-    const whole = [...carrying, ...batch];
     this.onOffer?.({
       batchId,
       jobs: batch,
       carrying,
       driverId: driver.id,
       expiresAt,
-      stops: routeStops(whole),
-      route: routeMinutes(whole),
-      marginal: marginalDistances(whole).filter((m) => batch.some((j) => j.id === m.jobId)),
+      stops: plan.stops,
+      route: routeMinutes(whole, routeOpts),
+      routeSource: plan.source,
+      marginal: marginalDistances(whole, routeOpts).filter((m) => batch.some((j) => j.id === m.jobId)),
       storeCount: storeCount(whole),
       sameCustomer: isSameCustomer(whole),
     });
@@ -427,6 +456,10 @@ export class Dispatcher {
       accepted.push(j);
     }
     const run = [...carrying, ...accepted];
+
+    // Fix the route the driver was offered, so it never reshuffles mid-run.
+    const stamp = offer.plan ?? planStamp(this.planFor(run));
+    for (const j of run) this.jobs.patch(j.id, { runPlan: stamp });
 
     const d = this.supply.get(driverId);
     this.supply.upsert(driverId, {
