@@ -36,6 +36,11 @@ Then in the FEEST back office (its repo), add the **Sign driver out** and **Clea
 
 **Check:** sign in at Milnerton: Milnerton shows. Sign out is one tap away. The heatmap matches open staging orders.
 
+## Step 3a — Brands, open market and long distance
+> Read spec section 2a. In dispatch-service: add brands, driver-brand approvals, the Open market and Long distance switches on the driver (`PUT /v1/driver/preferences`), offer filtering (brand approval; open-market pickups within the zone's radius, default 5 km by road; long-distance drop-offs only when switched on), brand-first ordering, no stacking across brand and open market unless the brand allows, and the brand fallback rule (spec open decision 6) with tests for each. In the app: the two switches under the online switch, locked on for drivers with no brand; the bottom sheet says what the driver is working ("KFC + open market"); brand jobs show the brand's logo and colours on the offer card and delivery screens.
+
+**Check:** on staging, a KFC-approved driver with Open market off gets only KFC jobs; switched on, also open-market jobs within 5 km and none further; a driver with no brand can't switch Open market off.
+
 ## Step 4 — Offer card and the delivery steps
 > Build the offer card (spec section 2) with a countdown ring, pay in full including stacked orders, Accept and Decline, and "Taken by another driver". Put the active delivery on one screen with the four steps across the top, one primary button per step, Navigate (Google Maps or Waze) and "Report a problem" always visible. Every screen gets a back arrow; Android back is handled on every screen (during a delivery it opens Report a problem instead of leaving).
 

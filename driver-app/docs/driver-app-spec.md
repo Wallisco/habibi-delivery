@@ -70,6 +70,40 @@ Name, driver number, phone, vehicle, zone, rating (from customers), sign out, ap
 
 ---
 
+## 2a. Brands, open market and long distance (added 7 Oct 2026)
+
+FEEST runs two ways at once:
+- **FEEST (open market):** stores sell under the FEEST name; any FEEST driver can deliver.
+- **White label (brand):** a chain such as KFC gets its own branded version. Customers see the brand's name, logo and colours on WhatsApp ordering, the tracking page and messages. Deliveries go to drivers approved for that brand (often in the brand's kit and box).
+
+**Drivers are one shared pool.** Every driver is signed up to the open market. The back office approves selected drivers for a brand. There is one app, FEEST Driver, for everyone; a brand job shows in the brand's colours and logo on the offer card and delivery screens.
+
+**Two switches on Home, under the online switch (top-right):**
+
+| Switch | Off | On |
+|---|---|---|
+| **Open market** | Only jobs for the brand(s) the driver is approved for | Also FEEST open-market jobs picked up within 5 km of where the driver is now |
+| **Long distance** | Only jobs whose drop-off is within the normal delivery distance | Also long-distance trips (drop-off further than the zone's normal limit), paid per km at the zone's long-distance rate |
+
+Rules:
+- A driver with no brand approval works the open market only; the Open market switch is on and locked for them.
+- Brand drivers see their brand's jobs first. With Open market on, open-market offers are also shown, but a brand job is never offered behind an open-market one when both arrive together.
+- A branded job and an open-market job are never stacked on the same run (different branded boxes and promises), unless the brand allows it.
+- The 5 km is measured by road from the driver's live position to the pickup, and is a setting per zone (default 5 km).
+- The switches remember their last setting per driver and are shown in the bottom sheet text, e.g. "Online · KFC + open market · long distance on".
+
+Dispatch order for a brand job (open decision 6 for the fallback):
+1. The 5 closest online drivers approved for that brand.
+2. Then the next 5 brand drivers.
+3. If no brand driver accepts within the brand's wait limit, either the order goes to open-market drivers (if the brand allows it) or the office is alerted.
+
+What changes elsewhere:
+- **Dispatch:** brands and driver-brand approvals; offers filtered by brand approval, the Open market switch with its 5 km radius, and the Long distance switch; the stacking rule above; rate cards per brand and zone.
+- **Back office:** a Brands section (name, logo, colours, WhatsApp sender, tracking page look, rules: fallback to open market yes/no, wait limit, stacking allowed); approve drivers per brand on the driver page; brand filter on the Overview and Metrics.
+- **Keychat:** each brand's WhatsApp ordering runs on its own (or the store's) WhatsApp number and branding; the tracking link and rating messages use the brand.
+
+---
+
 ## 3. Cues from the Uber Driver app
 
 What we copy, and why:
@@ -99,6 +133,7 @@ What we do better:
 | Demand heatmap | `GET /v1/driver/demand?lat&lng&radiusKm=8`: cells (about 500 m) with open orders and the last 30 minutes' orders. No customer data |
 | Cost target | `GET /v1/driver/earnings` adds `costs: { rentalPerDay, fuelPerDay, workDaysPerWeek }` and `costTargetJobs` |
 | Trips by period | `GET /v1/driver/jobs?period=today|week|month` with `daysWorked` and counts |
+| Brands and switches | Brands, driver-brand approvals, the Open market (radius per zone, default 5 km) and Long distance switches on the driver's state; offers filtered by them; no stacking across brand and open market unless the brand allows; rate cards per brand and zone. `PUT /v1/driver/preferences` `{ openMarket, longDistance }` |
 | Ratings | Store rating written on collection from the at-store and collected times. Customer rating: on `delivery.delivered`, ask Keychat to send the WhatsApp rating prompt; Keychat posts the answer to `POST /v1/keychat/jobs/:jobId/rating` (`great|okay|bad`, optional comment) |
 
 The Keychat rating prompt needs a WhatsApp template approved on Keychat's WhatsApp Business account. Add it to the Keychat API change log (v1.3) and agree the wording with Keychat.
@@ -134,3 +169,6 @@ In its Drivers module (back office playbook step 5): **Sign driver out** and **C
 3. Fuel estimate per vehicle type, and working days per week for the cost target (proposed: 6).
 4. Store rating thresholds (proposed: ready on arrival = Great; up to 5 min wait = Okay; over 5 min = Bad).
 5. Which version is on drivers' phones now. GitHub's `driver-app/` was last changed on 22 Sep 2026 (order stacking); later fixes (report a problem, back buttons, auth) may only be on someone's laptop. Step 0 finds out.
+6. Brand jobs with no brand driver available: fall back to open-market drivers after the brand's wait limit, or alert the office only. Proposed: per brand, default fall back after 3 minutes.
+7. Long distance: what counts as long (proposed: drop-off more than 8 km by road) and its per-km rate per zone.
+8. Whether brand drivers are paid on the brand's rate card or the FEEST one when doing brand jobs.
