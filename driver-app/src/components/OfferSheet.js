@@ -80,6 +80,15 @@ export default function OfferSheet({ navigation }) {
                 </View>
               </View>
 
+              {offer.next ? (
+                <View style={[st.runBanner, { marginTop: SP.md }]}>
+                  <Text style={st.runBannerText}>Next job, after this drop</Text>
+                  <Text style={st.runBannerSub}>
+                    Free in about {offer.next.freeInMinutes ?? '–'} min · food ready as you get there
+                  </Text>
+                </View>
+              ) : null}
+
               {offer.addsToRun ? (
                 <View style={[st.runBanner, { marginTop: SP.sm }]}>
                   <Text style={st.runBannerText}>Adds to your current run</Text>
@@ -137,7 +146,7 @@ export default function OfferSheet({ navigation }) {
                 </View>
               )}
 
-              <Button title={offer.addsToRun ? 'Add to my run' : 'Accept trip'} kind="live"
+              <Button title={offer.next ? 'Accept next job' : offer.addsToRun ? 'Add to my run' : 'Accept trip'} kind="live"
                 onPress={acceptOffer} style={{ marginTop: SP.md }} />
               <Pressable onPress={declineOffer} style={st.decline} accessibilityRole="button">
                 <Text style={st.declineText}>Decline</Text>

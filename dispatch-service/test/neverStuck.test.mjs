@@ -76,7 +76,7 @@ test('/current needs a token, and shows what the driver is carrying', async (t) 
   const d = await driver(app);
   assert.equal((await app.inject({ url: '/v1/driver/current' })).statusCode, 401);
 
-  assert.deepEqual(await current(d), { jobs: [], batchId: null, stops: [], stopIndex: 0, stage: null, ended: [] });
+  assert.deepEqual(await current(d), { jobs: [], batchId: null, stops: [], stopIndex: 0, stage: null, ended: [], next: null });
   const jobId = await take(app, d);
   let cur = await current(d, [jobId]);
   assert.deepEqual(cur.jobs.map((j) => j.id), [jobId]);

@@ -7,8 +7,9 @@
  *   +5 min  orders C and D: two singles from stores 225 m either side of S,
  *           going different ways -> two separate offers, never stacked together
  *
- * Everything sits within 450 m of S, so a whole run takes minutes. The drop-offs are
- * placed more than 500 m apart where they must not stack (the stacking limit).
+ * Everything sits within 450 m of S, so a whole run takes minutes. C and D come from
+ * stores more than 100 m from S and from each other (the stacking limit for pickups),
+ * so they can't stack with A+B or each other.
  *
  * Every order is marked NOSIM, so simulated drivers leave them for your phone.
  *
@@ -51,7 +52,7 @@ const C0 = move(S, 0, 225), D0 = move(S, 0, -225);
 const run = Date.now().toString(36).toUpperCase();
 
 // Real places, Killarney Gardens (Google Maps positions, 7 Oct 2026). Every trip is under 450 m;
-// C and D go south-west, more than 500 m from Marina Park, so they can't stack with A+B or each other.
+// C and D come from stores more than 100 m from Oli's and from each other, so they can't stack.
 const KILLARNEY = {
   A: { store: 'STAGING-OLIS', pickup: { lat: -33.828439, lng: 18.533136, name: "Oli's Foods, 26 Killarney Ave" }, dropoff: { lat: -33.826778, lng: 18.534634, name: 'Slice Shack, Unit 3 Marina Park, 27 Silverstone Rd' } },
   B: { store: 'STAGING-OLIS', pickup: { lat: -33.828439, lng: 18.533136, name: "Oli's Foods, 26 Killarney Ave" }, dropoff: { lat: -33.826891, lng: 18.534585, name: 'POLAR Ice Cream, Unit 6 Marina Park, 27 Silverstone Rd' } },

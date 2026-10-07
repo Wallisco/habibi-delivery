@@ -43,6 +43,7 @@ export function routingStatus() {
     osrmConfigured: !!osrmUrl(),
     ...stats,
     cacheSize: cache.size,
+    runLegs: legStatus(),
   };
 }
 
@@ -138,6 +139,105 @@ export async function route(fromIn, toIn) {
     clearTimeout(timer);
   }
 }
+
+/* --------------------------------------------------------- leg times for runs
+ *
+ * Choosing the order of stops on a run needs the drive time between every pair
+ * of stops, and it runs inside the dispatcher's synchronous 3-second tick. So
+ * the tick never waits on the network: `legMinutes` answers from a cache of
+ * OSRM table results and falls back to the straight-line estimate, and
+ * `warmLegs` fills that cache in the background with one /table call for a
+ * set of points. A stop pair first seen on one tick has road times by the next.
+ *
+ * Our osrm-routed allows 1000 points per table (deploy/setup-osrm.sh); we ask for
+ * at most 100, the most urgent orders' stops, which keeps each call to milliseconds.
+ */
+const LEG_TTL_MS = 30 * 60 * 1000;
+const LEG_MAX = 50000;
+export const TABLE_MAX_POINTS = 100;
+const legs = new Map();   // "a;b" -> { at, minutes }
+const legKey = (a, b) => `${a.lat.toFixed(5)},${a.lng.toFixed(5)};${b.lat.toFixed(5)},${b.lng.toFixed(5)}`;
+const tableStats = { tableCalls: 0, tableErrors: 0, legsCached: 0 };
+let warming = null;
+
+/**
+ * Drive time between two stops, in minutes, never waiting on the network.
+ * @returns {{ minutes: number, source: 'osrm'|'estimated' }}
+ */
+export function legMinutes(aIn, bIn) {
+  const a = point(aIn), b = point(bIn);
+  if (!a || !b) return { minutes: 0, source: 'unknown' };
+  if (metresBetween(a, b) < 15) return { minutes: 0, source: 'osrm' };   // same place
+  const hit = legs.get(legKey(a, b));
+  if (hit && Date.now() - hit.at < LEG_TTL_MS) return { minutes: hit.minutes, source: 'osrm' };
+  const km = (metresBetween(a, b) / 1000) * DETOUR_FACTOR;
+  return { minutes: (km / URBAN_KMH) * 60, source: 'estimated' };
+}
+
+/**
+ * Fetch road times between every pair of `points` with one OSRM /table call
+ * and cache them. Never throws; without OSRM it does nothing.
+ */
+export async function warmLegs(pointsIn) {
+  const base = osrmUrl();
+  if (!base) return 0;
+  const seen = new Map();
+  for (const p of pointsIn.map(point).filter(Boolean)) {
+    seen.set(`${p.lat.toFixed(5)},${p.lng.toFixed(5)}`, p);
+  }
+  const pts = [...seen.values()].slice(0, TABLE_MAX_POINTS);
+  if (pts.length < 2) return 0;
+  // Nothing to do when every pair is already fresh.
+  const now = Date.now();
+  const stale = pts.some((a) => pts.some((b) => a !== b
+    && !(legs.get(legKey(a, b))?.at > now - LEG_TTL_MS)));
+  if (!stale) return 0;
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs());
+  try {
+    tableStats.tableCalls += 1;
+    const coords = pts.map((p) => `${p.lng},${p.lat}`).join(';');
+    const res = await fetch(`${base}/table/v1/driving/${coords}?annotations=duration`,
+      { signal: controller.signal });
+    if (!res.ok) throw new Error(`OSRM table answered ${res.status}`);
+    const body = await res.json();
+    if (body?.code !== 'Ok' || !Array.isArray(body.durations)) throw new Error(`OSRM table: ${body?.code ?? 'no table'}`);
+    // A point snapped far from any road gives confident nonsense; skip its row and column.
+    const badSnap = (body.sources ?? []).map((w) => Number(w?.distance) > 500);
+    let n = 0;
+    for (let i = 0; i < pts.length; i++) {
+      for (let k = 0; k < pts.length; k++) {
+        const s = body.durations[i]?.[k];
+        if (i === k || badSnap[i] || badSnap[k] || !Number.isFinite(s)) continue;
+        legs.delete(legKey(pts[i], pts[k]));
+        legs.set(legKey(pts[i], pts[k]), { at: now, minutes: s / 60 });
+        n += 1;
+      }
+    }
+    while (legs.size > LEG_MAX) legs.delete(legs.keys().next().value);
+    tableStats.legsCached = legs.size;
+    return n;
+  } catch (err) {
+    tableStats.tableErrors += 1;
+    stats.lastError = err?.name === 'AbortError' ? `OSRM table timed out after ${timeoutMs()} ms` : String(err?.message ?? err);
+    stats.lastErrorAt = Date.now();
+    return 0;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Fire-and-forget warm, one at a time, for the dispatcher tick. */
+export function warmLegsInBackground(points) {
+  if (warming || !osrmUrl()) return;
+  warming = warmLegs(points).finally(() => { warming = null; });
+}
+
+export function legStatus() { return { ...tableStats, legsCached: legs.size }; }
+
+/** Test hook. */
+export function resetLegs() { legs.clear(); Object.assign(tableStats, { tableCalls: 0, tableErrors: 0, legsCached: 0 }); }
 
 /**
  * Both legs of a job in one call: driver to store, then store to customer.

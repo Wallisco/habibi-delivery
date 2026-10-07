@@ -149,6 +149,21 @@ export const CASES = [
     }),
   },
   {
+    // On the way to the customer, with the next job lined up (NEXT).
+    screen: 'Delivery', state: 'to-customer-next-lined', header: true,
+    component: screen('RunScreen'),
+    app: () => ({
+      ...base, supply: SUPPLY.ZONE_COMMITTED, jobs: [job('2291', HOME)], stopIndex: 1,
+      position: AWAY, next: job('2299', HOME3, { pickup: { ...STORE, name: "Oli's Foods, 26 Killarney Avenue" } }),
+    }),
+  },
+  {
+    screen: 'Shift', state: 'delivering-next-lined', header: true,
+    component: screen('ShiftScreen'),
+    app: () => ({ ...base, supply: SUPPLY.ZONE_COMMITTED, job: job('2291', HOME), jobs: [job('2291', HOME)],
+      next: job('2299', HOME3) }),
+  },
+  {
     screen: 'Delivery', state: 'run-of-3', header: true,
     component: screen('RunScreen'),
     app: () => {

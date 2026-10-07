@@ -8,7 +8,8 @@
 
 import { SUPPLY, metresBetween, travelMinutes } from './supply.js';
 import { canJoin, routeStops, routeMinutes, marginalDistances, storeCount,
-  isSameCustomer, MAX_BATCH } from './batching.js';
+  isSameCustomer, MAX_BATCH, planRun, planStamp, readyAt } from './batching.js';
+import { warmLegsInBackground, TABLE_MAX_POINTS, legMinutes } from './routing.js';
 
 // A driver is carrying a job in these states.
 const ACTIVE = ['ASSIGNED', 'AT_STORE', 'IN_TRANSIT', 'AT_CUSTOMER'];
@@ -23,6 +24,19 @@ export const MAX_RADIUS_M = 15000;
 /** How long a driver is skipped for a job after a missed or refused offer. */
 export const TIMEOUT_COOLDOWN_MS = 90_000;
 export const DECLINE_COOLDOWN_MS = 10 * 60_000;
+
+/**
+ * Next job ("chaining"). A driver carrying ONE collected order can be offered
+ * ONE next order, if they will finish their drop and reach the next store by
+ * the time its food is ready. Their customer is not delayed at all, and the
+ * next order needs no second driver standing at the counter. Single orders
+ * only: never onto a stacked run, never a stacked next job.
+ */
+export const CHAIN = {
+  doorMin: 5,       // time at the customer's door (the brief's "door time")
+  maxWaitMin: 8,    // don't commit a driver to food further off than this
+  handBackMin: 2,   // give the next job back once they'd reach the store this late
+};
 
 /** Cost weights. Tune against a replay, not by intuition. */
 export const W = {
@@ -143,6 +157,114 @@ export class Dispatcher {
     return this.jobs.all()
       .filter((j) => j.driverId === driverId && ACTIVE.includes(j.status))
       .sort((a, b) => a.createdAt - b.createdAt);
+  }
+
+  /** The next job lined up for this driver, if any. */
+  nextOf(driverId) {
+    return this.jobs.all().find((j) => j.status === 'NEXT' && j.driverId === driverId) ?? null;
+  }
+
+  /**
+   * Could `job` be this driver's next job? Returns the timing, or null.
+   * The driver carries exactly one order, already collected, and has nothing
+   * lined up. They finish their drop (ride to the door plus door time), ride
+   * to the next store, and must get there no later than the food is ready,
+   * and no more than CHAIN.maxWaitMin before it.
+   */
+  chainFit(job, driver, nowMs = this.now()) {
+    if (!driver?.activeJobId || !driver.position) return null;
+    const run = this.runOf(driver.id);
+    if (run.length !== 1 || !run[0].collectedAt) return null;
+    if (this.nextOf(driver.id)) return null;
+    const cur = run[0];
+    const freeAt = nowMs + (legMinutes(driver.position, cur.dropoff).minutes + CHAIN.doorMin) * 60000;
+    const arriveAt = freeAt + legMinutes(cur.dropoff, job.pickup).minutes * 60000;
+    const ready = readyAt(job, this.gate);
+    if (arriveAt > ready) return null;
+    if (ready - arriveAt > CHAIN.maxWaitMin * 60000) return null;
+    return { after: cur.id, freeAt, arriveAt, readyAt: ready,
+      waitMin: Number(((ready - arriveAt) / 60000).toFixed(1)) };
+  }
+
+  /**
+   * Offer next jobs before anything else is offered. Only single orders:
+   * an order that would stack with another waiting order is left to stack.
+   * Each chainable driver gets the order whose food will be ready closest to
+   * when they arrive, so nobody stands at a counter for long.
+   */
+  chainPass(nowMs = this.now()) {
+    const offered = new Set([...this.offers.values()].map((o) => o.driverId));
+    const pool = this.jobs.pending().filter((j) => !this.offers.has(j.id)
+      && (j.bagCount ?? 1) <= 3);
+    if (!pool.length) return 0;
+    // Any waiting order it could stack with, due yet or not, rules it out.
+    const single = pool.filter((j) => !pool.some((o) => o !== j
+      && canJoin([j], o, this.gate, nowMs).ok));
+    const drivers = [...this.supply.drivers.values()].filter((d) => d.activeJobId && d.position
+      && !offered.has(d.id) && d.state !== SUPPLY.OFFLINE);
+    let n = 0;
+    const taken = new Set();
+    for (const d of drivers) {
+      let best = null;
+      for (const j of single) {
+        if (taken.has(j.id)) continue;
+        if (!this.supply.acceptsKind(d.state, j.kind)) continue;
+        if (j.requiredCapabilities?.some((c) => !d.capabilities.includes(c))) continue;
+        if (j.bagCount > d.capacity) continue;
+        const until = this.declinedBy.get(j.id)?.get(d.id);
+        if (until && until > nowMs) continue;
+        const fit = this.chainFit(j, d, nowMs);
+        if (fit && (!best || fit.waitMin < best.fit.waitMin)) best = { j, fit };
+      }
+      if (!best) continue;
+      taken.add(best.j.id);
+      this.offerBatch([best.j], d, nowMs, { chain: best.fit });
+      n += 1;
+    }
+    return n;
+  }
+
+  /** Make the lined-up job current once the driver's box is empty. */
+  promoteNext(driverId) {
+    const next = this.nextOf(driverId);
+    if (!next || this.runOf(driverId).length) return null;
+    this.jobs.setStatus(next.id, 'ASSIGNED', { nextAfter: null }, { driverId, kind: 'NEXT_STARTED' });
+    this.supply.upsert(driverId, { activeJobId: next.id, activeBatchId: next.batchId ?? null });
+    return next;
+  }
+
+  /** Put a lined-up job back in the pool for someone else. */
+  handBackNext(driverId, reason) {
+    const next = this.nextOf(driverId);
+    if (!next) return null;
+    const seen = this.declinedBy.get(next.id) ?? new Map();
+    seen.set(driverId, this.now() + DECLINE_COOLDOWN_MS);
+    this.declinedBy.set(next.id, seen);
+    this.jobs.setStatus(next.id, 'PENDING', { driverId: null, batchId: null, nextAfter: null, runPlan: null },
+      { driverId, kind: 'HANDED_BACK', reason });
+    this.onHandBack?.(next, driverId, reason);
+    return next;
+  }
+
+  /**
+   * Every tick: start next jobs whose driver is free, and hand back any whose
+   * driver would now reach the store more than CHAIN.handBackMin after the food
+   * is ready (a long drop, a wrong address) or who went offline.
+   */
+  reviewNext(nowMs = this.now()) {
+    for (const next of this.jobs.all().filter((j) => j.status === 'NEXT')) {
+      const d = this.supply.get(next.driverId);
+      if (!d || d.state === SUPPLY.OFFLINE) { this.handBackNext(next.driverId, 'Driver went offline'); continue; }
+      const run = this.runOf(d.id);
+      if (!run.length) { this.promoteNext(d.id); continue; }
+      const cur = run[0];
+      const pos = d.position ?? cur.dropoff;
+      const free = nowMs + (legMinutes(pos, cur.dropoff).minutes + (cur.status === 'AT_CUSTOMER' ? 1 : CHAIN.doorMin)) * 60000;
+      const arrive = free + legMinutes(cur.dropoff, next.pickup).minutes * 60000;
+      if (arrive > readyAt(next, this.gate) + CHAIN.handBackMin * 60000) {
+        this.handBackNext(d.id, 'Current drop is taking longer than planned');
+      }
+    }
   }
 
   /**
@@ -307,8 +429,33 @@ export class Dispatcher {
     return pairs;
   }
 
+  /**
+   * Ask OSRM, in the background, for road times between the stops that could
+   * end up on a run: pending orders, most urgent first, and runs still on the
+   * way to their first pickup. The next tick plans on road times.
+   */
+  warmRunLegs(nowMs = this.now()) {
+    const pts = [];
+    const add = (j) => { pts.push(j.pickup, j.dropoff); };
+    for (const j of this.jobs.all()) {
+      if (j.driverId && ACTIVE.includes(j.status) && !j.collectedAt) add(j);
+    }
+    this.jobs.pending()
+      .sort((a, b) => this.slackMinutes(a, nowMs) - this.slackMinutes(b, nowMs))
+      .forEach(add);
+    warmLegsInBackground(pts.slice(0, TABLE_MAX_POINTS));
+  }
+
+  /** The best route for these orders, with ready times from the ready gate. */
+  planFor(jobs, nowMs = this.now()) {
+    return planRun(jobs, { readyAt: (j) => readyAt(j, this.gate), now: nowMs });
+  }
+
   tick(nowMs = this.now()) {
     this.expireOffers(nowMs);
+    this.reviewNext(nowMs);
+    this.warmRunLegs(nowMs);
+    this.chainPass(nowMs);
     const pairs = this.solve(nowMs);
     for (const { batch, driver } of pairs) this.offerBatch(batch, driver, nowMs);
     return pairs.length;
@@ -321,29 +468,39 @@ export class Dispatcher {
    * and leaving its neighbour would defeat the point and strand the other
    * customer, so the batch is accepted or declined as one.
    */
-  offerBatch(batch, driver, nowMs = this.now()) {
+  offerBatch(batch, driver, nowMs = this.now(), { chain = null } = {}) {
     const expiresAt = nowMs + OFFER_TIMEOUT_MS + (batch.length - 1) * 5000;
     const batchId = `RUN-${nowMs.toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
 
+    // On the run: the driver sees the whole trip they would end up doing, in
+    // the order they will do it. The same route is stamped on accept.
+    // A next job is its own trip: it never joins the run in the driver's box.
+    const carrying = chain ? [] : this.runOf(driver.id);
+    const whole = [...carrying, ...batch];
+    const plan = this.planFor(whole, nowMs);
+    const routeOpts = { readyAt: (j) => readyAt(j, this.gate), now: nowMs, fresh: true };
+
     for (const job of batch) {
-      this.offers.set(job.id, { driverId: driver.id, expiresAt, batchId });
+      this.offers.set(job.id, { driverId: driver.id, expiresAt, batchId, plan: planStamp(plan),
+        chainAfter: chain?.after ?? null });
       this.jobs.setStatus(job.id, 'OFFERED', { batchId });
     }
 
-    // On the run: the driver sees the whole trip they would end up doing.
-    const carrying = this.runOf(driver.id);
-    const whole = [...carrying, ...batch];
     this.onOffer?.({
       batchId,
       jobs: batch,
       carrying,
       driverId: driver.id,
       expiresAt,
-      stops: routeStops(whole),
-      route: routeMinutes(whole),
-      marginal: marginalDistances(whole).filter((m) => batch.some((j) => j.id === m.jobId)),
+      stops: plan.stops,
+      route: routeMinutes(whole, routeOpts),
+      routeSource: plan.source,
+      marginal: marginalDistances(whole, routeOpts).filter((m) => batch.some((j) => j.id === m.jobId)),
       storeCount: storeCount(whole),
       sameCustomer: isSameCustomer(whole),
+      next: chain ? { afterJobId: chain.after,
+        freeInMinutes: Math.max(0, Math.round((chain.freeAt - nowMs) / 60000)),
+        waitAtStoreMinutes: Math.round(chain.waitMin) } : null,
     });
   }
 
@@ -410,6 +567,29 @@ export class Dispatcher {
     }
 
     const ids = this.batchOf(jobId);
+
+    // A next job: lined up behind the order in the box, not added to it. If
+    // the driver already finished that drop, it is simply their job now.
+    const after = offer.chainAfter ? this.jobs.get(offer.chainAfter) : null;
+    if (after && after.driverId === driverId && ACTIVE.includes(after.status) && !this.nextOf(driverId)) {
+      const lined = [];
+      for (const id of ids) {
+        this.offers.delete(id);
+        this.declinedBy.delete(id);
+        const j = this.jobs.setStatus(id, 'NEXT', { driverId, batchId: offer.batchId,
+          nextAfter: after.id, runPlan: offer.plan ?? null });
+        if (j) lined.push(j);
+      }
+      const d = this.supply.get(driverId);
+      this.supply.upsert(driverId, {
+        recentJobs: (d?.recentJobs ?? 0) + lined.length,
+        acceptanceRate: Math.min(1, (d?.acceptanceRate ?? 1) * 1.02),
+      });
+      const carrying = this.runOf(driverId);
+      return { ok: true, job: carrying[0], jobs: carrying, added: lined, next: lined[0] ?? null,
+        batchId: carrying[0]?.batchId ?? null, stops: routeStops(carrying) };
+    }
+
     // On the run: the new order joins the run the driver is already on, under
     // its batch id, and the first order stays the anchor.
     const carrying = this.runOf(driverId);
@@ -427,6 +607,10 @@ export class Dispatcher {
       accepted.push(j);
     }
     const run = [...carrying, ...accepted];
+
+    // Fix the route the driver was offered, so it never reshuffles mid-run.
+    const stamp = offer.plan ?? planStamp(this.planFor(run));
+    for (const j of run) this.jobs.patch(j.id, { runPlan: stamp });
 
     const d = this.supply.get(driverId);
     this.supply.upsert(driverId, {

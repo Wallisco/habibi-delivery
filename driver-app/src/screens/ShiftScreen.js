@@ -14,7 +14,7 @@ export default function ShiftScreen({ navigation }) {
   const {
     supply, setSupply, offer, job,
     roamingPremium, zone, toast, toastMsg, pendingSync, earnings,
-    driver, fetchAccount, fetchMessages, jobs,
+    driver, fetchAccount, fetchMessages, jobs, next,
   } = useApp();
 
   const [account, setAccount] = useState(null);
@@ -117,6 +117,9 @@ export default function ShiftScreen({ navigation }) {
               ? `${jobs.filter((j) => !j.done).length} still to deliver`
               : `to ${(job.dropoff?.name ?? 'Delivery address').split(',')[0]}`}
           </Text>
+          {next ? (
+            <Text style={T.small} numberOfLines={1}>Next: {next.pickup?.name ?? 'next store'}, after this drop</Text>
+          ) : null}
           <Button title="Continue delivery" kind="live"
             onPress={() => navigation.navigate('ActiveJob')} style={{ marginTop: SP.sm }} />
         </Card>

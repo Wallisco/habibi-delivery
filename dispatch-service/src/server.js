@@ -114,12 +114,6 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
     gate.observe(s.storeId, s.prepMinutes, { source: s.source, persist: false });
     restored.prepSamples += 1;
   }
-  // Drivers come back OFFLINE with no active job (db.loadDrivers). Anyone still
-  // holding an open job gets it back, so dispatch can't offer them a second
-  // run while the first is in their box.
-  for (const driverId of new Set(jobs.all().filter((j) => j.driverId && ACTIVE.includes(j.status)).map((j) => j.driverId))) {
-    refreshDriverActive(driverId);
-  }
 
   // Outbound queues. In production these are webhooks to Keychat and
   // FCM/APNs pushes to drivers.
@@ -130,7 +124,7 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
     readyGate: gate, supply, jobs,
     maxHoldMs: staging ? 60_000 : null,
     onOffer: ({ batchId, jobs: batchJobs, carrying = [], driverId, expiresAt, stops, route,
-                marginal, storeCount, sameCustomer }) => {
+                marginal, storeCount, sameCustomer, next = null }) => {
       const margin = new Map((marginal ?? []).map((m) => [m.jobId, m.marginalKm]));
       const priced = batchJobs.map((j, i) => ({
         ...publicJob(j),
@@ -158,6 +152,8 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
         })),
         // On the run: this order joins the run the driver is already on.
         addsToRun: carrying.length > 0,
+        // Next job: after the drop the driver is on now, not part of that run.
+        next,
         summary: {
           orders: priced.length,
           runOrders: carrying.length + priced.length,
@@ -170,6 +166,13 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
       });
     },
   });
+
+  // Drivers come back OFFLINE with no active job (db.loadDrivers). Anyone still
+  // holding an open job gets it back, so dispatch can't offer them a second
+  // run while the first is in their box.
+  for (const driverId of new Set(jobs.all().filter((j) => j.driverId && ACTIVE.includes(j.status)).map((j) => j.driverId))) {
+    refreshDriverActive(driverId);
+  }
 
   // Always send a human-readable label. Keychat may post bare coordinates,
   // and the driver app renders these directly.
@@ -491,6 +494,7 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
           }))
         : [],
       activeStage: active ? stageOf(active) : null,
+      next: nextView(req.params.id),
     };
   });
 
@@ -519,11 +523,19 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
   function refreshDriverActive(driverId) {
     const d = driverId ? supply.get(driverId) : null;
     if (!d) return;
+    // An empty box and a next job lined up: that job starts now.
+    dispatcher.promoteNext(driverId);
     const run = driverRun(driverId);
     supply.upsert(driverId, run.length
       ? { activeJobId: run[0].id, activeBatchId: run[0].batchId ?? null }
       : { activeJobId: null, activeBatchId: null,
           state: d.state === SUPPLY.ROAMING_ACTIVE ? SUPPLY.RETURNING : d.state });
+  }
+
+  /** The job lined up after the current drop, as the app shows it. */
+  function nextView(driverId) {
+    const n = dispatcher.nextOf(driverId);
+    return n ? { ...publicJob(n), afterJobId: n.nextAfter ?? null } : null;
   }
 
   const stopView = (s) => ({ kind: s.kind, name: s.name, storeId: s.storeId ?? null,
@@ -598,11 +610,16 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
     const run = driverRun(me);
     const held = String(req.query?.jobs ?? '').split(',').map((s) => s.trim()).filter(Boolean).slice(0, 10);
     const carrying = new Set(run.map((j) => j.id));
+    // A phone that already moved on to its next job (its last drop still
+    // syncing) is holding a job that is still theirs.
+    const lined = dispatcher.nextOf(me);
+    if (lined) carrying.add(lined.id);
     return {
       jobs: run.map(publicJob),
       batchId: run[0]?.batchId ?? null,
       ...(run.length ? runPosition(run) : { stops: [], stopIndex: 0 }),
       stage: run[0] ? stageOf(run[0]) : null,
+      next: nextView(me),
       ended: held.filter((id) => !carrying.has(id)).map((id) => endedFor(id, me)),
     };
   });
@@ -645,8 +662,10 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
     }
     return {
       ok: true,
-      job: publicJob(res.job),
-      jobs: (res.jobs ?? [res.job]).map(publicJob),
+      job: res.job ? publicJob(res.job) : null,
+      jobs: (res.jobs ?? [res.job]).filter(Boolean).map(publicJob),
+      // A next job: lined up after the current drop. The run above is unchanged.
+      next: res.next ? publicJob(res.next) : null,
       batchId: res.batchId ?? null,
       stops: (res.stops ?? []).map((s) => ({
         kind: s.kind, name: s.name, storeId: s.storeId ?? null,
@@ -1299,6 +1318,7 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
       if (offer.driverId === id) dispatcher.decline(jobId, id, { timedOut: true });
     }
     pendingOffers.delete(id);
+    dispatcher.handBackNext(id, 'Signed out by the office');
     accounts.addNote(id, `Signed out by the office: ${reason}`, req.body?.actor ?? 'ops');
     return { ok: true, revoked, activeJobs: driverRun(id).map((j) => j.id) };
   });
@@ -1325,6 +1345,8 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
     const run = driverRun(id);
     if (!run.length) return reply.code(409).send({ error: 'This driver is not carrying a job.' });
     const actor = req.body?.actor ?? 'ops';
+    // Clearing a driver's job also releases the job lined up after it.
+    dispatcher.handBackNext(id, 'Driver\u2019s job cleared by the office');
     if (action === 'requeue') {
       const collected = run.filter(isCollected).map((j) => j.id);
       if (collected.length) {
@@ -1561,6 +1583,8 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
   }));
 
   const sim = staging ? new Simulator({ app, engine: { supply, jobs, accounts, pendingOffers, driverTokens }, closeJob, speed: simSpeed, log: app.log }) : null;
+  // A next job handed back goes to the pool; on staging a simulated driver comes for it.
+  dispatcher.onHandBack = (job) => sim?.onJob(job);
 
   app.decorate('engine', { opsUsers, driverTokens, photos, sweepPhotos, idem, sim, gate, supply, jobs, dispatcher, otp, outbound, pendingOffers, db, metrics, rates, keychat, accounts, messages, ledger });
   return app;
