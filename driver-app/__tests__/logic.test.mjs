@@ -2,7 +2,7 @@
 import { S, transition, acceptsJobKind, estimateRoamingPremium } from '../src/lib/supplyState.js';
 import { metresBetween, insideGeofence, availableProofActions, meetsFloor,
          GRADE, DELIVERY_MODE, driverMaySwitchToLeaveAtDoor } from '../src/lib/proof.js';
-import { reconcile, stepOf, dropJobs, endedMessage, STEP, stageFor } from '../src/lib/currentJob.js';
+import { reconcile, stepOf, dropJobs, endedMessage, STEP } from '../src/lib/currentJob.js';
 
 let pass=0, fail=0;
 const t=(name,cond)=>{ if(cond){pass++;console.log('  PASS '+name);} else {fail++;console.log('  FAIL '+name);} };
@@ -116,18 +116,6 @@ const lastOne=dropJobs({jobs:[A,B], stops:[{...P, jobIds:['A','B']},D('A'),D('B'
 t('down to one order: a single delivery, at its drop-off', lastOne.jobs.length===1 && lastOne.stops.length===0 && lastOne.stopIndex===1);
 t('all three ended: the run ends',
   reconcile(run, {ok:true, body:{jobs:[], ended:['A','B','C'].map((jobId)=>({jobId, reason:'CLEARED'}))}}).action==='end');
-
-console.log('next job near the drop-off');
-const chainRun={jobs:[one,{...one,id:'N'}], stops:[
-  {kind:'PICKUP',jobIds:['J1'],lat:STORE.latitude,lng:STORE.longitude},
-  {kind:'DROPOFF',jobIds:['J1'],lat:DOOR.latitude,lng:DOOR.longitude},
-  {kind:'PICKUP',jobIds:['N'],lat:DOOR.latitude+0.01,lng:DOOR.longitude},
-  {kind:'DROPOFF',jobIds:['N'],lat:DOOR.latitude+0.02,lng:DOOR.longitude}], stopIndex:1};
-t('after the drop-off the next stop is a store: To store', stageFor(chainRun.stops[2])==='NAVIGATE_STORE');
-t('a door stop is To customer', stageFor(chainRun.stops[3])==='NAVIGATE_CUSTOMER');
-const cancelFirst=dropJobs(chainRun,['J1']);
-t('current order cancelled: the next job remains, at its store',
-  cancelFirst.jobs.length===1 && cancelFirst.jobs[0].id==='N' && cancelFirst.stopIndex===0);
 
 console.log('\n'+pass+' passed, '+fail+' failed');
 process.exit(fail?1:0);

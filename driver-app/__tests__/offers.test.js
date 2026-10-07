@@ -2,7 +2,7 @@
 // second order added to the run while the driver is on the way to the store.
 import React from 'react';
 import { act, create } from 'react-test-renderer';
-import { AppProvider, useApp, canStackOnRun, canChainNext } from '../src/state/store';
+import { AppProvider, useApp, canStackOnRun } from '../src/state/store';
 import OfferSheet, { OFFER_SECONDS } from '../src/components/OfferSheet';
 
 jest.mock('@react-native-async-storage/async-storage', () =>
@@ -114,45 +114,6 @@ test('on the run: offers keep coming only while a second order could still join'
   expect(canStackOnRun({ ...one, jobs: [job('A'), job('B')] })).toBe(false);          // full: 2 orders
   expect(canStackOnRun({ ...one, stopIndex: 1, stage: 'NAVIGATE_CUSTOMER' })).toBe(false); // collected
   expect(canStackOnRun({ ...one, job: null, jobs: [] })).toBe(false);                  // nothing to stack on
-});
-
-test('next job: offers keep coming within 400 m of the drop-off, not further', () => {
-  const door = { latitude: DOOR.lat, longitude: DOOR.lng };
-  const atDoor = (metres) => ({
-    job: job('A'), jobs: [job('A')], stops: [], stopIndex: 1, stage: 'NAVIGATE_CUSTOMER',
-    position: { latitude: door.latitude - metres / 111000, longitude: door.longitude },
-  });
-  // job('A') has lat/lng; the app normalises to latitude/longitude.
-  const norm = (s) => ({ ...s, job: { ...s.job }, jobs: s.jobs.map((j) => ({ ...j,
-    pickup: { latitude: j.pickup.lat, longitude: j.pickup.lng }, dropoff: { latitude: j.dropoff.lat, longitude: j.dropoff.lng } })) });
-  expect(canChainNext(norm(atDoor(350)))).toBe(true);
-  expect(canChainNext(norm(atDoor(450)))).toBe(false);
-  expect(canChainNext(norm({ ...atDoor(100), stopIndex: 0, stage: 'NAVIGATE_STORE' }))).toBe(false); // still at the store
-  expect(canChainNext(norm({ ...atDoor(100), jobs: [job('A'), job('B')] }))).toBe(false);           // already two orders
-});
-
-test('accepting takes the place in the run from dispatch (a next job keeps the current drop-off)', async () => {
-  // The phone is checking for offers (here because the run can still take a
-  // second order); dispatch offers a next job and answers the accept with
-  // where the driver is: stop 1, the current drop-off.
-  const r = await start({ jobs: [job('A')], stops: [], stopIndex: 0, stage: 'NAVIGATE_STORE', scanned: 0 });
-  mockServer.shift = offerFrom(['N'], { chained: true, storeFromDropoffKm: 0.8 });
-  await tick(3000);
-  expect(app.offer?.id).toBe('N');
-  expect(app.offer.chained).toBe(true);
-  expect(app.offer.storeFromDropoffKm).toBe(0.8);
-
-  const P = (id, at) => ({ kind: 'PICKUP', name: id, jobIds: [id], lat: at.lat, lng: at.lng });
-  const D = (id, at) => ({ kind: 'DROPOFF', name: id, jobIds: [id], lat: at.lat, lng: at.lng });
-  mockServer.accept = async () => ({ ok: true, chained: true, jobs: [job('A'), job('N')], batchId: 'RUN-2',
-    stops: [P('A', STORE), D('A', DOOR), P('N', DOOR), D('N', DOOR)], stopIndex: 1, stage: 'NAVIGATE_CUSTOMER' });
-  await act(async () => { await app.acceptOffer(); });
-
-  expect(app.jobs.map((j) => j.id)).toEqual(['A', 'N']);
-  expect(app.stopIndex).toBe(1);
-  expect(app.stage).toBe('NAVIGATE_CUSTOMER');
-  expect(app.toast).toBe('Next job added. Finish this drop-off first.');
-  act(() => r.unmount());
 });
 
 test('on the run: a second order is offered during the delivery and joins the run', async () => {

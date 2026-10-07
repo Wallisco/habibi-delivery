@@ -58,12 +58,6 @@ export function effectiveStops({ stops, jobs }) {
   ];
 }
 
-/**
- * The app's stage for a stop: a store means "To store", a door "To customer".
- * After a drop-off the next stop can be a store (a next job taken near it).
- */
-export const stageFor = (stop) => (stop?.kind === 'PICKUP' ? 'NAVIGATE_STORE' : 'NAVIGATE_CUSTOMER');
-
 /** Which of the four delivery steps the driver is on. */
 export function stepOf({ stops, jobs, stopIndex, position }) {
   const stop = effectiveStops({ stops, jobs })[stopIndex];

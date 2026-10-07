@@ -149,16 +149,6 @@ export const CASES = [
     }),
   },
   {
-    // The tallest offer card: a next job offered at the door.
-    screen: 'Delivery', state: 'next-job-offer', header: true,
-    component: screen('RunScreen'),
-    app: () => ({
-      ...base, supply: SUPPLY.ZONE_COMMITTED, jobs: [job('2291', HOME)], stopIndex: 1,
-      position: { latitude: HOME.latitude, longitude: HOME.longitude },
-      offer: { ...offer, id: 'O-2', chained: true, storeFromDropoffKm: 0.8 },
-    }),
-  },
-  {
     screen: 'Delivery', state: 'run-of-3', header: true,
     component: screen('RunScreen'),
     app: () => {
