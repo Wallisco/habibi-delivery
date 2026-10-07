@@ -27,6 +27,20 @@ function stagingApp(t) {
 }
 const types = (app, jobId) => app.engine.outbound.filter((e) => e.payload?.jobId === jobId).map((e) => e.type);
 
+test('staging: every back-office page says STAGING; production never does', async (t) => {
+  const stg = build({ dbPath: ':memory:', partnerAuth: false, opsAuth: false, driverAuth: false, staging: true });
+  const prod = build({ dbPath: ':memory:', partnerAuth: false, opsAuth: false, driverAuth: false, staging: false });
+  t.after(() => Promise.all([stg.close(), prod.close()]));
+  for (const url of ['/ops/login', '/ops']) {
+    const s = (await stg.inject({ url })).body;
+    assert.ok(s.includes('STAGING · test data'), `${url} on staging shows the banner`);
+    assert.ok(s.includes('<title>[STAGING] '), `${url} on staging marks the browser tab`);
+    assert.equal(s.match(/STAGING · test data/g).length, 1, 'once');
+    const p = (await prod.inject({ url })).body;
+    assert.ok(!p.includes('STAGING'), `${url} on production has no banner`);
+  }
+});
+
 test('staging: a simulated driver delivers the order through the real endpoints', async (t) => {
   const app = stagingApp(t);
   const res = await app.inject({ method: 'POST', url: '/v1/keychat/jobs', payload: order('KC-STG-1', { dispatchNow: true }) });

@@ -13,6 +13,7 @@
 import { registerPartnerAuth } from './auth.js';
 import { OpsUsers, registerOpsAuth } from './opsAuth.js';
 import { DriverTokens, registerDriverAuth } from './driverAuth.js';
+import { markStaging } from './stagingBanner.js';
 import { IdempotencyStore, idempotent } from './idempotency.js';
 import { Simulator } from './simulator.js';
 import Fastify from 'fastify';
@@ -55,7 +56,7 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
   // Staff logins for /ops and every /v1/ops/* route. Registered before any
   // route so nothing in the back office is reachable without a session.
   const opsUsers = new OpsUsers(db);
-  registerOpsAuth(app, opsUsers, { enabled: opsAuth });
+  registerOpsAuth(app, opsUsers, { enabled: opsAuth, staging });
   // Driver tokens for every /v1/driver/* route but sign-in (see driverAuth.js).
   const driverTokens = new DriverTokens(db);
   registerDriverAuth(app, driverTokens, {
@@ -1377,7 +1378,7 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
 
   app.get('/ops', async (req, reply) => {
     reply.type('text/html');
-    return readFileSync(join(HERE, '..', 'public', 'ops.html'), 'utf8');
+    return markStaging(readFileSync(join(HERE, '..', 'public', 'ops.html'), 'utf8'), staging);
   });
 
   const HERE = dirname(fileURLToPath(import.meta.url));
