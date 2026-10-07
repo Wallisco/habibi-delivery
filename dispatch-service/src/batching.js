@@ -147,6 +147,20 @@ export function routeStops(jobs) {
   return ordered;
 }
 
+/**
+ * The stops for everything a driver carries, in the order they will do them.
+ *
+ * A stacked run is collected together and then delivered (routeStops). A next
+ * job taken near the drop-off (`chainedAfter` the order still being delivered)
+ * comes after: finish this drop-off, then collect the next order, then deliver
+ * it. Once the first order is delivered, the next job is simply the run.
+ */
+export function runStops(jobs) {
+  const chained = jobs.filter((j) => j.chainedAfter && jobs.some((p) => p.id === j.chainedAfter));
+  const first = jobs.filter((j) => !chained.includes(j));
+  return [...routeStops(first), ...chained.flatMap((j) => routeStops([j]))];
+}
+
 /** Distance and time for the whole run, and per leg. */
 export function routeMinutes(jobs) {
   const stops = routeStops(jobs);

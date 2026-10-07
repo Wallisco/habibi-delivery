@@ -5,7 +5,8 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { S as SUPPLY, transition, estimateRoamingPremium, acceptsJobKind } from '../lib/supplyState';
 import { createApi, makeDemoJob, DEMO } from '../lib/api';
 import { enqueue, drain, isBlocked, readQueue } from '../lib/queue';
-import { reconcile, dropJobs } from '../lib/currentJob';
+import { reconcile, dropJobs, effectiveStops } from '../lib/currentJob';
+import { metresBetween } from '../lib/proof';
 import * as ImagePicker from 'expo-image-picker';
 import { enqueuePhoto, drainPhotos, readPhotos } from '../lib/photoQueue';
 
@@ -25,6 +26,21 @@ export const MAX_RUN = 2;
 export const canStackOnRun = (s) =>
   !!s.job && s.jobs.filter((j) => !j.done).length < MAX_RUN
   && s.stopIndex === 0 && (s.stage ?? 'NAVIGATE_STORE') === 'NAVIGATE_STORE';
+
+/** Within this of the drop-off, a next job can be offered (dispatch: CHAIN_NEAR_DROPOFF_M). */
+export const CHAIN_NEAR_M = 400;
+
+/**
+ * Could dispatch offer a next job now? While delivering the only order, within
+ * 400 m of its drop-off. Dispatch checks again (the store must be within 2 km
+ * of the drop-off, on a fresh position).
+ */
+export const canChainNext = (s) => {
+  if (!s.job || !s.position || s.jobs.filter((j) => !j.done).length !== 1) return false;
+  const stop = effectiveStops(s)[s.stopIndex];
+  if (stop?.kind !== 'DROPOFF') return false;
+  return metresBetween(s.position, { latitude: stop.lat, longitude: stop.lng }) <= CHAIN_NEAR_M;
+};
 
 const Ctx = createContext(null);
 export const useApp = () => useContext(Ctx);
@@ -386,8 +402,9 @@ export function AppProvider({ children, onJobEnded }) {
   // so an offer wakes the device; polling keeps the app honest without push
   // infrastructure and is fine at this stage.
   // While carrying a job, keep looking only if a second order could still join
-  // the run (on-the-run stacking).
-  const stackable = canStackOnRun(state);
+  // the run (on-the-run stacking) or a next job could be offered near the
+  // drop-off.
+  const stackable = canStackOnRun(state) || canChainNext(state);
   useEffect(() => {
     if (DEMO || !state.driver) return;
     const canReceive = [SUPPLY.ZONE_COMMITTED, SUPPLY.ROAMING_ELIGIBLE, SUPPLY.RETURNING]
@@ -407,6 +424,8 @@ export function AppProvider({ children, onJobEnded }) {
             stops: o.stops ?? [],
             summary: o.summary ?? null,
             addsToRun: Boolean(o.addsToRun),
+            chained: Boolean(o.chained),
+            storeFromDropoffKm: o.storeFromDropoffKm ?? null,
           } });
         }
       } catch {
@@ -469,13 +488,18 @@ export function AppProvider({ children, onJobEnded }) {
       try {
         // On the run, dispatch answers with the whole run: replace what we hold.
         const res = await api.current.acceptJob(state.offer.id);
+        // Dispatch says where the driver is in the run, so a next job taken
+        // at the door keeps them on the current drop-off.
         dispatch({
           type: 'ACCEPT',
           jobs: (res.jobs ?? [res.job]).map(normaliseServerJob),
           batchId: res.batchId ?? null,
           stops: res.stops ?? [],
+          stopIndex: res.stopIndex ?? 0,
+          stage: res.stage ?? 'NAVIGATE_STORE',
         });
-        if (addsToRun) dispatch({ type: 'TOAST', toast: 'Second order added to your run.' });
+        if (res.chained) dispatch({ type: 'TOAST', toast: 'Next job added. Finish this drop-off first.' });
+        else if (addsToRun) dispatch({ type: 'TOAST', toast: 'Second order added to your run.' });
         return;
       } catch (e) {
         dispatch({ type: 'OFFER', offer: null });

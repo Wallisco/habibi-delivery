@@ -6,7 +6,7 @@ import MapPanel from '../components/MapPanel';
 import OfferSheet from '../components/OfferSheet';
 import { metresBetween, insideGeofence } from '../lib/proof';
 import { C, T, R, SP, S, Z } from '../theme';
-import { stepOf, STEP } from '../lib/currentJob';
+import { stepOf, STEP, stageFor } from '../lib/currentJob';
 
 /** "3 × Pizza Margherita" / "1 × Coke 500ml" (same as dispatch-service/src/items.js). */
 const itemLine = (it) => `${it.qty} × ${it.name}${it.size ? ` ${it.size}` : ''}`;
@@ -150,7 +150,9 @@ export default function RunScreen({ navigation }) {
       if (next < effectiveStops.length) {
         toastMsg(`Delivered. ${effectiveStops.length - next} stop${
           effectiveStops.length - next === 1 ? '' : 's'} left.`);
-        goToStop(next, 'NAVIGATE_CUSTOMER');
+        // After a drop-off the next stop can be a store: the next job taken
+        // near this drop-off. Go to "To store", not "To customer".
+        goToStop(next, stageFor(effectiveStops[next]));
       } else {
         navigation.navigate('Shift');
       }

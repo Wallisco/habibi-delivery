@@ -7,11 +7,17 @@
  */
 
 import { SUPPLY, metresBetween, travelMinutes } from './supply.js';
-import { canJoin, routeStops, routeMinutes, marginalDistances, storeCount,
+import { canJoin, routeStops, runStops, routeMinutes, marginalDistances, storeCount,
   isSameCustomer, MAX_BATCH } from './batching.js';
 
 // A driver is carrying a job in these states.
 const ACTIVE = ['ASSIGNED', 'AT_STORE', 'IN_TRANSIT', 'AT_CUSTOMER'];
+
+// Next job near the drop-off (chainableWith).
+export const CHAIN_NEAR_DROPOFF_M = 400;
+export const CHAIN_STORE_FROM_DROPOFF_M = 2000;
+export const POSITION_FRESH_MS = 60_000;
+const HANDOVER_MIN = 3;   // code, bag, a word with the customer
 
 export const TICK_MS = 3000;              // batching window
 // How long a driver has to accept an offer (plus 5 s per extra order on a run).
@@ -106,13 +112,18 @@ export class Dispatcher {
     // possible candidate for a second one from that kitchen.
     const stackers = [...this.supply.drivers.values()].filter((d) =>
       d.activeJobId && d.position && this.stackableWith(job, d));
+    // A driver about to drop off, with this store close to their drop-off,
+    // can take it as their next job before finishing.
+    const chainers = [...this.supply.drivers.values()].filter((d) =>
+      d.activeJobId && d.position && !stackers.includes(d) && this.chainableWith(job, d, nowMs));
     // One open offer per driver: a second would replace the first on their phone.
     const offered = new Set([...this.offers.values()].map((o) => o.driverId));
 
-    return [...this.supply.available(), ...stackers].filter((d) => {
+    return [...this.supply.available(), ...stackers, ...chainers].filter((d) => {
       if (offered.has(d.id)) return false;
       if (!this.supply.acceptsKind(d.state, job.kind)) return false;
-      if (metresBetween(d.position, job.pickup) > radius) return false;
+      // A next-job driver is measured from their drop-off (chainableWith did that).
+      if (!chainers.includes(d) && metresBetween(d.position, job.pickup) > radius) return false;
       if (job.requiredCapabilities?.some((c) => !d.capabilities.includes(c))) return false;
       if (job.bagCount > d.capacity) return false;
       const until = this.declinedBy.get(job.id)?.get(d.id);
@@ -169,8 +180,33 @@ export class Dispatcher {
     return { with: run[0], run, ...last };
   }
 
+  /**
+   * Can this job be the driver's next one, taken before they finish the order
+   * they are delivering? To fit more deliveries into a shift without dead
+   * travel: the driver has collected their only order, is within
+   * CHAIN_NEAR_DROPOFF_M of its drop-off (by a position pushed in the last
+   * POSITION_FRESH_MS), and the new store is within CHAIN_STORE_FROM_DROPOFF_M
+   * of that drop-off. One next job at a time, so never more than two orders.
+   */
+  chainableWith(job, driver, nowMs = this.now()) {
+    if (!driver.activeJobId || !driver.position?.at) return null;
+    if (nowMs - driver.position.at > POSITION_FRESH_MS) return null;
+    const run = this.runOf(driver.id);
+    if (run.length !== 1 || !run[0].collectedAt) return null;
+    const current = run[0];
+    const toDropoff = metresBetween(driver.position, current.dropoff);
+    if (toDropoff > CHAIN_NEAR_DROPOFF_M) return null;
+    const storeFromDropoff = metresBetween(current.dropoff, job.pickup);
+    if (storeFromDropoff > CHAIN_STORE_FROM_DROPOFF_M) return null;
+    return { after: current, toDropoffM: Math.round(toDropoff), storeFromDropoffM: Math.round(storeFromDropoff) };
+  }
+
   cost(job, driver, nowMs = this.now()) {
-    const pickupEta = travelMinutes(driver.position, job.pickup);
+    // A next-job driver gets to the store after finishing their drop-off.
+    const chain = !driver.activeJobId ? null : this.chainableWith(job, driver, nowMs);
+    const pickupEta = chain
+      ? travelMinutes(driver.position, chain.after.dropoff) + HANDOVER_MIN + travelMinutes(chain.after.dropoff, job.pickup)
+      : travelMinutes(driver.position, job.pickup);
     const slack = this.slackMinutes(job, nowMs);
     // Convex: flat while there is room, steep once slack runs out.
     const lateness = slack >= 0 ? Math.pow(1 / (1 + slack), 2) * 10 : 10 + Math.abs(slack) * 3;
@@ -263,8 +299,10 @@ export class Dispatcher {
       const seed = batch[0];
       const cands = this.candidates(seed, nowMs).filter((d) => {
         if (taken.has(d.id)) return false;
-        // A driver already on a run can only take what fits on it.
-        if (d.activeJobId && !this.stackableWith(batch, d)) return false;
+        // A driver already on a run can only take what fits on it: a stacked
+        // order before collection, or one next job near the drop-off.
+        if (d.activeJobId && !this.stackableWith(batch, d)
+          && !(batch.length === 1 && this.chainableWith(batch[0], d, nowMs))) return false;
         return batch.every((j) => {
           if (this.declinedBy.get(j.id)?.get(d.id) > nowMs) return false;
           if (j.requiredCapabilities?.some((c) => !d.capabilities.includes(c))) return false;
@@ -325,21 +363,26 @@ export class Dispatcher {
     const expiresAt = nowMs + OFFER_TIMEOUT_MS + (batch.length - 1) * 5000;
     const batchId = `RUN-${nowMs.toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
 
+    // A next job near the drop-off comes after the order being delivered.
+    const chain = batch.length === 1 && driver.activeJobId ? this.chainableWith(batch[0], driver, nowMs) : null;
+    const chainAfter = chain ? chain.after.id : null;
+
     for (const job of batch) {
-      this.offers.set(job.id, { driverId: driver.id, expiresAt, batchId });
+      this.offers.set(job.id, { driverId: driver.id, expiresAt, batchId, chainAfter });
       this.jobs.setStatus(job.id, 'OFFERED', { batchId });
     }
 
     // On the run: the driver sees the whole trip they would end up doing.
     const carrying = this.runOf(driver.id);
-    const whole = [...carrying, ...batch];
+    const whole = [...carrying, ...batch.map((j) => (chainAfter ? { ...j, chainedAfter: chainAfter } : j))];
     this.onOffer?.({
       batchId,
       jobs: batch,
       carrying,
+      chain,
       driverId: driver.id,
       expiresAt,
-      stops: routeStops(whole),
+      stops: runStops(whole),
       route: routeMinutes(whole),
       marginal: marginalDistances(whole).filter((m) => batch.some((j) => j.id === m.jobId)),
       storeCount: storeCount(whole),
@@ -410,12 +453,16 @@ export class Dispatcher {
     }
 
     const ids = this.batchOf(jobId);
-    // On the run: the new order joins the run the driver is already on, under
-    // its batch id, and the first order stays the anchor.
     const carrying = this.runOf(driverId);
-    const batchId = carrying[0]?.batchId ?? offer.batchId ?? null;
-    for (const j of carrying) {
-      if (j.batchId !== batchId) this.jobs.setStatus(j.id, j.status, { batchId });
+    // Next job near the drop-off: its own run, done after the current drop.
+    const chained = offer.chainAfter && carrying.some((j) => j.id === offer.chainAfter);
+    // On the run (stacked): the new order joins the run the driver is already
+    // on, under its batch id, and the first order stays the anchor.
+    const batchId = chained ? (offer.batchId ?? null) : (carrying[0]?.batchId ?? offer.batchId ?? null);
+    if (!chained) {
+      for (const j of carrying) {
+        if (j.batchId !== batchId) this.jobs.setStatus(j.id, j.status, { batchId });
+      }
     }
     const accepted = [];
     for (const id of ids) {
@@ -423,7 +470,7 @@ export class Dispatcher {
       this.declinedBy.delete(id);
       const j = this.jobs.get(id);
       if (!j) continue;
-      this.jobs.setStatus(id, 'ASSIGNED', { driverId, batchId });
+      this.jobs.setStatus(id, 'ASSIGNED', { driverId, batchId, ...(chained ? { chainedAfter: offer.chainAfter } : {}) });
       accepted.push(j);
     }
     const run = [...carrying, ...accepted];
@@ -432,7 +479,7 @@ export class Dispatcher {
     this.supply.upsert(driverId, {
       // The run's first job is the anchor; the rest hang off the batch id.
       activeJobId: run[0]?.id ?? jobId,
-      activeBatchId: batchId,
+      activeBatchId: chained ? (carrying[0]?.batchId ?? null) : batchId,
       recentJobs: (d?.recentJobs ?? 0) + accepted.length,
       acceptanceRate: Math.min(1, (d?.acceptanceRate ?? 1) * 1.02),
       state: run.some((j) => j.kind === 'ROAMING') ? SUPPLY.ROAMING_ACTIVE : d?.state,
@@ -445,7 +492,8 @@ export class Dispatcher {
       jobs: run,
       added: accepted,
       batchId,
-      stops: routeStops(run),
+      chained: Boolean(chained),
+      stops: runStops(run),
     };
   }
 

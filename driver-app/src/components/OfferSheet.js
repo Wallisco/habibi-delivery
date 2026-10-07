@@ -80,6 +80,14 @@ export default function OfferSheet({ navigation }) {
                 </View>
               </View>
 
+              {offer.chained ? (
+                <View style={[st.runBanner, { marginTop: SP.sm }]}>
+                  <Text style={st.runBannerText}>Next job after this drop-off</Text>
+                  <Text style={st.runBannerSub}>
+                    Store {offer.storeFromDropoffKm ?? '–'} km from your drop-off
+                  </Text>
+                </View>
+              ) : null}
               {offer.addsToRun ? (
                 <View style={[st.runBanner, { marginTop: SP.sm }]}>
                   <Text style={st.runBannerText}>Adds to your current run</Text>
@@ -137,7 +145,7 @@ export default function OfferSheet({ navigation }) {
                 </View>
               )}
 
-              <Button title={offer.addsToRun ? 'Add to my run' : 'Accept trip'} kind="live"
+              <Button title={offer.chained ? 'Take next job' : offer.addsToRun ? 'Add to my run' : 'Accept trip'} kind="live"
                 onPress={acceptOffer} style={{ marginTop: SP.md }} />
               <Pressable onPress={declineOffer} style={st.decline} accessibilityRole="button">
                 <Text style={st.declineText}>Decline</Text>

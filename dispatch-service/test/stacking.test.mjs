@@ -113,12 +113,116 @@ test('on the run: not if the second order is ready more than 5 minutes after the
 test('on the run: not once the first order is collected', async (t) => {
   const app = appFor(t);
   const d = await driver(app, '0821111111');
-  const first = await order(app, 0);
+  // Drop-off 1.5 km away: the driver at the store is not near it, so this is
+  // about stacking, not a next job near the drop-off (next-job tests below).
+  const first = await order(app, 0, 1500);
   app.engine.dispatcher.tick();
   await accept(app, first, d);
   await app.inject({ method: 'POST', url: `/v1/jobs/${first}/collect` });
   await order(app, 2);
   assert.equal(app.engine.dispatcher.tick(), 0);
+});
+
+/* ------------------------------------------------ next job near the drop-off */
+
+/** A driver carrying one collected order, standing `m` metres from its drop-off. */
+async function nearDropoff(app, m, { dropoff = 1500 } = {}) {
+  const d = await driver(app, '0821111111');
+  const first = await order(app, 0, dropoff);
+  app.engine.dispatcher.tick();
+  await accept(app, first, d);
+  await app.inject({ method: 'POST', url: `/v1/jobs/${first}/collect` });
+  const drop = app.engine.jobs.get(first).dropoff;
+  await app.inject({ method: 'POST', url: `/v1/driver/${d.id}/position`, headers: d.headers,
+    payload: { lat: drop.lat - m / 111000, lng: drop.lng } });
+  return { d, first, drop };
+}
+
+/** An order from a store `m` metres north of point p. */
+async function orderFrom(app, p, m, minutes = 3) {
+  const store = { lat: p.lat + m / 111000, lng: p.lng, name: `Store ${m} m from the drop-off` };
+  const res = await app.inject({ method: 'POST', url: '/v1/keychat/jobs', payload: {
+    storeId: `S-${m}`, zone: 'Milnerton', pickup: store, dropoff: { lat: store.lat + 0.008, lng: store.lng, name: 'Next customer' },
+    dispatchNow: true, createdAt: T0 + minutes * 60000 } });
+  return res.json().jobId;
+}
+
+test('next job: offered within 400 m of the drop-off, for a store within 2 km of it', async (t) => {
+  const app = appFor(t);
+  const { d, first, drop } = await nearDropoff(app, 390);
+  const next = await orderFrom(app, drop, 1800);
+  assert.equal(app.engine.dispatcher.tick(), 1);
+  const offer = offerFor(app, d);
+  assert.equal(offer.jobId, next);
+  assert.equal(offer.chained, true);
+  assert.equal(offer.addsToRun, false);
+  assert.equal(offer.storeFromDropoffKm, 1.8);
+  assert.deepEqual(offer.stops.map((s) => s.kind), ['PICKUP', 'DROPOFF', 'PICKUP', 'DROPOFF'],
+    'current order first (already collected), then the next job');
+
+  const res = (await accept(app, next, d)).json();
+  assert.equal(res.chained, true);
+  assert.deepEqual(res.jobs.map((j) => j.id), [first, next]);
+  assert.equal(res.stops[res.stopIndex].kind, 'DROPOFF', 'still on the current drop-off');
+  assert.deepEqual(res.stops[res.stopIndex].jobIds, [first]);
+  assert.equal(res.stage, 'NAVIGATE_CUSTOMER');
+  assert.equal(app.engine.jobs.get(next).chainedAfter, first);
+  assert.equal(app.engine.supply.get(d.id).activeJobId, first, 'the current order stays the anchor');
+});
+
+test('next job: not at 410 m from the drop-off, nor for a store 2.1 km away', async (t) => {
+  const far = appFor(t);
+  const a = await nearDropoff(far, 410);
+  await orderFrom(far, a.drop, 500);
+  assert.equal(far.engine.dispatcher.tick(), 0, 'not yet near the drop-off');
+
+  const app = appFor(t);
+  const b = await nearDropoff(app, 100);
+  await orderFrom(app, b.drop, 2100);
+  assert.equal(app.engine.dispatcher.tick(), 0, 'store too far from the drop-off');
+});
+
+test('next job: not on a stale position, and only one at a time', async (t) => {
+  const app = appFor(t);
+  const { d, drop } = await nearDropoff(app, 100);
+  // A position from two minutes ago does not count.
+  app.engine.supply.get(d.id).position.at = Date.now() - 120_000;
+  await orderFrom(app, drop, 500);
+  assert.equal(app.engine.dispatcher.tick(), 0, 'stale position');
+
+  await app.inject({ method: 'POST', url: `/v1/driver/${d.id}/position`, headers: d.headers,
+    payload: { lat: drop.lat - 100 / 111000, lng: drop.lng } });
+  assert.equal(app.engine.dispatcher.tick(), 1);
+  await accept(app, offerFor(app, d).jobId, d);
+  await orderFrom(app, drop, 700, 4);
+  assert.equal(app.engine.dispatcher.tick(), 0, 'already has a next job');
+});
+
+test('next job: after the drop-off the driver goes to the next store; cancelling either order leaves the other', async (t) => {
+  const app = appFor(t);
+  const { d, first, drop } = await nearDropoff(app, 100);
+  const next = await orderFrom(app, drop, 800);
+  app.engine.dispatcher.tick();
+  await accept(app, next, d);
+
+  // Deliver the current order: the next job is now the run, at its pickup.
+  await app.inject({ method: 'POST', url: '/v1/jobs/complete', payload: { jobId: first, grade: 'A', position: drop, gpsTrail: [drop] } });
+  let cur = (await app.inject({ url: '/v1/driver/current', headers: d.headers })).json();
+  assert.deepEqual(cur.jobs.map((j) => j.id), [next]);
+  assert.equal(cur.stopIndex, 0, 'at the next pickup');
+  assert.equal(app.engine.supply.get(d.id).activeJobId, next);
+
+  // And the other way round: cancel the current order, keep the next job.
+  const app2 = appFor(t);
+  const b = await nearDropoff(app2, 100);
+  const next2 = await orderFrom(app2, b.drop, 800);
+  app2.engine.dispatcher.tick();
+  await accept(app2, next2, b.d);
+  await app2.inject({ method: 'POST', url: `/v1/ops/orders/${b.first}/close`, payload: { outcome: 'CANCELLED', reason: 'test' } });
+  cur = (await app2.inject({ url: `/v1/driver/current?jobs=${b.first},${next2}`, headers: b.d.headers })).json();
+  assert.deepEqual(cur.jobs.map((j) => j.id), [next2]);
+  assert.deepEqual(cur.ended.map((e) => [e.jobId, e.reason]), [[b.first, 'CANCELLED']]);
+  assert.equal(cur.stopIndex, 0);
 });
 
 test('on the run: never a third order', async (t) => {

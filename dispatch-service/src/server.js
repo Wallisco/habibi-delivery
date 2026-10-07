@@ -29,7 +29,7 @@ import { Metrics } from './metrics.js';
 import { computeEarnings, costToServe } from './fees.js';
 import { RateBook, RATE_FIELDS, MRD_DEFAULT, DAY_NAMES } from './rates.js';
 import { routeJob, routingStatus, point } from './routing.js';
-import { routeStops } from './batching.js';
+import { routeStops, runStops } from './batching.js';
 import { KeychatClient, buildQuote, buildStatement } from './keychat.js';
 import { DriverAccounts, ONBOARDING, REQUIRED_DOCS, HUBS, SHIFT_SLOTS,
   VEHICLE_TYPES, orderNumber } from './accounts.js';
@@ -129,7 +129,7 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
   const dispatcher = new Dispatcher({
     readyGate: gate, supply, jobs,
     maxHoldMs: staging ? 60_000 : null,
-    onOffer: ({ batchId, jobs: batchJobs, carrying = [], driverId, expiresAt, stops, route,
+    onOffer: ({ batchId, jobs: batchJobs, carrying = [], chain = null, driverId, expiresAt, stops, route,
                 marginal, storeCount, sameCustomer }) => {
       const margin = new Map((marginal ?? []).map((m) => [m.jobId, m.marginalKm]));
       const priced = batchJobs.map((j, i) => ({
@@ -157,7 +157,10 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
           jobIds: s.jobIds, lat: s.at.lat, lng: s.at.lng,
         })),
         // On the run: this order joins the run the driver is already on.
-        addsToRun: carrying.length > 0,
+        addsToRun: carrying.length > 0 && !chain,
+        // Next job near the drop-off: collected after the current drop-off.
+        chained: Boolean(chain),
+        storeFromDropoffKm: chain ? Number((chain.storeFromDropoffM / 1000).toFixed(1)) : null,
         summary: {
           orders: priced.length,
           runOrders: carrying.length + priced.length,
@@ -451,7 +454,9 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
 
   app.post('/v1/driver/:id/position', async (req) => {
     const { lat, lng } = req.body ?? {};
-    supply.upsert(req.params.id, { position: { lat, lng } });
+    // `at`: how fresh the fix is. A next job near the drop-off is only
+    // offered on a recent position.
+    supply.upsert(req.params.id, { position: { lat, lng, at: Date.now() } });
     return { ok: true };
   });
 
@@ -468,10 +473,9 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
     const ratio = supply.supplyRatio(d.zone, pending);
     // Restore the whole run. Returning only the anchor job would lose the
     // other stops on any reload, mid-delivery.
-    const activeSet = d.activeBatchId
-      ? jobs.all().filter((j) => j.batchId === d.activeBatchId
-          && !['DELIVERED', 'FAILED', 'CANCELLED'].includes(j.status))
-      : (d.activeJobId ? [jobs.get(d.activeJobId)].filter(Boolean) : []);
+    // Everything the driver carries: a stacked run, or a current order plus
+    // the next job they took near the drop-off.
+    const activeSet = driverRun(req.params.id);
     const active = activeSet[0] ?? null;
     return {
       state: d.state ?? SUPPLY.OFFLINE,
@@ -484,12 +488,7 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
       activeJob: active ? publicJob(active) : null,
       activeJobs: activeSet.map(publicJob),
       activeBatchId: d.activeBatchId ?? null,
-      activeStops: activeSet.length > 1
-        ? routeStops(activeSet).map((s) => ({
-            kind: s.kind, name: s.name, storeId: s.storeId ?? null,
-            jobIds: s.jobIds, lat: s.at.lat, lng: s.at.lng,
-          }))
-        : [],
+      activeStops: activeSet.length > 1 ? runStops(activeSet).map(stopView) : [],
       activeStage: active ? stageOf(active) : null,
     };
   });
@@ -535,12 +534,18 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
    */
   function runPosition(run) {
     if (run.length === 1) return { stops: [], stopIndex: run[0].collectedAt ? 1 : 0 };
-    const stops = routeStops(run).map(stopView);
+    const stops = runStops(run).map(stopView);
     const byId = new Map(run.map((j) => [j.id, j]));
     const i = stops.findIndex((s) => (s.kind === 'PICKUP'
       ? s.jobIds.some((id) => !byId.get(id)?.collectedAt)
       : true));
     return { stops, stopIndex: Math.max(0, i) };
+  }
+
+  /** The app's stage for where the driver is: going to a store, or to a customer. */
+  function stageAt({ stops, stopIndex }) {
+    const kind = stops.length ? stops[stopIndex]?.kind : (stopIndex === 0 ? 'PICKUP' : 'DROPOFF');
+    return kind === 'PICKUP' ? 'NAVIGATE_STORE' : 'NAVIGATE_CUSTOMER';
   }
 
   /**
@@ -643,15 +648,19 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
           ? Math.round(j.routing.deliverMinutes + 6) : null,
       });
     }
+    // The whole run and where the driver is in it, so taking a second order
+    // (stacked, or the next job near the drop-off) keeps their place.
+    const run = res.jobs ?? [res.job];
+    const pos = runPosition(run);
     return {
       ok: true,
       job: publicJob(res.job),
-      jobs: (res.jobs ?? [res.job]).map(publicJob),
+      jobs: run.map(publicJob),
       batchId: res.batchId ?? null,
-      stops: (res.stops ?? []).map((s) => ({
-        kind: s.kind, name: s.name, storeId: s.storeId ?? null,
-        jobIds: s.jobIds, lat: s.at.lat, lng: s.at.lng,
-      })),
+      chained: Boolean(res.chained),
+      stops: pos.stops,
+      stopIndex: pos.stopIndex,
+      stage: stageAt(pos),
     };
   });
 
