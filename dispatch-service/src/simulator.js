@@ -70,12 +70,16 @@ export class Simulator {
 
   simDrivers() { return this.e.accounts.all().filter((a) => String(a.phone).startsWith('SIM-')); }
 
-  /** Make sure a free simulated driver is standing near this order's store. */
-  onJob(job) {
+  /**
+   * Make sure a free simulated driver is standing near this order's store.
+   * `exclude`: an order the office put back in the pool goes to someone other
+   * than the driver it was taken from.
+   */
+  onJob(job, { exclude = null } = {}) {
     if (isNoSim(job)) return null;
     const free = this.simDrivers().find((a) => {
       const d = this.e.supply.get(a.driverId);
-      return !this.runs.has(a.driverId) && !d?.activeJobId;
+      return a.driverId !== exclude && !this.runs.has(a.driverId) && !d?.activeJobId;
     });
     let acct = free;
     if (!acct) {

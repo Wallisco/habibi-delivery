@@ -355,6 +355,9 @@ test('staging: a simulated driver drops a job the office reassigns', async (t) =
   await app.inject({ method: 'POST', url: `/v1/ops/orders/${jobId}/reassign`, payload: { reason: 'test' } });
   await runUntil(app, () => !app.engine.sim.runs.has(simId), { maxMs: 5000 });
   assert.ok(!app.engine.jobs.get(jobId).collectedAt, 'it did not carry on and collect it');
+  // And another simulated driver comes for it, so staging shows the whole story.
+  await runUntil(app, () => app.engine.jobs.get(jobId).status === 'DELIVERED');
+  assert.notEqual(app.engine.jobs.get(jobId).driverId, simId);
 });
 
 test('staging: an office sign-out stops a simulated driver mid-delivery', async (t) => {

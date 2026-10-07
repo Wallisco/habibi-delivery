@@ -1117,6 +1117,8 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
     jobs.setStatus(job.id, 'PENDING', { driverId: null, batchId: null },
       { driverId: previous, by: actor, reason, kind });
     refreshDriverActive(previous);
+    // Staging: another simulated driver comes for it.
+    sim?.onJob(job, { exclude: previous });
     return previous;
   }
 
