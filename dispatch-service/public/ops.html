@@ -462,6 +462,17 @@ async function openOrder(jobId){
             ? o.items.map((it)=>`<div>${it.qty} × ${it.name}${it.size?' '+it.size:''}</div>`).join('')
             : '<div style="color:var(--muted)">No item list from Keychat</div>'}
           <div style="font-size:11.5px;color:var(--muted)">${o.bagCount??1} bag${(o.bagCount??1)===1?'':'s'}${o.ageRestricted?' · age restricted':''}</div></div>
+        <div><div style="font-size:10.5px;font-weight:800;color:var(--muted)">COLLECTION PHOTO</div>
+          ${o.collectionPhoto?.file && !o.collectionPhoto.deletedAt
+            ? `<a href="/v1/ops/orders/${o.id}/collection-photo" target="_blank">
+                 <img src="/v1/ops/orders/${o.id}/collection-photo" alt="Photo of the order at collection"
+                   style="width:140px;height:105px;object-fit:cover;border-radius:10px;border:1px solid var(--line);display:block"></a>
+               <div style="font-size:11.5px;color:var(--muted)">${time(o.collectionPhoto.at)}</div>`
+            : o.collectionPhoto?.deletedAt
+              ? '<div style="color:var(--muted)">Deleted after 30 days</div>'
+              : o.collectedAt
+                ? '<div style="color:var(--red)">No collection photo</div>'
+                : '<div style="color:var(--muted)">Taken when the driver collects</div>'}</div>
       </div>
       ${!o.collectedAt && !['DELIVERED','FAILED','CANCELLED'].includes(o.status) ? `
         <div class="hint" style="margin-bottom:12px">The customer tracking link is released when the driver collects the order.</div>` : ''}

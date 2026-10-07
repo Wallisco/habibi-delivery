@@ -6,6 +6,11 @@ import { S as SUPPLY, transition, estimateRoamingPremium, acceptsJobKind } from 
 import { createApi, makeDemoJob, DEMO } from '../lib/api';
 import { enqueue, drain, isBlocked, readQueue } from '../lib/queue';
 import { reconcile, dropJobs } from '../lib/currentJob';
+import * as ImagePicker from 'expo-image-picker';
+import { enqueuePhoto, drainPhotos, readPhotos } from '../lib/photoQueue';
+
+/** How often waiting collection photos are retried. */
+export const PHOTO_RETRY_MS = 30000;
 
 /** How often the app asks dispatch what it is carrying (spec: within 10 s). */
 export const CURRENT_CHECK_MS = 10000;
@@ -334,6 +339,49 @@ export function AppProvider({ children, onJobEnded }) {
     return () => clearInterval(t);
   }, [state.ready, state.token, checkNow]);
 
+  // ----------------------------------------------- collection photos
+  // Uploaded in the background; a dead spot only delays them.
+  const uploading = useRef(false);
+  const uploadPhotos = useCallback(async () => {
+    const s = latest.current;
+    if (DEMO || uploading.current || !s.token || !s.driver) return;
+    uploading.current = true;
+    try {
+      const res = await drainPhotos(api.current, s.driver.id);
+      if (res.unauthorized) unauthorized.current();
+    } finally {
+      uploading.current = false;
+    }
+  }, []);
+
+  useEffect(() => {
+    if (DEMO || !state.ready || !state.token) return;
+    uploadPhotos();
+    const t = setInterval(async () => {
+      if ((await readPhotos(latest.current.driver?.id)).length) uploadPhotos();
+    }, PHOTO_RETRY_MS);
+    return () => clearInterval(t);
+  }, [state.ready, state.token, uploadPhotos]);
+
+  /**
+   * Take the photo of the order at the store. Returns the photo's local uri,
+   * or null if the driver backed out or refused the camera. It is queued at
+   * once and uploaded when there is signal.
+   */
+  const takeCollectionPhoto = async (jobIds) => {
+    const perm = await ImagePicker.requestCameraPermissionsAsync();
+    if (perm.status !== 'granted') {
+      dispatch({ type: 'TOAST', toast: 'Allow the camera to take the collection photo.' });
+      return null;
+    }
+    const shot = await ImagePicker.launchCameraAsync({ mediaTypes: ['images'], quality: 0.4, exif: false });
+    const uri = shot.canceled ? null : shot.assets?.[0]?.uri;
+    if (!uri) return null;
+    await enqueuePhoto({ uri, jobIds, driverId: latest.current.driver?.id ?? null });
+    uploadPhotos();
+    return uri;
+  };
+
   // Real mode: poll the dispatcher for an offer. Production would use FCM/APNs
   // so an offer wakes the device; polling keeps the app honest without push
   // infrastructure and is fine at this stage.
@@ -509,7 +557,7 @@ export function AppProvider({ children, onJobEnded }) {
     api: api.current,
     roamingPremium: estimateRoamingPremium(state.supplyRatio),
     setSupply, signIn, signOut, acceptOffer, declineOffer, expireOffer,
-    completeJob, syncNow, loadEarnings, checkNow,
+    completeJob, syncNow, loadEarnings, checkNow, takeCollectionPhoto,
     setStage: (stage) => dispatch({ type: 'STAGE', stage }),
     setScanned: (count) => dispatch({ type: 'SCANNED', count }),
     goToStop: (index, stage) => dispatch({ type: 'STOP', index, stage }),

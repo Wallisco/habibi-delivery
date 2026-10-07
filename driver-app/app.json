@@ -25,7 +25,7 @@
                                                                      ],
                                                "NSLocationWhenInUseUsageDescription":  "We use your location to send you the deliveries closest to you and to confirm you arrived at the restaurant and the customer.",
                                                "NSLocationAlwaysAndWhenInUseUsageDescription":  "We track your location while you are on a delivery so the customer can follow their order and so we can confirm the drop-off. Tracking stops when you go offline.",
-                                               "NSCameraUsageDescription":  "The camera scans the order label at the restaurant and takes proof-of-delivery photos.",
+                                               "NSCameraUsageDescription":  "The camera takes a photo of each order when you collect it, so wrong or missing items are caught before you leave, and proof-of-delivery photos.",
                                                "NSPhotoLibraryAddUsageDescription":  "Proof-of-delivery photos are saved so they can be reviewed if a customer disputes a delivery.",
                                                "ITSAppUsesNonExemptEncryption":  false
                                            }
@@ -59,10 +59,17 @@
                                  [
                                      "expo-camera",
                                      {
-                                         "cameraPermission":  "The camera scans the order label at the restaurant."
+                                         "cameraPermission":  "The camera takes a photo of each order when you collect it."
                                      }
                                  ],
-                                 "expo-secure-store"
+                                 "expo-secure-store",
+                                 [
+                                     "expo-image-picker",
+                                     {
+                                         "cameraPermission":  "The camera takes a photo of each order when you collect it.",
+                                         "photosPermission":  false
+                                     }
+                                 ]
                              ],
                  "extra":  {
                                "apiBaseUrl":  "https://habibi-api.quikr.co.za",

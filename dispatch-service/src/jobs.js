@@ -149,6 +149,15 @@ export class JobStore {
   pending() { return this.all().filter((j) => j.status === 'PENDING'); }
   pendingInZone(zone) { return this.pending().filter((j) => j.zone === zone); }
 
+  /** Change fields that are not a status change (no history entry). */
+  update(id, patch) {
+    const j = this.byId.get(id);
+    if (!j) return null;
+    Object.assign(j, patch);
+    this.db?.saveJob(j);
+    return j;
+  }
+
   /**
    * @param note  optional, kept on the history entry: { driverId, by, reason, kind }.
    *              This is how a driver's app learns why a job left them

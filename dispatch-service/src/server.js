@@ -15,6 +15,9 @@ import { OpsUsers, registerOpsAuth } from './opsAuth.js';
 import { DriverTokens, registerDriverAuth } from './driverAuth.js';
 import { markStaging } from './stagingBanner.js';
 import { parseItems } from './items.js';
+import { PhotoStore, isJpeg, MAX_PHOTO_BYTES } from './photos.js';
+import { tmpdir } from 'node:os';
+import { randomBytes } from 'node:crypto';
 import { IdempotencyStore, idempotent } from './idempotency.js';
 import { Simulator } from './simulator.js';
 import Fastify from 'fastify';
@@ -40,6 +43,7 @@ import { OtpService } from './otp.js';
 
 export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/dispatch.db',
   partnerAuth = true, partnerKeys = null, opsAuth = true, driverAuth = true, driverLegacyTokens,
+  photoDir = process.env.PHOTO_DIR, photoRetentionDays = Number(process.env.PHOTO_RETENTION_DAYS ?? 30),
   staging = process.env.DISPATCH_ENV === 'staging', simSpeed = 1 } = {}) {
   // Staging (habibi-staging.quikr.co.za) is where Keychat integrates: simulated
   // drivers, dispatchNow honoured, orders released within a minute, TEST badge.
@@ -64,6 +68,18 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
     enabled: driverAuth,
     ...(driverLegacyTokens !== undefined ? { legacy: driverLegacyTokens } : {}),
   });
+
+  // Collection photos (see photos.js): next to the database, or a throwaway
+  // folder for an in-memory test database.
+  const photos = new PhotoStore({
+    dir: photoDir ?? (dbPath === ':memory:'
+      ? join(tmpdir(), `dispatch-photos-${randomBytes(4).toString('hex')}`)
+      : join(dirname(dbPath), 'photos')),
+    retentionDays: photoRetentionDays,
+  });
+  // The app uploads the photo as raw JPEG bytes, up to 3 MB.
+  app.addContentTypeParser('image/jpeg', { parseAs: 'buffer', bodyLimit: MAX_PHOTO_BYTES },
+    (req, body, done) => done(null, body));
   const idem = new IdempotencyStore(db);
   const gate = new ReadyGate({ bufferMin: Number(process.env.READY_BUFFER_MIN ?? 0), db });
   const supply = new SupplyRegistry(db);
@@ -551,6 +567,26 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
     if (job.status === 'FAILED') return { jobId, reason: 'CLOSED', at };
     return { jobId, reason: 'REASSIGNED', at };
   }
+
+  /**
+   * The driver's photo of the order at collection, one per pickup stop: the
+   * same photo covers every order collected there. Uploaded when there is
+   * signal, so it may arrive after the order is collected or even delivered.
+   */
+  app.post('/v1/driver/collection-photo', async (req, reply) => {
+    const ids = String(req.query?.jobs ?? '').split(',').map((s) => s.trim()).filter(Boolean);
+    if (!ids.length || ids.length > 3) return reply.code(400).send({ error: 'Name the order(s) in ?jobs=' });
+    if (!isJpeg(req.body)) return reply.code(415).send({ error: 'Send the photo as a JPEG.' });
+    const list = ids.map((id) => jobs.get(id));
+    if (list.some((j) => !j)) return reply.code(404).send({ error: 'Unknown order' });
+    if (list.some((j) => j.driverId !== req.driverId)) {
+      return reply.code(403).send({ error: 'That order is not yours.' });
+    }
+    const file = photos.save(req.body);
+    const photo = { file, at: Date.now(), bytes: req.body.length, driverId: req.driverId };
+    for (const j of list) jobs.update(j.id, { collectionPhoto: photo });
+    return { ok: true, jobs: ids, bytes: photo.bytes };
+  });
 
   /**
    * The app asks every 10 seconds and on every screen change: what am I
@@ -1212,6 +1248,27 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
     };
   });
 
+  /** The driver's collection photo, for the back office (any signed-in role). */
+  app.get('/v1/ops/orders/:jobId/collection-photo', async (req, reply) => {
+    const job = jobs.get(req.params.jobId) ?? db.loadJob(req.params.jobId);
+    const bytes = job?.collectionPhoto?.file ? photos.read(job.collectionPhoto.file) : null;
+    if (!bytes) return reply.code(404).send({ error: 'No collection photo' });
+    reply.header('cache-control', 'private, no-store');
+    return reply.type('image/jpeg').send(bytes);
+  });
+
+  /** Delete photos past their retention, and say so on the order. */
+  function sweepPhotos() {
+    const removed = new Set(photos.sweep());
+    if (!removed.size) return 0;
+    for (const j of jobs.all()) {
+      if (j.collectionPhoto?.file && removed.has(j.collectionPhoto.file)) {
+        jobs.update(j.id, { collectionPhoto: { ...j.collectionPhoto, deletedAt: Date.now() } });
+      }
+    }
+    return removed.size;
+  }
+
   /** Put a stuck job back in the pool for another driver. */
   app.post('/v1/ops/orders/:jobId/reassign', async (req, reply) => {
     const job = jobs.get(req.params.jobId);
@@ -1505,7 +1562,7 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
 
   const sim = staging ? new Simulator({ app, engine: { supply, jobs, accounts, pendingOffers, driverTokens }, closeJob, speed: simSpeed, log: app.log }) : null;
 
-  app.decorate('engine', { opsUsers, driverTokens, idem, sim, gate, supply, jobs, dispatcher, otp, outbound, pendingOffers, db, metrics, rates, keychat, accounts, messages, ledger });
+  app.decorate('engine', { opsUsers, driverTokens, photos, sweepPhotos, idem, sim, gate, supply, jobs, dispatcher, otp, outbound, pendingOffers, db, metrics, rates, keychat, accounts, messages, ledger });
   return app;
 }
 
@@ -1515,6 +1572,9 @@ if (process.argv[1]?.endsWith('server.js')) {
   app.engine.dispatcher.start();
   app.engine.keychat.start();
   if (app.engine.sim) { app.engine.sim.start(); app.log.warn('STAGING: simulated drivers are running'); }
+  // Collection photos are deleted after their retention period; check hourly.
+  app.engine.sweepPhotos();
+  setInterval(() => { try { app.engine.sweepPhotos(); } catch (err) { app.log.error(err, 'photo sweep failed'); } }, 3600 * 1000).unref();
 
   // Close the database cleanly so WAL is checkpointed rather than left behind.
   for (const sig of ['SIGINT', 'SIGTERM']) {

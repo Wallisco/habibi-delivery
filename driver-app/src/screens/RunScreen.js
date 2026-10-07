@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { View, Text, FlatList, StyleSheet, Linking, Platform, TextInput, Pressable } from 'react-native';
+import { View, Text, FlatList, Image, StyleSheet, Linking, Platform, TextInput, Pressable } from 'react-native';
 import { useApp } from '../state/store';
 import { Card, Button, Pill } from '../components/UI';
 import MapPanel from '../components/MapPanel';
@@ -31,12 +31,15 @@ export default function RunScreen({ navigation }) {
   const {
     jobs, stops, stopIndex, goToStop, markJobDone, position, trail, online,
     otpAttempts, noteOtpFail, completeJob, api, toastMsg, scanned, setScanned, batchId, toast,
+    takeCollectionPhoto,
   } = useApp();
 
   const [code, setCode] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState(null);
   const [collected, setCollected] = useState(false);
+  // The collection photo for this stop (its local file; it uploads on its own).
+  const [photo, setPhoto] = useState(null);
 
   const live = (jobs ?? []).filter((j) => !j.done);
   const stop = stops?.[stopIndex] ?? null;
@@ -65,7 +68,12 @@ export default function RunScreen({ navigation }) {
   const stopJobs = (current?.jobIds ?? []).map((id) => jobs.find((j) => j.id === id)).filter(Boolean);
   const dropJob = current?.kind === 'DROPOFF' ? stopJobs[0] : null;
 
-  useEffect(() => { setCode(''); setErr(null); }, [stopIndex]);
+  useEffect(() => { setCode(''); setErr(null); setPhoto(null); }, [stopIndex]);
+
+  const snap = async () => {
+    const uri = await takeCollectionPhoto?.(stopJobs.map((j) => j.id));
+    if (uri) setPhoto(uri);
+  };
 
   if (!jobs?.length) {
     return (
@@ -237,13 +245,28 @@ export default function RunScreen({ navigation }) {
               </View>
             )}
           />
+          {/* The photo comes first: it confirms what is in the bags. */}
+          {photo ? (
+            <View style={st.photoRow}>
+              <Image source={{ uri: photo }} style={st.thumb} accessibilityLabel="Your photo of the order" />
+              <Text style={[T.small, { flex: 1 }]}>Photo taken</Text>
+              <Pressable onPress={snap} style={st.retake} accessibilityRole="button">
+                <Text style={st.linkText}>Retake</Text>
+              </Pressable>
+            </View>
+          ) : (
+            <Button title="Take a photo of the order" kind="ghost" onPress={snap}
+              style={{ marginTop: SP.sm }} />
+          )}
           <Button title={`I have all ${totalBags} bag${totalBags === 1 ? '' : 's'}`}
-            kind="live" onPress={collectAll} loading={busy} disabled={!inRange}
+            kind="live" onPress={collectAll} loading={busy} disabled={!inRange || !photo}
             style={{ marginTop: SP.sm }} />
-          {!inRange ? (
+          {!photo ? (
+            <Text style={st.hint}>Take the photo first.</Text>
+          ) : !inRange ? (
             <Text style={st.hint}>Unlocks within {PICKUP_RADIUS_M} m of the store.</Text>
           ) : null}
-          {!inRange && metres != null && metres < 1200 ? (
+          {photo && !inRange && metres != null && metres < 1200 ? (
             <Pressable style={st.link} accessibilityRole="button"
               onPress={() => { toastMsg('Pickup recorded with a GPS override.'); collectAll(); }}>
               <Text style={st.linkText}>My GPS is wrong, I am here</Text>
@@ -312,6 +335,9 @@ const st = StyleSheet.create({
   navigate: { paddingHorizontal: SP.md },
   action: { marginTop: SP.sm },
   fill: { flex: 1 },
+  photoRow: { flexDirection: 'row', alignItems: 'center', gap: SP.sm, marginTop: SP.sm },
+  thumb: { width: Z.tap, height: Z.tap, borderRadius: R.sm, backgroundColor: C.wash },
+  retake: { minHeight: Z.tap, paddingHorizontal: SP.md, justifyContent: 'center' },
   order: { marginTop: SP.xs },
   item: { ...T.body, color: C.ink, fontWeight: '600' },
   codeRow: { flexDirection: 'row', alignItems: 'center', gap: SP.sm, marginTop: SP.sm },

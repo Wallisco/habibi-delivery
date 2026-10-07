@@ -26,9 +26,9 @@ const TIMEOUT_MS = 8000;
  */
 const failure = (message, status) => Object.assign(new Error(message), { status });
 
-async function req(path, options = {}, token) {
+async function req(path, { timeoutMs = TIMEOUT_MS, ...options } = {}, token) {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const res = await fetch(`${BASE}${path}`, {
       ...options,
@@ -202,5 +202,12 @@ export function createApi(token, driverId, { onUnauthorized } = {}) {
     sendMessage: (body, jobId) => call(`/v1/driver/${driverId}/messages`,
       { method: 'POST', body: JSON.stringify({ body, jobId }) }),
     markMessagesRead: () => call(`/v1/driver/${driverId}/messages/read`, { method: 'POST' }),
+    // The photo of the order at collection: raw JPEG from the camera's file.
+    // A slow connection gets longer than the usual 8 s.
+    uploadCollectionPhoto: async (uri, jobIds) => {
+      const blob = await (await fetch(uri)).blob();
+      return call(`/v1/driver/collection-photo?jobs=${encodeURIComponent(jobIds.join(','))}`,
+        { method: 'POST', body: blob, headers: { 'Content-Type': 'image/jpeg' }, timeoutMs: 30000 });
+    },
   };
 }
