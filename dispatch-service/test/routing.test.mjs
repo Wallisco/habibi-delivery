@@ -76,7 +76,7 @@ test('a job routed on OSRM is billable; quote and job agree', async (t) => {
   assert.equal(j.source, 'osrm');
   assert.equal(j.deliverKm, 4.2);
 
-  const app = build({ dbPath: ':memory:', partnerAuth: false, opsAuth: false });
+  const app = build({ dbPath: ':memory:', partnerAuth: false, opsAuth: false, driverAuth: false });
   t.after(() => app.close());
   const body = { storeId: 'S1', zone: 'Milnerton', pickup: { latitude: STORE.lat, longitude: STORE.lng, name: 'Store' },
     dropoff: { latitude: HOME.lat, longitude: HOME.lng, name: 'Home' } };

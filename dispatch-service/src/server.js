@@ -12,6 +12,7 @@
 
 import { registerPartnerAuth } from './auth.js';
 import { OpsUsers, registerOpsAuth } from './opsAuth.js';
+import { DriverTokens, registerDriverAuth } from './driverAuth.js';
 import { IdempotencyStore, idempotent } from './idempotency.js';
 import { Simulator } from './simulator.js';
 import Fastify from 'fastify';
@@ -36,7 +37,7 @@ import { Dispatcher } from './dispatch.js';
 import { OtpService } from './otp.js';
 
 export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/dispatch.db',
-  partnerAuth = true, partnerKeys = null, opsAuth = true,
+  partnerAuth = true, partnerKeys = null, opsAuth = true, driverAuth = true, driverLegacyTokens,
   staging = process.env.DISPATCH_ENV === 'staging', simSpeed = 1 } = {}) {
   // Staging (habibi-staging.quikr.co.za) is where Keychat integrates: simulated
   // drivers, dispatchNow honoured, orders released within a minute, TEST badge.
@@ -55,6 +56,12 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
   // route so nothing in the back office is reachable without a session.
   const opsUsers = new OpsUsers(db);
   registerOpsAuth(app, opsUsers, { enabled: opsAuth });
+  // Driver tokens for every /v1/driver/* route but sign-in (see driverAuth.js).
+  const driverTokens = new DriverTokens(db);
+  registerDriverAuth(app, driverTokens, {
+    enabled: driverAuth,
+    ...(driverLegacyTokens !== undefined ? { legacy: driverLegacyTokens } : {}),
+  });
   const idem = new IdempotencyStore(db);
   const gate = new ReadyGate({ bufferMin: Number(process.env.READY_BUFFER_MIN ?? 0), db });
   const supply = new SupplyRegistry(db);
@@ -349,7 +356,7 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
     });
     supply.upsert(account.driverId, { phone, zone: account.zone });
     return {
-      token: `tok_${account.driverId}`,
+      token: driverTokens.issue(account.driverId),
       driver: {
         id: account.driverId, phone, hubCode: account.hubCode, zone: account.zone,
         onboarding: account.onboarding, vehicleType: account.vehicleType,
@@ -1309,7 +1316,7 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
 
   const sim = staging ? new Simulator({ app, engine: { supply, jobs, accounts, pendingOffers }, closeJob, speed: simSpeed, log: app.log }) : null;
 
-  app.decorate('engine', { opsUsers, idem, sim, gate, supply, jobs, dispatcher, otp, outbound, pendingOffers, db, metrics, rates, keychat, accounts, messages, ledger });
+  app.decorate('engine', { opsUsers, driverTokens, idem, sim, gate, supply, jobs, dispatcher, otp, outbound, pendingOffers, db, metrics, rates, keychat, accounts, messages, ledger });
   return app;
 }
 

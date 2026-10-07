@@ -21,7 +21,7 @@ async function runUntil(app, done, { stepMs = 1000, maxMs = 15 * 60 * 1000 } = {
 }
 
 function stagingApp(t) {
-  const app = build({ dbPath: ':memory:', partnerAuth: false, opsAuth: false, staging: true });
+  const app = build({ dbPath: ':memory:', partnerAuth: false, opsAuth: false, driverAuth: false, staging: true });
   t.after(() => app.close());
   return app;
 }
@@ -71,7 +71,7 @@ test('staging: the tracking page says TEST; production does not run the simulato
   assert.equal(tr.json().test, true);
   assert.equal((await app.inject({ url: '/health' })).json().env, 'staging');
 
-  const prod = build({ dbPath: ':memory:', partnerAuth: false, opsAuth: false, staging: false });
+  const prod = build({ dbPath: ':memory:', partnerAuth: false, opsAuth: false, driverAuth: false, staging: false });
   t.after(() => prod.close());
   assert.equal(prod.engine.sim, null);
 });
@@ -80,7 +80,7 @@ test('production ignores dispatchNow', async (t) => {
   const prev = process.env.NODE_ENV;
   process.env.NODE_ENV = 'production';
   t.after(() => { process.env.NODE_ENV = prev; });
-  const app = build({ dbPath: ':memory:', partnerAuth: false, opsAuth: false, staging: false });
+  const app = build({ dbPath: ':memory:', partnerAuth: false, opsAuth: false, driverAuth: false, staging: false });
   t.after(() => app.close());
   const { jobId } = (await app.inject({ method: 'POST', url: '/v1/keychat/jobs', payload: order('KC-P-1', { dispatchNow: true }) })).json();
   assert.equal(app.engine.jobs.get(jobId).dispatchNow, false);

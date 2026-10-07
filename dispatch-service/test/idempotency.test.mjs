@@ -11,7 +11,7 @@ const order = (extra = {}) => ({ storeId: 'S1', zone: 'Durbanville', externalId:
   pickup: { lat: -33.83, lng: 18.65, name: 'Store' }, dropoff: { lat: -33.81, lng: 18.65, name: 'Customer' }, ...extra });
 
 function app(t) {
-  const a = build({ dbPath: ':memory:', partnerKeys: keys, opsAuth: false });
+  const a = build({ dbPath: ':memory:', partnerKeys: keys, opsAuth: false, driverAuth: false });
   t.after(() => a.close());
   return a;
 }
