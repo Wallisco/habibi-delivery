@@ -109,6 +109,8 @@ function normaliseServerJob(j) {
     fee: j.fee ?? 35,
     estimatedTip: j.estimatedTip ?? 0,
     bagCount: j.bagCount ?? 1,
+    items: Array.isArray(j.items) ? j.items : [],
+    itemCount: j.itemCount ?? (Array.isArray(j.items) ? j.items.reduce((s, i) => s + (i.qty ?? 1), 0) : 1),
     readyInMinutes: j.readyInMinutes ?? 0,
     proofPolicy: j.proofPolicy ?? {
       minGrade: 'C', geofenceMetres: 150, otpAttemptLimit: 4,

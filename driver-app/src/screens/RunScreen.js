@@ -193,7 +193,7 @@ export default function RunScreen({ navigation }) {
         <Card>
           <Text style={T.h3}>Collect {stopJobs.length} order{stopJobs.length === 1 ? '' : 's'}</Text>
           <Text style={[T.small, { marginTop: 4, marginBottom: SP.md }]}>
-            Check each bag against its order number before you leave.
+            Check each bag against its order number and items before you leave.
           </Text>
           {stopJobs.map((j) => (
             <View key={j.id}>
@@ -201,6 +201,20 @@ export default function RunScreen({ navigation }) {
               <Row label={j.orderNumber ?? j.id}
                 value={`${j.bagCount ?? 1} bag${(j.bagCount ?? 1) === 1 ? '' : 's'}`} bold />
               <Text style={T.tiny}>to {(j.dropoff?.name ?? '').split(',')[0]}</Text>
+              {/* What should be in the bag. Checked at the counter, not at the door. */}
+              {j.items?.length ? (
+                <View style={st.items}>
+                  {j.items.map((it, i) => (
+                    <View key={i} style={st.itemRow}>
+                      <Text style={st.itemQty}>{it.qty}×</Text>
+                      <View style={{ flex: 1 }}>
+                        <Text style={st.itemName}>{it.name}</Text>
+                        {it.notes ? <Text style={T.tiny}>{it.notes}</Text> : null}
+                      </View>
+                    </View>
+                  ))}
+                </View>
+              ) : null}
             </View>
           ))}
           <Button title={`I have all ${totalBags} bag${totalBags === 1 ? '' : 's'}`}
@@ -283,6 +297,10 @@ export default function RunScreen({ navigation }) {
 }
 
 const st = StyleSheet.create({
+  items: { marginTop: 8, paddingLeft: 2 },
+  itemRow: { flexDirection: 'row', alignItems: 'flex-start', paddingVertical: 3 },
+  itemQty: { width: 34, fontWeight: '800', color: C.green, fontSize: 15 },
+  itemName: { fontSize: 15, color: C.ink },
   runLabel: { ...T.label, color: 'rgba(255,255,255,0.6)' },
   runProgress: { fontSize: 24, fontWeight: '800', color: C.white, marginTop: 2 },
   runSub: { ...T.small, color: 'rgba(255,255,255,0.72)', marginTop: 3 },

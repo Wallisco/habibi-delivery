@@ -141,6 +141,21 @@ back to straight-line distance. Only `osrm` should be billed on.
 }
 ```
 
+`items` is optional but strongly recommended: the driver checks the bag
+against it at the counter, and the back office shows it with the order value.
+
+```json
+"items": [
+  { "name": "Streetwise burger", "qty": 1, "unitPrice": 54.90 },
+  { "name": "Coke 500ml", "qty": 2, "unitPrice": 19.90 },
+  { "name": "Zinger wings", "qty": 1, "unitPrice": 49.90, "notes": "Extra hot" }
+]
+```
+
+Up to 60 lines; `name` up to 80 characters, `qty` 1–99, `unitPrice` and `notes`
+optional. Drivers see names, quantities and notes, never prices. `itemCount`
+is worked out from the lines.
+
 `tip` must be the amount the customer **committed at checkout**. It is shown to
 the driver in the offer as part of an all-inclusive figure, which is what makes
 the number they accept the number they are paid.

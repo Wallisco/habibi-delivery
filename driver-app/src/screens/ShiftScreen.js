@@ -247,6 +247,12 @@ export default function ShiftScreen({ navigation }) {
                 <Row label="Distance"
                   value={`${offer.distanceKm} km${offer.distanceSource === 'navigation' ? '' : ' approx'}`} />
                 <Row label="Bags to scan" value={String(offer.bagCount)} />
+                {(() => {
+                  const list = offer.jobs?.length ? offer.jobs : [offer];
+                  const n = list.reduce((s, j) => s + (j.itemCount ?? 0), 0);
+                  return list.some((j) => j.items?.length)
+                    ? <Row label="Items" value={`${n} item${n === 1 ? '' : 's'}`} /> : null;
+                })()}
                 <Row label="Food ready"
                   value={offer.readyInMinutes === 0 ? 'now' : `in ~${offer.readyInMinutes} min`} />
                 {offer.ageRestricted && (
