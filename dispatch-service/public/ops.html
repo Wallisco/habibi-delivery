@@ -769,6 +769,9 @@ async function openThread(driverId){
   CURRENT_THREAD = driverId;
   const d = await (await fetch('/v1/ops/messages/'+driverId)).json();
   const q = await (await fetch('/v1/ops/messages')).json();
+  // Never lose a reply someone is typing when the thread is redrawn.
+  const draft = $('#msgBody')?.value ?? '';
+  const typing = document.activeElement?.id === 'msgBody';
   $('#threadPane').innerHTML = `
     <div style="font-weight:700;margin-bottom:10px">Driver <span class="mono">${driverId}</span></div>
     <div class="thread" id="thread">${d.thread.length?d.thread.map((m)=>`
@@ -782,9 +785,13 @@ async function openThread(driverId){
     <div class="quick">${q.quickReplies.map((t)=>
       `<button data-act="quick" data-id="${driverId}">${t}</button>`).join('')}</div>`;
   const el=$('#thread'); if(el) el.scrollTop=el.scrollHeight;
+  const box=$('#msgBody');
+  if (box && draft) box.value = draft;
+  if (box && typing) box.focus();
 }
 async function sendMsg(driverId){
-  const body=$('#msgBody').value.trim(); if(!body) return;
+  const box=$('#msgBody'); const body=box.value.trim(); if(!body) return;
+  box.value='';
   await post(`/v1/ops/messages/${driverId}`,{body,actor:'ops'}); openThread(driverId);
 }
 async function sendQuick(driverId,body){
@@ -979,11 +986,22 @@ fetch('/v1/ops/me').then((r)=>r.json()).then((d)=>{
 });
 renderTabs(); loadOverview();
 // Auto-refresh, slow on purpose: the Refresh button is there for "now".
-// Nothing refreshes while the tab is hidden.
+// It never runs while the tab is hidden, or while someone is busy: typing in
+// any field, a reply half written, or an order open. A refresh redraws the
+// whole tab, and that used to wipe what was being typed.
 const REFRESH_LIVE_MS = 30000;      // Orders, Messages
 const REFRESH_OVERVIEW_MS = 60000;  // Overview
-setInterval(()=>{ if(!document.hidden && ['orders','messages'].includes(active)) LOADERS[active](); }, REFRESH_LIVE_MS);
-setInterval(()=>{ if(!document.hidden && active==='overview') loadOverview(); }, REFRESH_OVERVIEW_MS);
+function userBusy(){
+  const a = document.activeElement;
+  if (a && ['INPUT','TEXTAREA','SELECT'].includes(a.tagName)) return true;
+  if ($('#msgBody')?.value.trim()) return true;
+  if ($('#orderDetail')?.innerHTML.trim()) return true;
+  if (window.getSelection && String(window.getSelection()).trim()) return true;
+  return false;
+}
+const quiet = () => !document.hidden && !userBusy();
+setInterval(()=>{ if(quiet() && ['orders','messages'].includes(active)) LOADERS[active](); }, REFRESH_LIVE_MS);
+setInterval(()=>{ if(quiet() && active==='overview') loadOverview(); }, REFRESH_OVERVIEW_MS);
 </script>
 </body>
 </html>
