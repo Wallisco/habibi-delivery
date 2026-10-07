@@ -30,6 +30,21 @@ export const C = {
 export const R = { sm: 10, md: 16, lg: 22, pill: 999 };
 export const SP = { xs: 6, sm: 10, md: 16, lg: 22, xl: 30 };
 
+/**
+ * The size scale (spec section 6). Every screen must fit a 360×640 phone
+ * without scrolling, so nothing is bigger than it needs to be to read and tap:
+ * primary button 48, secondary 40, body text 15, never a tap target under 44.
+ */
+export const Z = {
+  primary: 48,
+  secondary: 40,
+  tap: 44,
+  body: 15,
+  buttonText: 16,
+  map: 100,       // map on the delivery screen (Navigate opens the full map)
+  mapOffer: 96,   // map on the offer card
+};
+
 export const T = {
   money: { fontSize: 52, fontWeight: '800', letterSpacing: -1.8, color: C.ink },
   hero: { fontSize: 40, fontWeight: '800', letterSpacing: -1.2, color: C.ink },
@@ -55,5 +70,7 @@ export const SHADOW = {
 
 export const S = {
   screen: { flex: 1, backgroundColor: C.mist },
-  content: { padding: SP.lg, paddingBottom: 48 },
+  content: { padding: SP.md },
+  // A screen that fits: fixed parts top to bottom, nothing scrolls.
+  page: { flex: 1, backgroundColor: C.mist, padding: SP.md },
 };
