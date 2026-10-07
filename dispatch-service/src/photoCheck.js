@@ -21,24 +21,36 @@ export const PHOTO_CHECK_MODEL = 'claude-opus-5-5';
 /** US$ per million tokens for PHOTO_CHECK_MODEL, for the trial's cost estimate. */
 export const PRICE_PER_MTOK = { input: 4, output: 20 };
 
-const Line = z.object({ name: z.string(), qty: z.number().int() });
+/*
+ * The answer is written in this order on purpose: first everything visible,
+ * counted without reference to the order; then one line per order line; the
+ * verdict is worked out here, from those lines, not chosen by the model. An
+ * earlier version asked for the verdict first, which let the model commit to
+ * "complete" before it had counted -- and it missed a missing item.
+ */
 export const CheckAnswer = z.object({
-  verdict: z.enum(['complete', 'missing', 'unclear']),
-  seen: z.array(Line),
-  missing: z.array(Line),
+  visible: z.array(z.object({ item: z.string(), qty: z.number().int() })),
+  lines: z.array(z.object({
+    name: z.string(),
+    ordered: z.number().int(),
+    seen: z.number().int(),
+    status: z.enum(['present', 'short', 'cannot_tell']),
+  })),
   note: z.string(),
 });
 
-const SYSTEM = `You check a delivery driver's photo of a food or grocery order at the store, before they leave.
-You get the photo and the list of what the order should contain. Compare them.
+const SYSTEM = `You check a delivery driver's photo of a food or grocery order at the store, before they leave. Your job is to catch anything missing, so be strict.
 
-- "complete": every line on the list is visible in the photo, in the right quantity.
-- "missing": you can clearly see the order and at least one listed item is not there, or there are fewer than listed. List exactly what is missing in "missing".
-- "unclear": you cannot tell -- bags or boxes are closed and hide the contents, the photo is blurred or dark, items are covered, or it is not a photo of the order. Do not guess.
+Work in this order:
+1. "visible": list every item you can actually see in the photo, with how many of each. Count them one by one. Do this before you look at the order list, and do not let the list change what you count.
+2. "lines": for each line of the order, in order, give how many were ordered and how many you can see, and a status:
+   - "present": you can see at least the ordered quantity.
+   - "short": you can see the area where the order is laid out, and fewer than ordered are visible (including none). This is the important case: one drink or one box missing is "short".
+   - "cannot_tell": the item could be hidden from view -- inside a closed bag, behind something, cut off at the edge, or the photo is too blurred or dark to count.
+   An item is only present if you can see it. Never assume something is in the photo because it is on the order.
+3. "note": one short sentence for the driver in plain words, e.g. "1 Sprite 500ml is not in the photo."
 
-Count only what you can see. A closed pizza box counts as one pizza; you need not know the topping. Match drinks by brand and size when the label is readable.
-In "seen", list what you can see, using the names from the order list where they match.
-"note" is one short sentence for the driver, in plain words.
+A closed pizza box counts as one pizza; you need not know the topping. Match drinks by brand and size when the label is readable; if a drink of the right kind is there but the label can't be read, it counts as seen.
 Never write out anything printed on receipts, labels with names, addresses or phone numbers, and never describe people.`;
 
 const orderText = (items, bagCount) => [
@@ -47,6 +59,20 @@ const orderText = (items, bagCount) => [
   `Packed in ${bagCount ?? 1} bag${(bagCount ?? 1) === 1 ? '' : 's'}.`,
 ].join('\n');
 
+/**
+ * The verdict, worked out from the per-line counts rather than taken from the
+ * model: anything short is missing; otherwise anything it couldn't see (or a
+ * line it didn't answer for) makes it unclear; only then complete.
+ */
+export function verdictFrom({ lines }, items) {
+  const short = lines.filter((l) => l.status !== 'cannot_tell' && (l.status === 'short' || l.seen < l.ordered));
+  const missing = short.map((l) => ({ name: l.name, qty: Math.max(1, l.ordered - Math.max(0, l.seen)) }));
+  const seen = lines.map((l) => ({ name: l.name, qty: Math.max(0, l.seen) }));
+  if (missing.length) return { status: 'missing', missing, seen };
+  if (lines.some((l) => l.status === 'cannot_tell') || lines.length < items.length) return { status: 'unclear', missing: [], seen };
+  return { status: 'complete', missing: [], seen };
+}
+
 /** Estimated cost in US$ of one check, from its token counts. */
 export const checkCost = (usage) => usage
   ? ((usage.input ?? 0) * PRICE_PER_MTOK.input + (usage.output ?? 0) * PRICE_PER_MTOK.output) / 1e6
@@ -54,13 +80,13 @@ export const checkCost = (usage) => usage
 
 /**
  * @param apiKey  ANTHROPIC_API_KEY; without one, every check is "not_configured"
- * @param effort  PHOTO_CHECK_EFFORT, default "low": the driver is waiting at the
- *                counter. The trial measures whether that is accurate enough.
+ * @param effort  PHOTO_CHECK_EFFORT, default "medium" (the model's own default).
+ *                "low" was faster but missed a missing item in the first trial.
  * @param client  an Anthropic client (tests pass a fake one)
  */
 export function createPhotoChecker({
   apiKey = process.env.ANTHROPIC_API_KEY,
-  effort = process.env.PHOTO_CHECK_EFFORT || 'low',
+  effort = process.env.PHOTO_CHECK_EFFORT || 'medium',
   client = null,
   log = null,
 } = {}) {
@@ -93,11 +119,7 @@ export function createPhotoChecker({
       };
       const out = res.stop_reason === 'refusal' ? null : res.parsed_output;
       if (!out) return { ...base, status: 'error', reason: res.stop_reason === 'refusal' ? 'declined' : 'no answer' };
-      // Keep the verdict consistent with its own lists.
-      let status = out.verdict;
-      if (status === 'complete' && out.missing.length) status = 'missing';
-      if (status === 'missing' && !out.missing.length) status = 'unclear';
-      return { ...base, status, seen: out.seen, missing: out.missing, note: out.note.slice(0, 300) };
+      return { ...base, ...verdictFrom(out, items), visible: out.visible, note: out.note.slice(0, 300) };
     } catch (err) {
       log?.warn?.({ status: err?.status, err: err?.message }, 'photo check failed');
       return { at, ms: Date.now() - at, status: 'error', reason: String(err?.status ?? err?.name ?? 'error') };

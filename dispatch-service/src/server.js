@@ -1324,6 +1324,25 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
     return { ok: true };
   });
 
+  /**
+   * For the trial: run the check again on the photo already taken, with the
+   * current prompt and settings. Answers when done (a few seconds). The
+   * previous result is kept beside it, so a change can be judged on the same
+   * photo without another collection.
+   */
+  app.post('/v1/ops/orders/:jobId/photo-check/rerun', async (req, reply) => {
+    const job = jobs.get(req.params.jobId) ?? db.loadJob(req.params.jobId);
+    const jpeg = job?.collectionPhoto?.file ? photos.read(job.collectionPhoto.file) : null;
+    if (!jpeg) return reply.code(409).send({ error: 'No collection photo to check (none taken, or deleted after 30 days).' });
+    if (!job.items?.length) return reply.code(409).send({ error: 'This order has no item list to check against.' });
+    const { review: _r, previous: _p, ...before } = job.photoCheck ?? {};
+    const result = await checker.check({ jpeg, items: job.items, bagCount: job.bagCount });
+    const next = { ...result, rerunBy: req.body?.actor ?? 'ops', ...(job.photoCheck ? { previous: before } : {}) };
+    if (jobs.get(job.id)) jobs.update(job.id, { photoCheck: next });
+    else db.saveJob({ ...job, photoCheck: next });
+    return { ok: true, photoCheck: next };
+  });
+
   /* ------------------------------------------------ back office: stores */
 
   /** Photo checks in a window, as the trial report counts them. */

@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { build } from '../src/server.js';
 import { SUPPLY } from '../src/supply.js';
-import { createPhotoChecker, checkCost, PHOTO_CHECK_MODEL } from '../src/photoCheck.js';
+import { createPhotoChecker, checkCost, verdictFrom, PHOTO_CHECK_MODEL } from '../src/photoCheck.js';
 
 const JPEG = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(1500, 3)]);
 const ITEMS = [{ name: 'Pizza Margherita', qty: 3 }, { name: 'Sprite', qty: 1, size: '500ml' }];
@@ -25,12 +25,23 @@ function fakeClient(answer, { usage = { input_tokens: 1800, output_tokens: 120 }
     } } },
   };
 }
-const answer = (verdict, missing = [], seen = []) => ({ verdict, missing, seen, note: 'One Sprite is not in the photo.' });
+/**
+ * An answer in the model's shape, for ITEMS: what it saw of each line.
+ * `sprite` is how many Sprites it saw (ordered 1); `status` overrides that line.
+ */
+const answer = ({ pizzas = 3, sprite = 1, spriteStatus = null } = {}) => ({
+  visible: [{ item: 'Pizza box', qty: pizzas }, ...(sprite ? [{ item: 'Sprite 500ml', qty: sprite }] : [])],
+  lines: [
+    { name: 'Pizza Margherita', ordered: 3, seen: pizzas, status: pizzas >= 3 ? 'present' : 'short' },
+    { name: 'Sprite', ordered: 1, seen: sprite, status: spriteStatus ?? (sprite >= 1 ? 'present' : 'short') },
+  ],
+  note: sprite ? 'Everything is there.' : 'One Sprite is not in the photo.',
+});
 
 /* ----------------------------------------------------------- the check */
 
 test('the check sends the photo and the item list, and records model, effort, time and tokens', async () => {
-  const client = fakeClient(answer('missing', [{ name: 'Sprite', qty: 1 }], [{ name: 'Pizza Margherita', qty: 3 }]));
+  const client = fakeClient(answer({ sprite: 0 }));
   const r = await createPhotoChecker({ client, effort: 'low' }).check({ jpeg: JPEG, items: ITEMS, bagCount: 2 });
   assert.equal(r.status, 'missing');
   assert.deepEqual(r.missing, [{ name: 'Sprite', qty: 1 }]);
@@ -54,11 +65,29 @@ test('the check sends the photo and the item list, and records model, effort, ti
   assert.match(text.text, /Packed in 2 bags/);
 });
 
-test('the verdict is kept consistent with its own lists', async () => {
-  const saysCompleteButMissing = fakeClient(answer('complete', [{ name: 'Sprite', qty: 1 }]));
-  assert.equal((await createPhotoChecker({ client: saysCompleteButMissing }).check({ jpeg: JPEG, items: ITEMS })).status, 'missing');
-  const saysMissingButNothing = fakeClient(answer('missing', []));
-  assert.equal((await createPhotoChecker({ client: saysMissingButNothing }).check({ jpeg: JPEG, items: ITEMS })).status, 'unclear');
+test('the verdict is worked out from the per-line counts, not taken from the model', () => {
+  assert.equal(verdictFrom(answer(), ITEMS).status, 'complete');
+  const short = verdictFrom(answer({ sprite: 0 }), ITEMS);
+  assert.equal(short.status, 'missing');
+  assert.deepEqual(short.missing, [{ name: 'Sprite', qty: 1 }]);
+  assert.deepEqual(verdictFrom(answer({ pizzas: 2 }), ITEMS).missing, [{ name: 'Pizza Margherita', qty: 1 }], 'one box short');
+  // Seen fewer than ordered but marked "present": still short.
+  const inconsistent = answer(); inconsistent.lines[0].seen = 2;
+  assert.equal(verdictFrom(inconsistent, ITEMS).status, 'missing');
+  // Hidden from view: unclear, not complete and not missing.
+  assert.equal(verdictFrom(answer({ sprite: 0, spriteStatus: 'cannot_tell' }), ITEMS).status, 'unclear');
+  // A line the model didn't answer for: unclear.
+  const partial = answer(); partial.lines.pop();
+  assert.equal(verdictFrom(partial, ITEMS).status, 'unclear');
+});
+
+test('the model is told to count first and be strict, at medium effort by default', async () => {
+  const client = fakeClient(answer());
+  await createPhotoChecker({ client }).check({ jpeg: JPEG, items: ITEMS, bagCount: 1 });
+  const req = client.calls[0];
+  assert.equal(req.output_config.effort, 'medium');
+  assert.match(req.system, /before you look at the order list/);
+  assert.match(req.system, /Never assume something is in the photo because it is on the order/);
 });
 
 test('no key, a refusal or an API error never throws: the check says so', async () => {
@@ -110,7 +139,7 @@ const upload = (app, d) => app.inject({ method: 'POST', url: `/v1/driver/collect
 const checkFor = async (app, d) => (await app.inject({ url: `/v1/driver/photo-check?jobs=${d.jobId}`, headers: d.headers })).json().checks[d.jobId];
 
 test('every store starts with the check off: the photo uploads and nothing is checked', async (t) => {
-  const client = fakeClient(answer('complete'));
+  const client = fakeClient(answer());
   const app = appFor(t, client);
   const d = await driverWithOrder(app);
   assert.equal(d.accepted.job.photoCheck, false, 'the app is told the check is off');
@@ -123,7 +152,7 @@ test('every store starts with the check off: the photo uploads and nothing is ch
 test('switched on for the store: the photo is checked in the background and the driver gets the result', async (t) => {
   let release;
   const gate = new Promise((r) => { release = r; });
-  const client = fakeClient(answer('missing', [{ name: 'Sprite', qty: 1 }]), { gate });
+  const client = fakeClient(answer({ sprite: 0 }), { gate });
   const app = appFor(t, client);
   const sw = await app.inject({ method: 'PUT', url: '/v1/ops/stores/KFC-MIL', payload: { photoCheck: true } });
   assert.equal(sw.statusCode, 200);
@@ -146,7 +175,7 @@ test('switched on for the store: the photo is checked in the background and the 
 });
 
 test('an order without an item list is not checked, even in a trial store', async (t) => {
-  const client = fakeClient(answer('complete'));
+  const client = fakeClient(answer());
   const app = appFor(t, client);
   await app.inject({ method: 'PUT', url: '/v1/ops/stores/KFC-MIL', payload: { photoCheck: true } });
   const d = await driverWithOrder(app, { items: null });
@@ -156,7 +185,7 @@ test('an order without an item list is not checked, even in a trial store', asyn
 });
 
 test('the office reviews each check, and the trial report counts accuracy, speed and cost', async (t) => {
-  const client = fakeClient(answer('complete'));
+  const client = fakeClient(answer());
   const app = appFor(t, client);
   await app.inject({ method: 'PUT', url: '/v1/ops/stores/KFC-MIL', payload: { photoCheck: true } });
   const d = await driverWithOrder(app);
@@ -195,4 +224,35 @@ test('only ops and admin can switch a store; anyone signed in can see the list',
   const list = await app.inject({ url: '/v1/ops/stores', headers: { cookie: await cookie('v@x.co') } });
   assert.equal(list.statusCode, 200);
   assert.equal(list.json().checkConfigured, false, 'no API key: the office sees it is not configured');
+});
+
+test('re-check: the office re-runs the check on the same photo and sees what it said before', async (t) => {
+  // First the check misses the missing Sprite; after a fix it catches it.
+  const answers = [answer(), answer({ sprite: 0 })];
+  const client = fakeClient(null);
+  client.beta.messages.parse = async (params) => {
+    client.calls.push(params);
+    return { model: PHOTO_CHECK_MODEL, stop_reason: 'end_turn', usage: { input_tokens: 1800, output_tokens: 300 }, parsed_output: answers.shift() };
+  };
+  const app = appFor(t, client);
+  await app.inject({ method: 'PUT', url: '/v1/ops/stores/KFC-MIL', payload: { photoCheck: true } });
+  const d = await driverWithOrder(app);
+  await upload(app, d);
+  await app.engine.photoChecksDone();
+  assert.equal((await checkFor(app, d)).status, 'complete', 'the first check got it wrong');
+  await app.inject({ method: 'POST', url: `/v1/ops/orders/${d.jobId}/photo-check/review`, payload: { correct: false } });
+
+  const res = await app.inject({ method: 'POST', url: `/v1/ops/orders/${d.jobId}/photo-check/rerun`, payload: {} });
+  assert.equal(res.statusCode, 200);
+  const c = res.json().photoCheck;
+  assert.equal(c.status, 'missing');
+  assert.deepEqual(c.missing, [{ name: 'Sprite', qty: 1 }]);
+  assert.equal(c.previous.status, 'complete', 'the earlier answer is kept beside it');
+  assert.equal(c.review, undefined, 'a new answer needs a new review');
+  assert.equal(client.calls.length, 2);
+  assert.equal(client.calls[1].messages[0].content[0].source.data, JPEG.toString('base64'), 'the same photo');
+
+  // No photo yet: nothing to re-check.
+  const other = await driverWithOrder(app, { phone: '0823333333' });
+  assert.equal((await app.inject({ method: 'POST', url: `/v1/ops/orders/${other.jobId}/photo-check/rerun`, payload: {} })).statusCode, 409);
 });

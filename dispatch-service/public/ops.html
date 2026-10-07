@@ -234,6 +234,7 @@ document.addEventListener('click', (e) => {
   if (action === 'openLedger')  openLedger(id);
   if (action === 'photoCheckSwitch') setPhotoCheck(id, state === 'on');
   if (action === 'photoCheckReview') reviewPhotoCheck(id, state === 'right');
+  if (action === 'photoCheckRerun')  rerunPhotoCheck(id, act);
 });
 
 // Enter in the search box should search, not reload the page.
@@ -470,7 +471,9 @@ async function openOrder(jobId){
             ? `<a href="/v1/ops/orders/${o.id}/collection-photo" target="_blank">
                  <img src="/v1/ops/orders/${o.id}/collection-photo" alt="Photo of the order at collection"
                    style="width:140px;height:105px;object-fit:cover;border-radius:10px;border:1px solid var(--line);display:block"></a>
-               <div style="font-size:11.5px;color:var(--muted)">${time(o.collectionPhoto.at)}</div>`
+               <div style="font-size:11.5px;color:var(--muted)">${time(o.collectionPhoto.at)}</div>
+               ${o.items?.length ? `<button class="sm" style="margin-top:4px" data-act="photoCheckRerun" data-id="${o.id}">Re-check photo</button>
+                 <div id="rerunMsg" style="font-size:11.5px;color:var(--muted)"></div>` : ''}`
             : o.collectionPhoto?.deletedAt
               ? '<div style="color:var(--muted)">Deleted after 30 days</div>'
               : o.collectedAt
@@ -485,7 +488,8 @@ async function openOrder(jobId){
                not_configured: '<div><span class="tag n">Not configured</span></div>' }[o.photoCheck.status] ?? ''}
           ${o.photoCheck.missing?.length ? '<div style="font-size:12.5px">Not seen: ' + o.photoCheck.missing.map((m) => m.qty + ' × ' + m.name).join(', ') + '</div>' : ''}
           ${o.photoCheck.note ? '<div style="font-size:11.5px;color:var(--muted)">' + o.photoCheck.note + '</div>' : ''}
-          ${o.photoCheck.ms != null ? '<div style="font-size:11px;color:var(--muted)">' + (o.photoCheck.ms / 1000).toFixed(1) + ' s · ' + (o.photoCheck.model ?? '') + '</div>' : ''}
+          ${o.photoCheck.ms != null ? '<div style="font-size:11px;color:var(--muted)">' + (o.photoCheck.ms / 1000).toFixed(1) + ' s · ' + (o.photoCheck.model ?? '') + (o.photoCheck.effort ? ' · ' + o.photoCheck.effort : '') + '</div>' : ''}
+          ${o.photoCheck.previous ? '<div style="font-size:11px;color:var(--muted)">Before re-check: ' + o.photoCheck.previous.status + (o.photoCheck.previous.missing?.length ? ' (not seen: ' + o.photoCheck.previous.missing.map((m) => m.qty + ' × ' + m.name).join(', ') + ')' : '') + '</div>' : ''}
           ${['complete','missing','unclear'].includes(o.photoCheck.status) ? (o.photoCheck.review
             ? '<div style="font-size:12px">Reviewed: ' + (o.photoCheck.review.correct ? 'right' : 'wrong') + '</div>'
             : `<div style="display:flex;gap:6px;margin-top:4px">
@@ -863,6 +867,12 @@ async function setPhotoCheck(storeId, on){
     headers: { 'content-type': 'application/json' }, body: JSON.stringify({ photoCheck: on }) });
   if (!res.ok) { alert((await res.json()).error ?? 'Could not change the store.'); return; }
   loadStores();
+}
+async function rerunPhotoCheck(jobId, btn){
+  btn.disabled = true; btn.textContent = 'Checking…';
+  const res = await post('/v1/ops/orders/' + jobId + '/photo-check/rerun', {});
+  if (!res.ok) { btn.disabled = false; btn.textContent = 'Re-check photo'; const m = $('#rerunMsg'); if (m) m.textContent = (await res.json()).error ?? 'Could not re-check.'; return; }
+  openOrder(jobId);
 }
 async function reviewPhotoCheck(jobId, correct){
   const res = await post('/v1/ops/orders/' + jobId + '/photo-check/review', { correct });
