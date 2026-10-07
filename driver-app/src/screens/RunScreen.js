@@ -3,6 +3,7 @@ import { View, Text, ScrollView, StyleSheet, Linking, Platform, TextInput, Press
 import { useApp } from '../state/store';
 import { Card, Button, Row, Pill, Divider, Label } from '../components/UI';
 import MapPanel from '../components/MapPanel';
+import OfferSheet from '../components/OfferSheet';
 import { metresBetween, insideGeofence } from '../lib/proof';
 import { C, T, R, SP, S } from '../theme';
 
@@ -287,6 +288,9 @@ export default function RunScreen({ navigation }) {
 
       <Button title="Message the office" kind="ghost"
         onPress={() => navigation.navigate('Messages')} style={{ marginTop: SP.xl }} />
+
+      {/* On the run: a second order for this pickup can be offered here. */}
+      <OfferSheet navigation={navigation} />
     </ScrollView>
   );
 }

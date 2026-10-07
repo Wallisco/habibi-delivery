@@ -9,6 +9,17 @@ import { reconcile, dropJobs } from '../lib/currentJob';
 
 /** How often the app asks dispatch what it is carrying (spec: within 10 s). */
 export const CURRENT_CHECK_MS = 10000;
+/** Most orders on one run (dispatch-service/src/batching.js MAX_BATCH). */
+export const MAX_RUN = 2;
+
+/**
+ * Can dispatch still add an order to this run? Only while the driver is on the
+ * way to collect their only order (dispatch checks again: same pickup area,
+ * ready within 5 minutes of the first order).
+ */
+export const canStackOnRun = (s) =>
+  !!s.job && s.jobs.filter((j) => !j.done).length < MAX_RUN
+  && s.stopIndex === 0 && (s.stage ?? 'NAVIGATE_STORE') === 'NAVIGATE_STORE';
 
 const Ctx = createContext(null);
 export const useApp = () => useContext(Ctx);
@@ -326,11 +337,14 @@ export function AppProvider({ children, onJobEnded }) {
   // Real mode: poll the dispatcher for an offer. Production would use FCM/APNs
   // so an offer wakes the device; polling keeps the app honest without push
   // infrastructure and is fine at this stage.
+  // While carrying a job, keep looking only if a second order could still join
+  // the run (on-the-run stacking).
+  const stackable = canStackOnRun(state);
   useEffect(() => {
     if (DEMO || !state.driver) return;
     const canReceive = [SUPPLY.ZONE_COMMITTED, SUPPLY.ROAMING_ELIGIBLE, SUPPLY.RETURNING]
       .includes(state.supply);
-    if (!canReceive || state.job) return;
+    if (!canReceive || (state.job && !stackable)) return;
 
     const poll = setInterval(async () => {
       try {
@@ -344,6 +358,7 @@ export function AppProvider({ children, onJobEnded }) {
             jobs: (o.jobs ?? [o.job]).map(normaliseServerJob),
             stops: o.stops ?? [],
             summary: o.summary ?? null,
+            addsToRun: Boolean(o.addsToRun),
           } });
         }
       } catch {
@@ -351,7 +366,7 @@ export function AppProvider({ children, onJobEnded }) {
       }
     }, 3000);
     return () => clearInterval(poll);
-  }, [state.supply, state.job, state.offer, state.driver]);
+  }, [state.supply, state.job, state.offer, state.driver, stackable]);
 
   useEffect(() => {
     if (!DEMO) return;
@@ -402,7 +417,9 @@ export function AppProvider({ children, onJobEnded }) {
   const acceptOffer = async () => {
     if (!state.offer) return;
     if (!DEMO) {
+      const addsToRun = !!state.job;
       try {
+        // On the run, dispatch answers with the whole run: replace what we hold.
         const res = await api.current.acceptJob(state.offer.id);
         dispatch({
           type: 'ACCEPT',
@@ -410,10 +427,15 @@ export function AppProvider({ children, onJobEnded }) {
           batchId: res.batchId ?? null,
           stops: res.stops ?? [],
         });
+        if (addsToRun) dispatch({ type: 'TOAST', toast: 'Second order added to your run.' });
         return;
-      } catch {
+      } catch (e) {
         dispatch({ type: 'OFFER', offer: null });
-        dispatch({ type: 'TOAST', toast: 'That job went to someone else.' });
+        // Dispatch's own reason ("Offer expired", "Offer no longer valid"),
+        // not a guess. Only a failure to reach dispatch gets a generic line.
+        dispatch({ type: 'TOAST', toast: e.status === 409 && e.message
+          ? `${e.message}.`.replace(/\.\.$/, '.')
+          : 'Could not reach dispatch. The offer was not accepted.' });
         return;
       }
     }
@@ -423,6 +445,14 @@ export function AppProvider({ children, onJobEnded }) {
   const declineOffer = () => {
     if (!DEMO && state.offer) api.current.declineJob(state.offer.id).catch(() => {});
     dispatch({ type: 'OFFER', offer: null });
+  };
+
+  // Ran out of time. Not a decline: dispatch expires it and offers it to
+  // someone else, and this driver can see it again sooner.
+  const expireOffer = () => {
+    if (!latest.current.offer) return;
+    dispatch({ type: 'OFFER', offer: null });
+    dispatch({ type: 'TOAST', toast: 'Offer expired.' });
   };
 
   const completeJob = async (evidence) => {
@@ -478,7 +508,7 @@ export function AppProvider({ children, onJobEnded }) {
     ...state,
     api: api.current,
     roamingPremium: estimateRoamingPremium(state.supplyRatio),
-    setSupply, signIn, signOut, acceptOffer, declineOffer,
+    setSupply, signIn, signOut, acceptOffer, declineOffer, expireOffer,
     completeJob, syncNow, loadEarnings, checkNow,
     setStage: (stage) => dispatch({ type: 'STAGE', stage }),
     setScanned: (count) => dispatch({ type: 'SCANNED', count }),

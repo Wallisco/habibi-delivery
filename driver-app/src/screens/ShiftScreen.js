@@ -1,21 +1,18 @@
 import React, { useEffect, useState } from 'react';
 import { View, Text, ScrollView, StyleSheet, Modal, Pressable } from 'react-native';
 import { useApp } from '../state/store';
-import { Card, Button, Row, Pill, Divider, Label, LiveDot } from '../components/UI';
+import { Card, Button, Pill, Divider, Label, LiveDot } from '../components/UI';
 import { S as SUPPLY, LABELS } from '../lib/supplyState';
-import MapPanel from '../components/MapPanel';
+import OfferSheet from '../components/OfferSheet';
 import { C, T, R, SP, S, SHADOW } from '../theme';
-
-const OFFER_SECONDS = 25;
 
 export default function ShiftScreen({ navigation }) {
   const {
-    supply, setSupply, offer, acceptOffer, declineOffer, job,
+    supply, setSupply, offer, job,
     roamingPremium, zone, toast, toastMsg, pendingSync, earnings,
     driver, fetchAccount, fetchMessages, jobs,
   } = useApp();
 
-  const [left, setLeft] = useState(OFFER_SECONDS);
   const [account, setAccount] = useState(null);
   const [unread, setUnread] = useState(0);
 
@@ -30,17 +27,6 @@ export default function ShiftScreen({ navigation }) {
     fetchMessages().then((d) => setUnread(d.unread ?? 0)).catch(() => {});
     return () => clearInterval(t);
   }, [driver, fetchAccount, fetchMessages]);
-
-  // Timing out is the same as declining: the job returns to the pool rather
-  // than dying with this driver.
-  useEffect(() => {
-    if (!offer) { setLeft(OFFER_SECONDS); return; }
-    setLeft(OFFER_SECONDS);
-    const t = setInterval(() => {
-      setLeft((v) => { if (v <= 1) { clearInterval(t); declineOffer(); return 0; } return v - 1; });
-    }, 1000);
-    return () => clearInterval(t);
-  }, [offer, declineOffer]);
 
   useEffect(() => { if (job) navigation.navigate('ActiveJob'); }, [job, navigation]);
 
@@ -176,97 +162,8 @@ export default function ShiftScreen({ navigation }) {
       <Button title="Earnings" kind="ghost" onPress={() => navigation.navigate('Earnings')}
         style={{ marginTop: SP.sm }} />
 
-      {/* --------------------------------------------------------- offer sheet */}
-      <Modal visible={!!offer} transparent animationType="slide" onRequestClose={declineOffer}>
-        <View style={st.sheetWrap}>
-          <View style={[st.sheet, SHADOW.lift]}>
-            {offer && (
-              <>
-                <View style={st.grabber} />
-                <View style={st.sheetTop}>
-                  <Pill text={offer.orderNumber ?? (offer.kind === 'ROAMING' ? 'LONG RUN' : 'LOCAL')}
-                    tone={offer.kind === 'ROAMING' ? 'forest' : 'live'} />
-                  <View style={st.timerWrap}>
-                    <Text style={st.timer}>{left}</Text>
-                    <Text style={st.timerUnit}>s</Text>
-                  </View>
-                </View>
-
-                {/* The customer commits their tip at checkout, so this is the
-                    real number, not an estimate. A driver deciding in 25
-                    seconds should not have to guess what a job pays. */}
-                <Text style={st.fee}>R{(offer.summary?.totalEarnings
-                  ?? offer.earningsPreview?.total ?? offer.fee).toFixed(0)}</Text>
-                <Text style={[T.small, { marginTop: -2 }]}>
-                  {offer.tip > 0
-                    ? `includes R${offer.tip.toFixed(0)} tip the customer already added`
-                    : 'no tip on this one'}
-                </Text>
-
-                {offer.earningsPreview?.lines?.length ? (
-                  <View style={st.mini}>
-                    {offer.earningsPreview.lines
-                      .filter((l) => ['SURGE', 'PREMIUM', 'DELAY', 'TIP'].includes(l.code))
-                      .map((l) => (
-                        <View key={l.code} style={st.miniRow}>
-                          <Text style={st.miniLabel}>{l.label}</Text>
-                          <Text style={st.miniAmt}>+R{l.amount.toFixed(2)}</Text>
-                        </View>
-                      ))}
-                  </View>
-                ) : null}
-
-                <Divider />
-                <MapPanel pickup={offer.pickup} dropoff={offer.dropoff} height={140} />
-                {offer.jobs?.length > 1 ? (
-                  <View style={st.runBanner}>
-                    <Text style={st.runBannerText}>
-                      {offer.jobs.length} orders on one run
-                      {offer.summary?.stores > 1 ? ` from ${offer.summary.stores} stores` : ''}
-                      {offer.summary?.sameCustomer ? ' · same customer' : ''}
-                    </Text>
-                    <Text style={st.runBannerSub}>
-                      {offer.stops?.length ?? 0} stops · {offer.summary?.km ?? '–'} km ·
-                      about {Math.round(offer.summary?.minutes ?? 0)} min
-                    </Text>
-                  </View>
-                ) : null}
-
-                <View style={st.addr}>
-                  <Text style={T.label}>COLLECT FROM</Text>
-                  <Text style={st.addrText}>{offer.pickup?.name ?? 'Collection point'}</Text>
-                  <Text style={[T.label, { marginTop: SP.sm }]}>
-                    DELIVER TO{offer.jobs?.length > 1 ? ` (${offer.jobs.length})` : ''}
-                  </Text>
-                  {(offer.jobs?.length ? offer.jobs : [offer]).map((j) => (
-                    <Text key={j.id} style={st.addrText}>
-                      {j.dropoff?.name ?? 'Address not supplied'}
-                    </Text>
-                  ))}
-                </View>
-                <Row label="Distance"
-                  value={`${offer.distanceKm} km${offer.distanceSource === 'navigation' ? '' : ' approx'}`} />
-                <Row label="Bags to scan" value={String(offer.bagCount)} />
-                <Row label="Food ready"
-                  value={offer.readyInMinutes === 0 ? 'now' : `in ~${offer.readyInMinutes} min`} />
-                {offer.ageRestricted && (
-                  <View style={st.warn}>
-                    <Text style={st.warnText}>
-                      Age restricted. This must be handed to the customer.
-                    </Text>
-                  </View>
-                )}
-
-                <Button title="Accept trip" kind="live" onPress={acceptOffer}
-                  style={{ marginTop: SP.lg }} />
-                <Pressable onPress={declineOffer} style={st.decline} accessibilityRole="button">
-                  <Text style={st.declineText}>Decline</Text>
-                </Pressable>
-              </>
-            )}
-          </View>
-        </View>
-      </Modal>
+      {/* The offer card: shared with the delivery screen. */}
+      <OfferSheet navigation={navigation} />
 
       {/* -------------------------------------------------------------- toast */}
       <Modal visible={!!toast} transparent animationType="fade" onRequestClose={() => toastMsg(null)}>
@@ -296,34 +193,6 @@ const st = StyleSheet.create({
   returning: { ...T.small, color: 'rgba(255,255,255,0.78)' },
   offline: { paddingVertical: 15, alignItems: 'center', marginTop: SP.xs },
   offlineText: { color: 'rgba(255,255,255,0.65)', fontSize: 15, fontWeight: '600' },
-
-  sheetWrap: { flex: 1, backgroundColor: 'rgba(12,26,18,0.5)', justifyContent: 'flex-end' },
-  sheet: {
-    backgroundColor: C.white, borderTopLeftRadius: 28, borderTopRightRadius: 28,
-    paddingHorizontal: 26, paddingBottom: 34, paddingTop: SP.sm,
-  },
-  grabber: {
-    width: 40, height: 4, borderRadius: 2, backgroundColor: C.line,
-    alignSelf: 'center', marginBottom: SP.lg,
-  },
-  sheetTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  timerWrap: { flexDirection: 'row', alignItems: 'baseline' },
-  timer: { fontSize: 30, fontWeight: '800', color: C.red, letterSpacing: -1 },
-  timerUnit: { fontSize: 14, fontWeight: '700', color: C.red, marginLeft: 1 },
-  fee: { ...T.money, fontSize: 58, marginTop: SP.md },
-  runBanner: { backgroundColor: C.live, borderRadius: 12, padding: 11, marginBottom: SP.sm },
-  runBannerText: { fontSize: 14.5, fontWeight: '800', color: C.forest },
-  runBannerSub: { fontSize: 12, color: C.forest, opacity: .8, marginTop: 2 },
-  addr: { backgroundColor: C.wash, borderRadius: 12, padding: 13, marginBottom: SP.sm },
-  addrText: { fontSize: 16, fontWeight: '700', color: C.ink, marginTop: 2, lineHeight: 21 },
-  mini: { backgroundColor: C.wash, borderRadius: 12, padding: 12, marginTop: SP.md },
-  miniRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 3 },
-  miniLabel: { fontSize: 13, color: C.green, fontWeight: '600', flex: 1 },
-  miniAmt: { fontSize: 13, color: C.green, fontWeight: '800' },
-  warn: { backgroundColor: '#FDF3E2', borderRadius: 12, padding: 13, marginTop: SP.sm },
-  warnText: { color: C.amber, fontSize: 13.5, fontWeight: '600' },
-  decline: { paddingVertical: 16, alignItems: 'center' },
-  declineText: { color: C.muted, fontSize: 15.5, fontWeight: '700' },
 
   toastWrap: { flex: 1, backgroundColor: 'rgba(12,26,18,0.45)', justifyContent: 'center', padding: 30 },
   toast: { backgroundColor: C.white, borderRadius: R.lg, padding: SP.lg },
