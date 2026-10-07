@@ -2,10 +2,13 @@
 /**
  * A stacking test for a real phone, on STAGING only.
  *
- *   now     orders A and B: same store (S), customers 20 m apart, about 1.5 km away
+ *   now     orders A and B: same store (S), customers 20 m apart, 450 m north
  *           -> should be offered to your phone as ONE stacked run
- *   +5 min  orders C and D: two singles from stores about 700 m either side of S,
+ *   +5 min  orders C and D: two singles from stores 225 m either side of S,
  *           going different ways -> two separate offers, never stacked together
+ *
+ * Everything sits within 450 m of S, so a whole run takes minutes. The drop-offs are
+ * placed more than 500 m apart where they must not stack (the stacking limit).
  *
  * Every order is marked NOSIM, so simulated drivers leave them for your phone.
  *
@@ -38,14 +41,14 @@ const move = (p, north, east) => ({
   lng: p.lng + east / (111320 * Math.cos((p.lat * Math.PI) / 180)),
 });
 const S = { lat, lng };
-const C0 = move(S, 0, 700), D0 = move(S, 0, -700);
+const C0 = move(S, 0, 225), D0 = move(S, 0, -225);
 const run = Date.now().toString(36).toUpperCase();
 
 const ORDERS = {
-  A: { store: 'STAGING-STORE-S', pickup: { ...S, name: 'Test store S' }, dropoff: { ...move(S, 1500, 0), name: 'Customer A' } },
-  B: { store: 'STAGING-STORE-S', pickup: { ...S, name: 'Test store S' }, dropoff: { ...move(S, 1500, 20), name: 'Customer B (20 m from A)' } },
-  C: { store: 'STAGING-STORE-C', pickup: { ...C0, name: 'Test store C' }, dropoff: { ...move(C0, -1200, 300), name: 'Customer C' } },
-  D: { store: 'STAGING-STORE-D', pickup: { ...D0, name: 'Test store D' }, dropoff: { ...move(D0, 1200, -300), name: 'Customer D' } },
+  A: { store: 'STAGING-STORE-S', pickup: { ...S, name: 'Test store S' }, dropoff: { ...move(S, 450, 0), name: 'Customer A' } },
+  B: { store: 'STAGING-STORE-S', pickup: { ...S, name: 'Test store S' }, dropoff: { ...move(S, 450, 20), name: 'Customer B (20 m from A)' } },
+  C: { store: 'STAGING-STORE-C', pickup: { ...C0, name: 'Test store C' }, dropoff: { ...move(S, -380, 200), name: 'Customer C' } },
+  D: { store: 'STAGING-STORE-D', pickup: { ...D0, name: 'Test store D' }, dropoff: { ...move(S, 0, -450), name: 'Customer D' } },
 };
 
 async function create(letter) {
