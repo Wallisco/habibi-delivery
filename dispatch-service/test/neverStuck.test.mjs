@@ -286,6 +286,54 @@ test('clear-job will not requeue collected food, but can close it', async (t) =>
   assert.equal(app.engine.supply.get(d.id).activeJobId, null);
 });
 
+/* ------------------------------------- a phone that has not heard yet */
+
+test('a cancelled order cannot be collected, approached or completed by a phone that has not heard', async (t) => {
+  const app = appFor(t);
+  const d = await driver(app);
+  const jobId = await take(app, d);
+  await app.inject({ method: 'POST', url: `/v1/ops/orders/${jobId}/close`, payload: { outcome: 'CANCELLED', reason: 'test' } });
+
+  for (const url of [`/v1/jobs/${jobId}/collect`, `/v1/jobs/${jobId}/approach`]) {
+    const res = await app.inject({ method: 'POST', url });
+    assert.equal(res.statusCode, 409, url);
+    assert.equal(res.json().error, 'This order is cancelled.');
+  }
+  const job = app.engine.jobs.get(jobId);
+  const done = await app.inject({ method: 'POST', url: '/v1/jobs/complete',
+    payload: { jobId, grade: 'B', position: job.dropoff, gpsTrail: [job.dropoff] } });
+  assert.equal(done.statusCode, 409, 'an offline completion synced later must not make it delivered');
+  assert.equal(app.engine.jobs.get(jobId).status, 'CANCELLED');
+  assert.ok(!app.engine.outbound.some((e) => e.type === 'delivery.code_issued' && e.payload.jobId === jobId),
+    'the customer of a cancelled order is never sent a code');
+});
+
+test('an order the office took away cannot be collected by the old phone', async (t) => {
+  const app = appFor(t);
+  const d = await driver(app);
+  const jobId = await take(app, d);
+  await app.inject({ method: 'POST', url: `/v1/ops/drivers/${d.id}/clear-job`, payload: { action: 'requeue', reason: 'test' } });
+  const res = await app.inject({ method: 'POST', url: `/v1/jobs/${jobId}/collect` });
+  assert.equal(res.statusCode, 409);
+  assert.equal(res.json().error, 'This order is no longer yours.');
+  assert.ok(!app.engine.jobs.get(jobId).collectedAt);
+});
+
+test('a retried completion of a delivered order is accepted, once', async (t) => {
+  const app = appFor(t);
+  const d = await driver(app);
+  const jobId = await take(app, d);
+  await app.inject({ method: 'POST', url: `/v1/jobs/${jobId}/collect` });
+  const job = app.engine.jobs.get(jobId);
+  const body = { jobId, grade: 'A', position: job.dropoff, gpsTrail: [job.dropoff] };
+  const first = await app.inject({ method: 'POST', url: '/v1/jobs/complete', payload: body });
+  const again = await app.inject({ method: 'POST', url: '/v1/jobs/complete', payload: body });
+  assert.equal(first.statusCode, 200);
+  assert.equal(again.statusCode, 200);
+  assert.equal(again.json().duplicate, true);
+  assert.equal(app.engine.outbound.filter((e) => e.type === 'delivery.delivered' && e.payload.jobId === jobId).length, 1);
+});
+
 /* ------------------------------------------------- staging: simulator */
 
 async function runUntil(app, done, { stepMs = 1000, maxMs = 10 * 60 * 1000 } = {}) {

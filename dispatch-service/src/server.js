@@ -607,9 +607,24 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
   // The driver's collection scan. Separate event from the label print: print
   // time is when the food was ready, scan time is when it was collected, and
   // the gap between them is the wait we are trying to remove.
+  // A cancelled, closed or reassigned order is not the phone's to collect,
+  // approach or complete -- even if the phone hasn't heard yet. 409 tells the
+  // app (and its offline queue) to drop it rather than retry. (Which driver may
+  // act on a live job needs auth on /v1/jobs/*, which is not here yet.)
+  const isClosed = (job) => ['CANCELLED', 'FAILED', 'DELIVERED'].includes(job.status);
+  const takenAway = (job) => !ACTIVE.includes(job.status)
+    && (job.history ?? []).some((h) => h.kind === 'REASSIGNED' || h.kind === 'CLEARED');
+  const notCarriable = (job) => isClosed(job) || takenAway(job);
+  const notCarried = (job, reply) => reply.code(409).send({
+    error: ['CANCELLED', 'FAILED', 'DELIVERED'].includes(job.status)
+      ? `This order is ${job.status.toLowerCase()}.` : 'This order is no longer yours.',
+    status: job.status,
+  });
+
   app.post('/v1/jobs/:id/collect', async (req, reply) => {
     const job = jobs.get(req.params.id);
     if (!job) return reply.code(404).send({ error: 'Unknown job' });
+    if (notCarriable(job)) return notCarried(job, reply);
     // A retried scan must not send the customer the link twice.
     if (job.collectedAt) return { ok: true, alreadyCollected: true };
     job.collectedAt = Date.now();
@@ -640,6 +655,8 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
   app.post('/v1/jobs/:id/approach', async (req, reply) => {
     const job = jobs.get(req.params.id);
     if (!job) return reply.code(404).send({ error: 'Unknown job' });
+    // Never send a code to the customer of a cancelled order.
+    if (notCarriable(job)) return notCarried(job, reply);
     const code = otp.issue(job.id);
     job.codeIssuedAt = Date.now();
     jobs.setStatus(job.id, 'AT_CUSTOMER');
@@ -663,6 +680,12 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
     const { jobId, grade, position, gpsTrail, code } = req.body ?? {};
     const job = jobs.get(jobId);
     if (!job) return reply.code(404).send({ error: 'Unknown job' });
+    // A retried completion (offline queue, flaky signal) is not an error.
+    if (job.status === 'DELIVERED' && job.proofGrade !== 'D') {
+      return { accepted: true, duplicate: true, flagged: job.proofGrade === 'FLAGGED', earnings: job.earnings ?? null };
+    }
+    // Cancelled or closed while the phone was offline: it must not become delivered.
+    if (notCarriable(job)) return notCarried(job, reply);
 
     if (GRADE_ORDER[grade] < GRADE_ORDER[job.proofPolicy.minGrade]) {
       return reply.code(422).send({
