@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { canJoin, routeStops, routeMinutes, marginalDistances, storeCount,
-  isSameCustomer, MAX_BATCH, PICKUP_CLUSTER_M } from '../src/batching.js';
+  isSameCustomer, MAX_BATCH, PICKUP_CLUSTER_M, READY_WINDOW_MIN } from '../src/batching.js';
 import { computeEarnings } from '../src/fees.js';
 import { RateBook } from '../src/rates.js';
 import { ReadyGate } from '../src/readyGate.js';
@@ -85,16 +85,32 @@ test('a slow kitchen is not stacked onto a fast one', () => {
   assert.match(res.reason, /ready times/);
 });
 
-test('the batch is capped at three', () => {
+test('a run is capped at two orders', () => {
+  assert.equal(MAX_BATCH, 2);
   const g = warmGate(['ROCO']);
   const batch = [
     job('A', 'ROCO', BASE, at(200, 0)),
     job('B', 'ROCO', BASE, at(240, 40)),
-    job('C', 'ROCO', BASE, at(280, 80)),
   ];
-  const res = canJoin(batch, job('D', 'ROCO', BASE, at(300, 120)), g);
+  const res = canJoin(batch, job('C', 'ROCO', BASE, at(280, 80)), g);
   assert.equal(res.ok, false);
-  assert.match(res.reason, new RegExp(String(MAX_BATCH)));
+  assert.match(res.reason, /batch already at 2/);
+});
+
+test('a second order must be ready within 5 minutes of the first, either side', () => {
+  assert.equal(READY_WINDOW_MIN, 5);
+  const g = warmGate(['ROCO']);
+  const t0 = Date.now() - 20 * 60000;
+  // Same kitchen, same prep: ready times differ by exactly when they were placed.
+  const first = job('A', 'ROCO', BASE, at(200, 0), null, t0);
+  const at4 = job('B', 'ROCO', BASE, at(240, 40), null, t0 + 4 * 60000);
+  const at6 = job('C', 'ROCO', BASE, at(240, 40), null, t0 + 6 * 60000);
+  const before4 = job('D', 'ROCO', BASE, at(240, 40), null, t0 - 4 * 60000);
+  assert.equal(canJoin([first], at4, g).ok, true, 'ready 4 min after the first');
+  assert.equal(canJoin([first], before4, g).ok, true, 'ready 4 min before the first');
+  const late = canJoin([first], at6, g);
+  assert.equal(late.ok, false, 'ready 6 min after the first');
+  assert.match(late.reason, /6 min apart \(window 5 min from the first order\)/);
 });
 
 /* ----------------------------------------------------------------- routing */

@@ -112,7 +112,7 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
   const dispatcher = new Dispatcher({
     readyGate: gate, supply, jobs,
     maxHoldMs: staging ? 60_000 : null,
-    onOffer: ({ batchId, jobs: batchJobs, driverId, expiresAt, stops, route,
+    onOffer: ({ batchId, jobs: batchJobs, carrying = [], driverId, expiresAt, stops, route,
                 marginal, storeCount, sameCustomer }) => {
       const margin = new Map((marginal ?? []).map((m) => [m.jobId, m.marginalKm]));
       const priced = batchJobs.map((j, i) => ({
@@ -139,8 +139,11 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
           kind: s.kind, name: s.name, storeId: s.storeId ?? null,
           jobIds: s.jobIds, lat: s.at.lat, lng: s.at.lng,
         })),
+        // On the run: this order joins the run the driver is already on.
+        addsToRun: carrying.length > 0,
         summary: {
           orders: priced.length,
+          runOrders: carrying.length + priced.length,
           stores: storeCount ?? 1,
           sameCustomer: Boolean(sameCustomer),
           km: route?.km ?? null,
@@ -429,6 +432,13 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
     return { ok: true };
   });
 
+  /** The driver's offer, if it hasn't run out. An expired one is gone for good. */
+  function liveOffer(driverId) {
+    const o = pendingOffers.get(driverId);
+    if (o && o.expiresAt <= Date.now()) { pendingOffers.delete(driverId); return null; }
+    return o ?? null;
+  }
+
   app.get('/v1/driver/:id/shift', async (req) => {
     const d = supply.get(req.params.id) ?? {};
     const pending = jobs.pendingInZone(d.zone).length;
@@ -445,7 +455,7 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
       zone: d.zone ?? null,
       supplyRatio: Number(ratio.toFixed(2)),
       roamingPremium: supply.roamingPremium(ratio),
-      offer: pendingOffers.get(req.params.id) ?? null,
+      offer: liveOffer(req.params.id),
       // The server is the source of truth for what the driver is carrying.
       // The app rehydrates from this after any reload.
       activeJob: active ? publicJob(active) : null,
@@ -578,15 +588,18 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
     if (!res.ok) return reply.code(409).send({ error: res.reason });
     pendingOffers.delete(req.body.driverId);
     const acct = accounts.get(req.body.driverId);
-    emit('delivery.assigned', {
-      jobId: req.params.id,
-      externalId: res.job.externalId,
-      driverId: req.body.driverId,
-      driver: acct ? { firstName: acct.firstName || 'Your driver',
-        vehicle: acct.vehicleType } : null,
-      etaMinutes: res.job.routing?.deliverMinutes
-        ? Math.round(res.job.routing.deliverMinutes + 6) : null,
-    });
+    // Every order this accept assigned (not the ones already on the run).
+    for (const j of res.added ?? [res.job]) {
+      emit('delivery.assigned', {
+        jobId: j.id,
+        externalId: j.externalId,
+        driverId: req.body.driverId,
+        driver: acct ? { firstName: acct.firstName || 'Your driver',
+          vehicle: acct.vehicleType } : null,
+        etaMinutes: j.routing?.deliverMinutes
+          ? Math.round(j.routing.deliverMinutes + 6) : null,
+      });
+    }
     return {
       ok: true,
       job: publicJob(res.job),

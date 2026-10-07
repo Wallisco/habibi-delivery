@@ -10,8 +10,12 @@ import { SUPPLY, metresBetween, travelMinutes } from './supply.js';
 import { canJoin, routeStops, routeMinutes, marginalDistances, storeCount,
   isSameCustomer, MAX_BATCH } from './batching.js';
 
+// A driver is carrying a job in these states.
+const ACTIVE = ['ASSIGNED', 'AT_STORE', 'IN_TRANSIT', 'AT_CUSTOMER'];
+
 export const TICK_MS = 3000;              // batching window
-export const OFFER_TIMEOUT_MS = 25_000;
+// How long a driver has to accept an offer (plus 5 s per extra order on a run).
+export const OFFER_TIMEOUT_MS = 45_000;
 export const BASE_RADIUS_M = 6000;
 export const RADIUS_GROWTH_PER_MIN = 900;  // widen as a job ages
 export const MAX_RADIUS_M = 15000;
@@ -52,6 +56,8 @@ export class Dispatcher {
     // no remaining driver was allowed to see, and they sat PENDING forever. A
     // driver who missed an offer because they were riding should get it again.
     this.declinedBy = new Map();
+    // jobId -> { driverId, at }: offers that ran out, so accept can say so.
+    this.expired = new Map();
     this.timer = null;
   }
 
@@ -100,8 +106,11 @@ export class Dispatcher {
     // possible candidate for a second one from that kitchen.
     const stackers = [...this.supply.drivers.values()].filter((d) =>
       d.activeJobId && d.position && this.stackableWith(job, d));
+    // One open offer per driver: a second would replace the first on their phone.
+    const offered = new Set([...this.offers.values()].map((o) => o.driverId));
 
     return [...this.supply.available(), ...stackers].filter((d) => {
+      if (offered.has(d.id)) return false;
       if (!this.supply.acceptsKind(d.state, job.kind)) return false;
       if (metresBetween(d.position, job.pickup) > radius) return false;
       if (job.requiredCapabilities?.some((c) => !d.capabilities.includes(c))) return false;
@@ -129,25 +138,35 @@ export class Dispatcher {
     return absenceMin * shortfallRisk;
   }
 
+  /** Everything this driver is carrying, first order first. */
+  runOf(driverId) {
+    return this.jobs.all()
+      .filter((j) => j.driverId === driverId && ACTIVE.includes(j.status))
+      .sort((a, b) => a.createdAt - b.createdAt);
+  }
+
   /**
-   * Jobs the driver is already carrying that this one could ride along with.
+   * Can these orders be added to the run the driver is already on ("on the
+   * run" stacking)? Only while they are still on the way to collect the first
+   * order -- once collected they have left the store, and a second pickup is a
+   * wasted trip back -- and only up to MAX_BATCH orders in all. The ready
+   * window is measured from the first order on the run.
    *
-   * Full simultaneous multi-stop needs the driver app to show a stop list,
-   * which it does not yet. What this does instead is make a stackable job
-   * strongly preferred for the driver already holding a compatible one, so
-   * they get them back to back from the same kitchen rather than a second
-   * driver being sent to the same door. Most of the efficiency, none of the
-   * UI risk.
+   * @param jobOrBatch  one job, or the batch dispatch wants to offer
    */
-  stackableWith(job, driver) {
+  stackableWith(jobOrBatch, driver) {
     if (!driver.activeJobId) return null;
-    const active = this.jobs.get(driver.activeJobId);
-    if (!active || ['DELIVERED', 'FAILED', 'CANCELLED'].includes(active.status)) return null;
-    // Already collected means the driver has left the store; a second pickup
-    // there is a wasted trip back.
-    if (active.collectedAt) return null;
-    const res = canJoin([active], job, this.gate, this.now());
-    return res.ok ? { with: active, ...res } : null;
+    const run = this.runOf(driver.id);
+    if (!run.length || run.some((j) => j.collectedAt)) return null;
+    const add = Array.isArray(jobOrBatch) ? jobOrBatch : [jobOrBatch];
+    if (run.length + add.length > MAX_BATCH) return null;
+    let batch = run, last = null;
+    for (const j of add) {
+      last = canJoin(batch, j, this.gate, this.now());
+      if (!last.ok) return null;
+      batch = [...batch, j];
+    }
+    return { with: run[0], run, ...last };
   }
 
   cost(job, driver, nowMs = this.now()) {
@@ -244,6 +263,8 @@ export class Dispatcher {
       const seed = batch[0];
       const cands = this.candidates(seed, nowMs).filter((d) => {
         if (taken.has(d.id)) return false;
+        // A driver already on a run can only take what fits on it.
+        if (d.activeJobId && !this.stackableWith(batch, d)) return false;
         return batch.every((j) => {
           if (this.declinedBy.get(j.id)?.get(d.id) > nowMs) return false;
           if (j.requiredCapabilities?.some((c) => !d.capabilities.includes(c))) return false;
@@ -309,16 +330,20 @@ export class Dispatcher {
       this.jobs.setStatus(job.id, 'OFFERED', { batchId });
     }
 
+    // On the run: the driver sees the whole trip they would end up doing.
+    const carrying = this.runOf(driver.id);
+    const whole = [...carrying, ...batch];
     this.onOffer?.({
       batchId,
       jobs: batch,
+      carrying,
       driverId: driver.id,
       expiresAt,
-      stops: routeStops(batch),
-      route: routeMinutes(batch),
-      marginal: marginalDistances(batch),
-      storeCount: storeCount(batch),
-      sameCustomer: isSameCustomer(batch),
+      stops: routeStops(whole),
+      route: routeMinutes(whole),
+      marginal: marginalDistances(whole).filter((m) => batch.some((j) => j.id === m.jobId)),
+      storeCount: storeCount(whole),
+      sameCustomer: isSameCustomer(whole),
     });
   }
 
@@ -373,45 +398,65 @@ export class Dispatcher {
 
   accept(jobId, driverId) {
     const offer = this.offers.get(jobId);
-    if (!offer || offer.driverId !== driverId) return { ok: false, reason: 'Offer no longer valid' };
+    if (!offer || offer.driverId !== driverId) {
+      // Say why: a driver tapping Accept a moment too late should hear that
+      // the offer expired, not that it was "no longer valid".
+      const gone = this.expired.get(jobId);
+      return { ok: false, reason: gone?.driverId === driverId ? 'Offer expired' : 'Offer no longer valid' };
+    }
     if (this.now() > offer.expiresAt) {
       this.decline(jobId, driverId, { timedOut: true });
       return { ok: false, reason: 'Offer expired' };
     }
 
     const ids = this.batchOf(jobId);
+    // On the run: the new order joins the run the driver is already on, under
+    // its batch id, and the first order stays the anchor.
+    const carrying = this.runOf(driverId);
+    const batchId = carrying[0]?.batchId ?? offer.batchId ?? null;
+    for (const j of carrying) {
+      if (j.batchId !== batchId) this.jobs.setStatus(j.id, j.status, { batchId });
+    }
     const accepted = [];
     for (const id of ids) {
       this.offers.delete(id);
       this.declinedBy.delete(id);
       const j = this.jobs.get(id);
       if (!j) continue;
-      this.jobs.setStatus(id, 'ASSIGNED', { driverId, batchId: offer.batchId ?? null });
+      this.jobs.setStatus(id, 'ASSIGNED', { driverId, batchId });
       accepted.push(j);
     }
+    const run = [...carrying, ...accepted];
 
     const d = this.supply.get(driverId);
     this.supply.upsert(driverId, {
       // The run's first job is the anchor; the rest hang off the batch id.
-      activeJobId: accepted[0]?.id ?? jobId,
-      activeBatchId: offer.batchId ?? null,
+      activeJobId: run[0]?.id ?? jobId,
+      activeBatchId: batchId,
       recentJobs: (d?.recentJobs ?? 0) + accepted.length,
       acceptanceRate: Math.min(1, (d?.acceptanceRate ?? 1) * 1.02),
-      state: accepted.some((j) => j.kind === 'ROAMING') ? SUPPLY.ROAMING_ACTIVE : d?.state,
+      state: run.some((j) => j.kind === 'ROAMING') ? SUPPLY.ROAMING_ACTIVE : d?.state,
     });
 
+    // The whole run, so the app replaces what it holds with the complete trip.
     return {
       ok: true,
-      job: accepted[0],
-      jobs: accepted,
-      batchId: offer.batchId ?? null,
-      stops: routeStops(accepted),
+      job: run[0],
+      jobs: run,
+      added: accepted,
+      batchId,
+      stops: routeStops(run),
     };
   }
 
   expireOffers(nowMs = this.now()) {
     for (const [jobId, offer] of this.offers) {
-      if (nowMs > offer.expiresAt) this.decline(jobId, offer.driverId, { timedOut: true });
+      if (nowMs > offer.expiresAt) {
+        this.expired.set(jobId, { driverId: offer.driverId, at: nowMs });
+        this.decline(jobId, offer.driverId, { timedOut: true });
+      }
     }
+    // Remember expiries for ten minutes, long enough to answer a late tap.
+    for (const [jobId, e] of this.expired) if (nowMs - e.at > 10 * 60_000) this.expired.delete(jobId);
   }
 }

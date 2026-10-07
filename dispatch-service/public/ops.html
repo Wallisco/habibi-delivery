@@ -978,8 +978,12 @@ fetch('/v1/ops/me').then((r)=>r.json()).then((d)=>{
   if (ME.role === 'admin') { TABS.push(['staff','Staff']); renderTabs(); }
 });
 renderTabs(); loadOverview();
-setInterval(()=>{ if(['orders','messages'].includes(active)) LOADERS[active](); }, 6000);
-setInterval(()=>{ if(active==='overview') loadOverview(); }, 20000);
+// Auto-refresh, slow on purpose: the Refresh button is there for "now".
+// Nothing refreshes while the tab is hidden.
+const REFRESH_LIVE_MS = 30000;      // Orders, Messages
+const REFRESH_OVERVIEW_MS = 60000;  // Overview
+setInterval(()=>{ if(!document.hidden && ['orders','messages'].includes(active)) LOADERS[active](); }, REFRESH_LIVE_MS);
+setInterval(()=>{ if(!document.hidden && active==='overview') loadOverview(); }, REFRESH_OVERVIEW_MS);
 </script>
 </body>
 </html>

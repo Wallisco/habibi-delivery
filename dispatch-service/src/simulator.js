@@ -121,7 +121,7 @@ export class Simulator {
           // Idle: stay fresh for dispatch, and take any offer after a pause.
           if (d.state !== SUPPLY.OFFLINE && d.position) this.e.supply.upsert(id, { position: d.position });
           const offer = this.e.pendingOffers.get(id);
-          if (!offer) { this.offerSeen.delete(id); continue; }
+          if (!offer || offer.expiresAt <= now) { this.offerSeen.delete(id); continue; }
           const first = this.offerSeen.get(id) ?? now;
           this.offerSeen.set(id, first);
           const job = this.e.jobs.get(offer.jobId);

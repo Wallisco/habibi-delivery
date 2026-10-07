@@ -1,7 +1,7 @@
 /**
  * Order stacking.
  *
- * Up to three orders on one run when the pickups sit close together and the
+ * Up to two orders on one run when the pickups sit close together and the
  * drop-offs sit close together. The driver earns more per hour, the platform
  * pays less per order, and the customer barely notices — provided the second
  * order does not make the first one late.
@@ -18,14 +18,21 @@
  * stay under a threshold.
  *
  * TWO SHAPES OF BATCH
- *   SAME_STORE   several orders from one kitchen, dropping near each other
+ *   SAME_STORE   two orders from one kitchen, dropping near each other
  *   MULTI_STORE  different kitchens within 500 m, dropping near each other,
  *                including the case of one customer ordering from two places
+ *
+ * THE READY WINDOW
+ * The first order on the run sets the clock: its predicted ready time is the
+ * anchor, and a second order may join only if it will be ready within
+ * READY_WINDOW_MIN of it, earlier or later. The same rule applies whether the
+ * two orders are grouped before anyone is offered them, or the second is added
+ * to a driver already riding to collect the first ("on the run").
  */
 
 import { metresBetween, travelMinutes } from './supply.js';
 
-export const MAX_BATCH = 3;
+export const MAX_BATCH = 2;
 export const PICKUP_CLUSTER_M = 500;
 export const DROPOFF_CLUSTER_M = 500;
 
@@ -35,8 +42,13 @@ export const DROPOFF_CLUSTER_M = 500;
  */
 export const MAX_ADDED_LATENESS_MIN = 6;
 
-/** Ready times more than this far apart mean someone waits too long. */
-export const MAX_READY_SPREAD_MIN = 10;
+/** A second order must be ready within this of the first order's ready time. */
+export const READY_WINDOW_MIN = 5;
+
+/** When an order's food is predicted to be ready, in ms. */
+export function readyAt(job, gate) {
+  return job.createdAt + gate.predictPrepMinutes(job.storeId, job.merchantPrepMinutes ?? null) * 60000;
+}
 
 const pt = (p) => ({ lat: p.lat ?? p.latitude, lng: p.lng ?? p.longitude });
 
@@ -70,15 +82,13 @@ export function canJoin(batch, candidate, gate, now = Date.now()) {
     return { ok: false, reason: `drop-offs more than ${DROPOFF_CLUSTER_M} m apart` };
   }
 
-  // Ready-time compatibility. Adding a slow kitchen to a fast one means the
-  // first order sits under a heat lamp while the driver waits for the second.
-  const readyAt = all.map((j) => {
-    const prep = gate.predictPrepMinutes(j.storeId, j.merchantPrepMinutes ?? null);
-    return j.createdAt + prep * 60000;
-  });
-  const spreadMin = (Math.max(...readyAt) - Math.min(...readyAt)) / 60000;
-  if (spreadMin > MAX_READY_SPREAD_MIN) {
-    return { ok: false, reason: `ready times ${spreadMin.toFixed(0)} min apart` };
+  // Ready-time compatibility, measured from the first order. Adding a slow
+  // kitchen to a fast one means the first order sits under a heat lamp while
+  // the driver waits for the second.
+  const anchor = readyAt(all[0], gate);
+  const gapMin = Math.max(...all.slice(1).map((j) => Math.abs(readyAt(j, gate) - anchor))) / 60000;
+  if (gapMin > READY_WINDOW_MIN) {
+    return { ok: false, reason: `ready times ${gapMin.toFixed(0)} min apart (window ${READY_WINDOW_MIN} min from the first order)` };
   }
 
   // Marginal lateness on the orders already in the batch.
@@ -89,7 +99,7 @@ export function canJoin(batch, candidate, gate, now = Date.now()) {
     return { ok: false, reason: `would add ${added.toFixed(1)} min to the existing orders` };
   }
 
-  return { ok: true, addedMinutes: Number(added.toFixed(1)), readySpreadMin: Number(spreadMin.toFixed(1)) };
+  return { ok: true, addedMinutes: Number(added.toFixed(1)), readyGapMin: Number(gapMin.toFixed(1)) };
 }
 
 /**
