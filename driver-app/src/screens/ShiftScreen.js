@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { View, Text, StyleSheet, Modal, Pressable } from 'react-native';
 import { useApp } from '../state/store';
-import { Card, Button, Pill, LiveDot } from '../components/UI';
+import { Card, Button, Pill, LiveDot, useBottomPad } from '../components/UI';
 import { S as SUPPLY, LABELS } from '../lib/supplyState';
 import OfferSheet from '../components/OfferSheet';
 import { C, T, R, SP, S, SHADOW, Z } from '../theme';
@@ -11,6 +11,8 @@ import { C, T, R, SP, S, SHADOW, Z } from '../theme';
  * one action, and the way to everything else along the bottom.
  */
 export default function ShiftScreen({ navigation }) {
+  // Clear the phone's navigation buttons (Android draws edge to edge).
+  const bottomPad = useBottomPad();
   const {
     supply, setSupply, offer, job,
     roamingPremium, zone, toast, toastMsg, pendingSync, earnings,
@@ -41,7 +43,7 @@ export default function ShiftScreen({ navigation }) {
   const onDark = online ? { color: C.white } : null;
 
   return (
-    <View style={S.page}>
+    <View style={[S.page, bottomPad]}>
 
       {/* The status card is the app's whole status signal: deep green when
           you are earning, white when you are not. */}

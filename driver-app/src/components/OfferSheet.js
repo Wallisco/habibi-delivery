@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { View, Text, StyleSheet, Modal, Pressable } from 'react-native';
 import { useApp } from '../state/store';
-import { Button, Pill } from './UI';
+import { Button, Pill, useBottomPad } from './UI';
 import MapPanel from './MapPanel';
 import { C, T, R, SP, SHADOW, Z } from '../theme';
 
@@ -41,6 +41,8 @@ export default function OfferSheet({ navigation }) {
   const { offer, acceptOffer, declineOffer, expireOffer } = useApp();
   // Only the screen in front shows it, or the driver would see it twice.
   const focused = useFocused(navigation);
+  // The sheet's buttons clear the phone's navigation buttons.
+  const sheetPad = useBottomPad(SP.sm);
   const shown = !!offer && focused;
   const [left, setLeft] = useState(OFFER_SECONDS);
   const expire = useRef(expireOffer);
@@ -67,7 +69,7 @@ export default function OfferSheet({ navigation }) {
   return (
     <Modal visible={shown} transparent animationType="slide" onRequestClose={declineOffer}>
       <View style={st.sheetWrap}>
-        <View style={[st.sheet, SHADOW.lift]}>
+        <View style={[st.sheet, SHADOW.lift, sheetPad]}>
           {offer && (
             <>
               <View style={st.grabber} />

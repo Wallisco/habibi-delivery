@@ -89,6 +89,19 @@ test('a visible modal is measured over the whole screen; a hidden one is ignored
   expect(f).toEqual([expect.objectContaining({ where: 'modal' })]);
 });
 
+test("a button at the very bottom sits under the phone's navigation bar; padding clears it", async () => {
+  const screen = (padBottom) => (
+    <View style={{ flex: 1, paddingBottom: padBottom }}>
+      <View style={{ flex: 1 }} />
+      <View style={{ height: 44 }}><Text>Messages</Text></View>
+    </View>
+  );
+  const bar = { ...PHONE, reserveBottom: 48 };
+  const under = await measure(screen(0), bar);
+  expect(under).toEqual([expect.objectContaining({ kind: 'under the navigation bar' })]);
+  expect(await measure(screen(48), bar)).toEqual([]);
+});
+
 test('text wraps onto more lines on a narrower screen', () => {
   const s = 'We hold jobs back until the kitchen is nearly done, so you are not standing around waiting for food.';
   const narrow = textSize(s, T.body, 360 - 2 * 22 - 2 * 22);

@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { View, Text, StyleSheet, Pressable } from 'react-native';
 import { useApp } from '../state/store';
-import { Card, Row, Button, Divider, Pill } from '../components/UI';
+import { Card, Row, Button, Divider, Pill, useBottomPad } from '../components/UI';
 import { C, T, R, SP, S, Z } from '../theme';
 
 /**
@@ -9,6 +9,8 @@ import { C, T, R, SP, S, Z } from '../theme';
  * 2: "No scrolling: today and this week side by side as two tabs").
  */
 export default function EarningsScreen() {
+  // Clear the phone's navigation buttons (Android draws edge to edge).
+  const bottomPad = useBottomPad();
   const { earnings, loadEarnings, signOut, pendingSync, syncNow } = useApp();
   const [tab, setTab] = useState('today');
   useEffect(() => { loadEarnings(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
@@ -18,7 +20,7 @@ export default function EarningsScreen() {
   const net = w.delivery + w.tips - w.vehicleFee;
 
   return (
-    <View style={S.page}>
+    <View style={[S.page, bottomPad]}>
       <View style={st.tabs} accessibilityRole="tablist">
         {[['today', 'Today'], ['week', 'This week']].map(([key, label]) => (
           <Pressable key={key} onPress={() => setTab(key)} accessibilityRole="tab"

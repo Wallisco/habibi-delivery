@@ -1,6 +1,6 @@
 import React from 'react';
 import { View, Text, FlatList, StyleSheet } from 'react-native';
-import { Card, Row, Pill, Button, Label } from '../components/UI';
+import { Card, Row, Pill, Button, Label, useBottomPad } from '../components/UI';
 import { suburbOf } from '../components/OfferSheet';
 import { C, T, R, SP, S } from '../theme';
 
@@ -17,10 +17,12 @@ import { C, T, R, SP, S } from '../theme';
  * scroll if a stacked run has many.
  */
 export default function JobDetailScreen({ route, navigation }) {
+  // Clear the phone's navigation buttons (Android draws edge to edge).
+  const bottomPad = useBottomPad();
   const job = route.params?.job;
   if (!job) {
     return (
-      <View style={[S.page, { justifyContent: 'center' }]}>
+      <View style={[S.page, bottomPad, { justifyContent: 'center' }]}>
         <Text style={T.h2}>Trip not found</Text>
         <Button title="Back" onPress={() => navigation.goBack()} style={{ marginTop: SP.md }} />
       </View>
@@ -32,7 +34,7 @@ export default function JobDetailScreen({ route, navigation }) {
   const lines = e?.lines ?? [];
 
   return (
-    <View style={S.page}>
+    <View style={[S.page, bottomPad]}>
       <Card tone="forest">
         <View style={st.totalRow}>
           <Text style={st.lbl}>YOU EARNED</Text>

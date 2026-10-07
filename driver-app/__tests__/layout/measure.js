@@ -282,7 +282,11 @@ function findModals(children, out = []) {
   return out;
 }
 
-function measureRoot(children, width, height, where) {
+// What a driver reads or taps. Backgrounds may run under the navigation bar;
+// these may not.
+const CONTENT = new Set(['Text', 'TextInput', 'Image']);
+
+function measureRoot(children, width, height, where, reserveBottom = 0) {
   const ctx = { scrolls: [], elements: new Map(), kids: new Map() };
   const root = Y.Node.create(config);
   root.setWidth(width);
@@ -310,13 +314,22 @@ function measureRoot(children, width, height, where) {
   // Anything past the bottom of the screen is cut off, and so is anything
   // pushed above the top (a bottom sheet taller than the screen). Report the worst.
   let worst = null;
+  let underBar = null;
   const walk = (node, top) => {
     const t = top + node.getComputedTop();
-    const below = t + node.getComputedHeight() - height;
+    const bottom = t + node.getComputedHeight();
+    const below = bottom - height;
     const above = -t;
     const over = Math.max(below, above);
+    const el = ctx.elements.get(node);
     if (over > 0.5 && node !== root && (!worst || over > worst.over)) {
-      worst = { over, side: below >= above ? 'below' : 'above', el: ctx.elements.get(node) };
+      worst = { over, side: below >= above ? 'below' : 'above', el };
+    }
+    // Text, inputs and images must stay clear of the phone's navigation bar.
+    const intoBar = bottom - (height - reserveBottom);
+    if (reserveBottom && below <= 0.5 && intoBar > 0.5 && CONTENT.has(el?.type)
+      && (!underBar || intoBar > underBar.over)) {
+      underBar = { over: intoBar, el };
     }
     for (const kid of ctx.kids.get(node) ?? []) walk(kid, t);
   };
@@ -325,6 +338,12 @@ function measureRoot(children, width, height, where) {
     findings.push({
       where, kind: 'cut off', overflow: Math.round(worst.over),
       detail: `${describe(worst.el)} runs ${Math.round(worst.over)} pt ${worst.side} the screen`,
+    });
+  }
+  if (underBar) {
+    findings.push({
+      where, kind: 'under the navigation bar', overflow: Math.round(underBar.over),
+      detail: `${describe(underBar.el)} sits ${Math.round(underBar.over)} pt under the phone's navigation bar`,
     });
   }
 
@@ -338,14 +357,16 @@ function measureRoot(children, width, height, where) {
  * @param width    screen width in pt
  * @param height   height left for the screen (below status bar and header)
  * @param modalHeight  height a modal gets (the whole screen below the status bar)
+ * @param reserveBottom  the phone's navigation bar: the last pt of the screen
+ *                 (and of a modal) that text, inputs and images must stay out of
  */
-export function measureScreen(json, { width, height, modalHeight = height }) {
+export function measureScreen(json, { width, height, modalHeight = height, reserveBottom = 0 }) {
   const top = Array.isArray(json) ? json : [json];
-  const findings = measureRoot(top, width, height, 'screen');
+  const findings = measureRoot(top, width, height, 'screen', reserveBottom);
   const modals = findModals(top);
   modals.forEach((m, i) => {
     const label = modals.length > 1 ? `modal ${i + 1}` : 'modal';
-    findings.push(...measureRoot(m.children, width, modalHeight, label));
+    findings.push(...measureRoot(m.children, width, modalHeight, label, reserveBottom));
   });
   return { findings };
 }

@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { View, Text, FlatList, StyleSheet, RefreshControl, Pressable } from 'react-native';
 import { useApp } from '../state/store';
-import { Card, Pill, Button, Label } from '../components/UI';
+import { Card, Pill, Button, Label, useBottomPad } from '../components/UI';
 import { suburbOf } from '../components/OfferSheet';
 import { C, T, R, SP, S, Z } from '../theme';
 
@@ -18,6 +18,8 @@ function when(ts) {
  * bodies scroll, their headers stay fixed).
  */
 export default function JobsScreen({ navigation }) {
+  // Clear the phone's navigation buttons (Android draws edge to edge).
+  const bottomPad = useBottomPad();
   const { fetchJobs, job: liveJob } = useApp();
   const [data, setData] = useState({ active: [], completed: [] });
   const [busy, setBusy] = useState(false);
@@ -35,7 +37,7 @@ export default function JobsScreen({ navigation }) {
   const done = data.completed ?? [];
 
   return (
-    <View style={S.page}>
+    <View style={[S.page, bottomPad]}>
       {err ? (
         <Card style={st.error}>
           <Text style={[T.small, { color: C.red }]}>{err}</Text>

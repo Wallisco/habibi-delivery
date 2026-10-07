@@ -3,7 +3,7 @@
 import React from 'react';
 import { act, create } from 'react-test-renderer';
 import { initYoga, measureScreen } from './measure';
-import { DEVICES, screenHeight, modalHeight } from './devices';
+import { DEVICES, screenHeight, modalHeight, insetsFor } from './devices';
 import { CASES } from './fixtures';
 import { KNOWN_FAILURES } from './known-failures';
 
@@ -33,6 +33,8 @@ afterAll(() => {
 
 test.each(ROWS)('%s fits without scrolling', async (name, c, device) => {
   global.__layoutApp = c.app();
+  // The phone's navigation bar, as useSafeAreaInsets reports it on this phone.
+  global.__safeAreaInsets = insetsFor(device);
   const Screen = c.component();
   let r;
   await act(async () => {
@@ -42,8 +44,10 @@ test.each(ROWS)('%s fits without scrolling', async (name, c, device) => {
     width: device.width,
     height: screenHeight(device, c.header),
     modalHeight: modalHeight(device),
+    reserveBottom: device.bottom,
   });
   act(() => r.unmount());
+  global.__safeAreaInsets = undefined;
 
   const listed = KNOWN_FAILURES.includes(name);
   const what = findings.map((f) => `${f.where}: ${f.detail}`).join('; ');

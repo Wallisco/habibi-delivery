@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { View, Text, FlatList, Image, StyleSheet, Linking, Platform, TextInput, Pressable } from 'react-native';
 import { useApp } from '../state/store';
-import { Card, Button, Pill } from '../components/UI';
+import { Card, Button, Pill, useBottomPad } from '../components/UI';
 import MapPanel from '../components/MapPanel';
 import OfferSheet from '../components/OfferSheet';
 import { metresBetween, insideGeofence } from '../lib/proof';
@@ -28,6 +28,8 @@ const itemLine = (it) => `${it.qty} × ${it.name}${it.size ? ` ${it.size}` : ''}
 const PICKUP_RADIUS_M = 250;
 
 export default function RunScreen({ navigation }) {
+  // Clear the phone's navigation buttons (Android draws edge to edge).
+  const bottomPad = useBottomPad();
   const {
     jobs, stops, stopIndex, goToStop, markJobDone, position, trail, online,
     otpAttempts, noteOtpFail, completeJob, api, toastMsg, scanned, setScanned, batchId, toast,
@@ -70,6 +72,19 @@ export default function RunScreen({ navigation }) {
   const dropJob = current?.kind === 'DROPOFF' ? stopJobs[0] : null;
 
   useEffect(() => { setCode(''); setErr(null); setPhoto(null); }, [stopIndex]);
+
+  // Messages in the header, top right: always one tap away, and the screen
+  // keeps its bottom row clear of the phone's navigation buttons.
+  useEffect(() => {
+    navigation.setOptions?.({
+      headerRight: () => (
+        <Pressable onPress={() => navigation.navigate('Messages')} accessibilityRole="button"
+          style={st.headerBtn} hitSlop={8}>
+          <Text style={st.linkText}>Messages</Text>
+        </Pressable>
+      ),
+    });
+  }, [navigation]);
 
   const snap = async () => {
     const uri = await takeCollectionPhoto?.(stopJobs.map((j) => j.id));
@@ -174,7 +189,7 @@ export default function RunScreen({ navigation }) {
   // Fits a 360×640 phone with nothing to scroll: where you are in the
   // delivery, where to go, and the one thing to do there.
   return (
-    <View style={S.page}>
+    <View style={[S.page, bottomPad]}>
       {/* The four steps across the top, plus the stop count on a run. */}
       <View style={st.steps}>
         {STEPS.map((x, i) => (
@@ -314,11 +329,6 @@ export default function RunScreen({ navigation }) {
         </Card>
       )}
 
-      {isPickup ? null : <View style={{ flex: 1 }} />}
-      <Pressable style={st.link} accessibilityRole="button" onPress={() => navigation.navigate('Messages')}>
-        <Text style={st.linkText}>Message the office</Text>
-      </Pressable>
-
       {/* On the run: a second order for this pickup can be offered here. */}
       <OfferSheet navigation={navigation} />
     </View>
@@ -360,5 +370,6 @@ const st = StyleSheet.create({
   err: { ...T.small, color: C.red, marginTop: SP.xs },
   hint: { ...T.small, marginTop: SP.xs },
   link: { minHeight: Z.tap, alignItems: 'center', justifyContent: 'center' },
+  headerBtn: { minHeight: Z.tap, justifyContent: 'center', paddingHorizontal: SP.xs },
   linkText: { ...T.body, color: C.green, fontWeight: '700' },
 });

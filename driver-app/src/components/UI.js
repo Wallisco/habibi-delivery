@@ -1,6 +1,17 @@
 import React from 'react';
 import { Text, View, Pressable, ActivityIndicator, StyleSheet } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { C, T, R, SP, SHADOW, Z } from '../theme';
+
+/**
+ * Bottom padding that clears the phone's own navigation bar. Android draws the
+ * app edge to edge, so without this the last row of a screen sits underneath
+ * the back / home / recent buttons (or the iPhone home indicator).
+ */
+export function useBottomPad(extra = SP.md) {
+  const insets = useSafeAreaInsets();
+  return { paddingBottom: extra + (insets?.bottom ?? 0) };
+}
 
 /**
  * Thumb-sized, not oversized: 48 pt for the one primary action on a screen,

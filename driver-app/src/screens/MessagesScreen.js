@@ -3,7 +3,7 @@ import {
   View, Text, FlatList, StyleSheet, TextInput, KeyboardAvoidingView, Platform,
 } from 'react-native';
 import { useApp } from '../state/store';
-import { Button, Card, Label } from '../components/UI';
+import { Button, Card, Label, useBottomPad } from '../components/UI';
 import { C, T, R, SP, S, Z } from '../theme';
 
 /**
@@ -14,6 +14,8 @@ import { C, T, R, SP, S, Z } from '../theme';
  * with the driver's live state and current job beside it.
  */
 export default function MessagesScreen() {
+  // The composer clears the phone's navigation buttons.
+  const composerPad = useBottomPad(SP.sm);
   const { fetchMessages, sendMessage, markMessagesRead, job } = useApp();
   const [messages, setMessages] = useState([]);
   const [body, setBody] = useState('');
@@ -90,7 +92,7 @@ export default function MessagesScreen() {
         )}
       />
 
-      <View style={st.composer}>
+      <View style={[st.composer, composerPad]}>
         <TextInput
           style={st.input}
           value={body}
