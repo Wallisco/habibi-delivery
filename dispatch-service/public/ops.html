@@ -457,6 +457,11 @@ async function openOrder(jobId){
           ${o.dropoff?.lat ? `<div><a style="font-size:11.5px;color:var(--green)" target="_blank"
             href="https://www.google.com/maps/search/?api=1&query=${o.dropoff.lat},${o.dropoff.lng}">
             ${o.dropoff.lat.toFixed(5)}, ${o.dropoff.lng.toFixed(5)} ↗</a></div>` : ''}</div>
+        <div><div style="font-size:10.5px;font-weight:800;color:var(--muted)">IN THE ORDER</div>
+          ${o.items?.length
+            ? o.items.map((it)=>`<div>${it.qty} × ${it.name}${it.size?' '+it.size:''}</div>`).join('')
+            : '<div style="color:var(--muted)">No item list from Keychat</div>'}
+          <div style="font-size:11.5px;color:var(--muted)">${o.bagCount??1} bag${(o.bagCount??1)===1?'':'s'}${o.ageRestricted?' · age restricted':''}</div></div>
       </div>
       ${!o.collectedAt && !['DELIVERED','FAILED','CANCELLED'].includes(o.status) ? `
         <div class="hint" style="margin-bottom:12px">The customer tracking link is released when the driver collects the order.</div>` : ''}

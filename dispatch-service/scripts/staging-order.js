@@ -41,6 +41,9 @@ const res = await fetch(`${url}/v1/keychat/jobs`, {
     pickup: { lat, lng, name: 'Staging test store' },
     dropoff: { lat: lat + 0.0135, lng, name: 'Staging test customer' },
     customerCharge: 40, tip: 10, bagCount: 1, prepMinutes: 5, dispatchNow: true,
+    // What is in the order, for the driver's checklist at the store.
+    items: [{ name: 'Pizza Margherita', qty: 3 }, { name: 'Coke', qty: 1, size: '500ml' },
+      { name: 'Sprite', qty: 1, size: '500ml' }],
   }),
 });
 const body = await res.json().catch(() => ({}));

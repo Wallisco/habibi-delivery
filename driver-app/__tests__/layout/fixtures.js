@@ -51,15 +51,20 @@ const base = {
   markMessagesRead: resolves({}),
 };
 
+// A realistic order: several lines, some with sizes.
+const ITEMS = [
+  { name: 'Pizza Margherita', qty: 3 }, { name: 'Coke', qty: 1, size: '500ml' },
+  { name: 'Sprite', qty: 1, size: '500ml' }, { name: 'Garlic bread', qty: 2 },
+];
 const job = (id, dropoff, extra = {}) => ({
-  id, orderNumber: `KFC-${id}`, pickup: STORE, dropoff, bagCount: 1, fee: 42, distanceKm: 3.4,
-  earningsPreview: { total: 48 }, ...extra,
+  id, orderNumber: `KFC-${id}`, pickup: STORE, dropoff, bagCount: 2, fee: 42, distanceKm: 3.4,
+  earningsPreview: { total: 48 }, items: ITEMS, itemCount: 7, ...extra,
 });
 
 const offer = {
   id: 'O-1', orderNumber: 'KFC-2291', kind: 'ZONE', fee: 52, tip: 15,
   pickup: STORE, dropoff: HOME, distanceKm: 3.4, distanceSource: 'navigation',
-  bagCount: 2, readyInMinutes: 4,
+  bagCount: 2, readyInMinutes: 4, items: ITEMS, itemCount: 7, ageRestricted: true,
   earningsPreview: {
     total: 67,
     lines: [
@@ -121,6 +126,19 @@ export const CASES = [
     screen: 'Delivery', state: 'to-store', header: true,
     component: screen('RunScreen'),
     app: () => ({ ...base, supply: SUPPLY.ZONE_COMMITTED, jobs: [job('2291', HOME)], position: AWAY }),
+  },
+  {
+    screen: 'Delivery', state: 'pair-at-store', header: true,
+    component: screen('RunScreen'),
+    app: () => {
+      const jobs = [job('2291', HOME), job('2292', HOME2)];
+      const stop = (kind, p, ids) => ({ kind, name: p.name, lat: p.latitude, lng: p.longitude, jobIds: ids });
+      return {
+        ...base, supply: SUPPLY.ZONE_COMMITTED, jobs, stopIndex: 0,
+        stops: [stop('PICKUP', STORE, ['2291', '2292']), stop('DROPOFF', HOME, ['2291']), stop('DROPOFF', HOME2, ['2292'])],
+        position: AWAY,
+      };
+    },
   },
   {
     screen: 'Delivery', state: 'at-door', header: true,

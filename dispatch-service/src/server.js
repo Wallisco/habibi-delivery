@@ -14,6 +14,7 @@ import { registerPartnerAuth } from './auth.js';
 import { OpsUsers, registerOpsAuth } from './opsAuth.js';
 import { DriverTokens, registerDriverAuth } from './driverAuth.js';
 import { markStaging } from './stagingBanner.js';
+import { parseItems } from './items.js';
 import { IdempotencyStore, idempotent } from './idempotency.js';
 import { Simulator } from './simulator.js';
 import Fastify from 'fastify';
@@ -194,6 +195,8 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
       earningsPreview: priceJob(j),
       tip: j.tip ?? 0,
       bagCount: j.bagCount, itemCount: j.itemCount, fee: j.fee,
+      // What is in the order, for the driver's checklist at the store.
+      items: j.items ?? null,
       deliveryMode: j.deliveryMode, proofPolicy: j.proofPolicy,
       distanceKm: j.distanceKm,
       distanceSource: j.distanceSource ?? 'estimated',
@@ -307,6 +310,10 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
     }
     b.pickup = { ...b.pickup, ...pickupAt };
     b.dropoff = { ...b.dropoff, ...dropoffAt };
+    // What is in the order (optional, v1.2). Refused if it isn't a product list.
+    const parsed = parseItems(b.items);
+    if (parsed.error) return reply.code(400).send({ error: parsed.error });
+    b.items = parsed.items;
     // We route it ourselves. Keychat's ETA is for their customer; our distance
     // is what the fee is built on, and it has to be defensible in a dispute.
     const routing = await routeJob({ pickup: b.pickup, dropoff: b.dropoff });

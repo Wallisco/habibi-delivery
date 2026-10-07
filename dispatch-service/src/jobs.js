@@ -82,7 +82,15 @@ export class JobStore {
       pickup: input.pickup,
       dropoff: input.dropoff,
       bagCount: input.bagCount ?? 1,
-      itemCount: input.itemCount ?? 1,
+      // What is in the order (validated by items.js at intake), and the count
+      // that follows from it when Keychat sends the list.
+      items: Array.isArray(input.items) && input.items.length ? input.items : null,
+      itemCount: Array.isArray(input.items) && input.items.length
+        ? input.items.reduce((a, it) => a + (it.qty ?? 1), 0)
+        : (input.itemCount ?? 1),
+      // Kept on the job so the driver is told to hand it over in person. It
+      // used to be dropped here, so the warning never showed.
+      ageRestricted: Boolean(input.ageRestricted),
 
       // Road distance. Keychat routes the order for its own ETA, so we take
       // their number when they send it rather than paying a routing API to

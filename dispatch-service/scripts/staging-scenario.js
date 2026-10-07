@@ -67,6 +67,14 @@ const GENERATED = {
 };
 const ORDERS = preset ? KILLARNEY : GENERATED;
 
+// What is in each order, so the driver's store checklist has something to show.
+const ITEMS = {
+  A: [{ name: 'Pizza Margherita', qty: 3 }, { name: 'Coke', qty: 1, size: '500ml' }, { name: 'Sprite', qty: 1, size: '500ml' }],
+  B: [{ name: 'Chicken burger meal', qty: 2 }, { name: 'Fanta', qty: 2, size: '330ml' }],
+  C: [{ name: 'Boerewors roll', qty: 1 }, { name: 'Chips', qty: 1, size: 'Large' }],
+  D: [{ name: 'Milk', qty: 1, size: '2L' }, { name: 'Bread', qty: 1 }, { name: 'Eggs', qty: 1, size: '6 pack' }],
+};
+
 async function create(letter) {
   const o = ORDERS[letter];
   const id = `KC-SCN-${run}-${letter}-NOSIM`;
@@ -77,6 +85,7 @@ async function create(letter) {
       externalId: id, storeId: o.store, zone: 'Staging',
       pickup: o.pickup, dropoff: o.dropoff,
       customerCharge: 35, tip: 0, bagCount: 1, prepMinutes: 5, dispatchNow: true,
+      items: ITEMS[letter],
     }),
   });
   const body = await res.json().catch(() => ({}));

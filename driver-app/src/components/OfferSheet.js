@@ -61,6 +61,8 @@ export default function OfferSheet({ navigation }) {
     .map((l) => `${l.label} +R${l.amount.toFixed(0)}`);
   const pay = offer ? (offer.summary?.totalEarnings ?? offer.earningsPreview?.total ?? offer.fee ?? 0) : 0;
   const bags = offer?.bagCount ?? 1;
+  // "5 items · 2 bags", only when Keychat sent what is in the order.
+  const items = offer?.items?.length ? offer.itemCount : 0;
 
   return (
     <Modal visible={shown} transparent animationType="slide" onRequestClose={declineOffer}>
@@ -125,6 +127,7 @@ export default function OfferSheet({ navigation }) {
               </View>
               <Text style={T.small}>
                 {offer.distanceKm} km{offer.distanceSource === 'navigation' ? '' : ' approx'}
+                {items ? ` · ${items} item${items === 1 ? '' : 's'}` : ''}
                 {' · '}{bags} bag{bags === 1 ? '' : 's'}
                 {' · '}food ready {offer.readyInMinutes === 0 ? 'now' : `in ~${offer.readyInMinutes} min`}
               </Text>

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { View, Text, StyleSheet, Linking, Platform, TextInput, Pressable } from 'react-native';
+import { View, Text, FlatList, StyleSheet, Linking, Platform, TextInput, Pressable } from 'react-native';
 import { useApp } from '../state/store';
 import { Card, Button, Pill } from '../components/UI';
 import MapPanel from '../components/MapPanel';
@@ -7,6 +7,9 @@ import OfferSheet from '../components/OfferSheet';
 import { metresBetween, insideGeofence } from '../lib/proof';
 import { C, T, R, SP, S, Z } from '../theme';
 import { stepOf, STEP } from '../lib/currentJob';
+
+/** "3 × Pizza Margherita" / "1 × Coke 500ml" (same as dispatch-service/src/items.js). */
+const itemLine = (it) => `${it.qty} × ${it.name}${it.size ? ` ${it.size}` : ''}`;
 
 /**
  * A run: one to three orders, collected together and delivered in sequence.
@@ -184,15 +187,18 @@ export default function RunScreen({ navigation }) {
         </Pressable>
       ) : null}
 
-      <MapPanel
-        pickup={isPickup ? { latitude: current.lat, longitude: current.lng,
-          name: current.name } : null}
-        dropoff={!isPickup && current ? { latitude: current.lat, longitude: current.lng,
-          name: current.name } : null}
-        driver={position ? { latitude: position.latitude, longitude: position.longitude,
-          name: 'You' } : null}
-        height={Z.map}
-      />
+      {/* At the store the map adds nothing; the checklist needs the room. */}
+      {isPickup && inRange ? null : (
+        <MapPanel
+          pickup={isPickup ? { latitude: current.lat, longitude: current.lng,
+            name: current.name } : null}
+          dropoff={!isPickup && current ? { latitude: current.lat, longitude: current.lng,
+            name: current.name } : null}
+          driver={position ? { latitude: position.latitude, longitude: position.longitude,
+            name: 'You' } : null}
+          height={Z.map}
+        />
+      )}
 
       <Card tone="wash" flat>
         <Text style={T.label}>{isPickup ? 'COLLECT FROM' : 'DELIVER TO'}</Text>
@@ -209,14 +215,28 @@ export default function RunScreen({ navigation }) {
       </Card>
 
       {isPickup ? (
-        <Card style={st.action}>
-          <Text style={T.h3}>Collect {stopJobs.length} order{stopJobs.length === 1 ? '' : 's'}</Text>
-          {stopJobs.map((j) => (
-            <Text key={j.id} style={T.small} numberOfLines={1}>
-              {j.orderNumber ?? j.id} · {j.bagCount ?? 1} bag{(j.bagCount ?? 1) === 1 ? '' : 's'}
-              {' · to '}{(j.dropoff?.name ?? '').split(',')[0]}
-            </Text>
-          ))}
+        <Card style={[st.action, st.fill]}>
+          <Text style={T.h3}>
+            Collect {stopJobs.length} order{stopJobs.length === 1 ? '' : 's'} · {totalBags} bag{totalBags === 1 ? '' : 's'}
+          </Text>
+          {/* What should be in each bag: check it before you leave. The list is
+              the one part of this screen that scrolls, if it is long. */}
+          <FlatList
+            style={st.fill}
+            data={stopJobs}
+            keyExtractor={(j) => j.id}
+            renderItem={({ item: j }) => (
+              <View style={st.order}>
+                <Text style={T.small} numberOfLines={1}>
+                  {j.orderNumber ?? j.id} · {j.bagCount ?? 1} bag{(j.bagCount ?? 1) === 1 ? '' : 's'}
+                  {' · to '}{(j.dropoff?.name ?? '').split(',')[0]}
+                </Text>
+                {(j.items ?? []).map((it, i) => (
+                  <Text key={i} style={st.item}>{itemLine(it)}</Text>
+                ))}
+              </View>
+            )}
+          />
           <Button title={`I have all ${totalBags} bag${totalBags === 1 ? '' : 's'}`}
             kind="live" onPress={collectAll} loading={busy} disabled={!inRange}
             style={{ marginTop: SP.sm }} />
@@ -260,7 +280,7 @@ export default function RunScreen({ navigation }) {
         </Card>
       )}
 
-      <View style={{ flex: 1 }} />
+      {isPickup ? null : <View style={{ flex: 1 }} />}
       <Pressable style={st.link} accessibilityRole="button" onPress={() => navigation.navigate('Messages')}>
         <Text style={st.linkText}>Message the office</Text>
       </Pressable>
@@ -291,6 +311,9 @@ const st = StyleSheet.create({
   row: { flexDirection: 'row', alignItems: 'center', gap: SP.sm, marginTop: SP.xs },
   navigate: { paddingHorizontal: SP.md },
   action: { marginTop: SP.sm },
+  fill: { flex: 1 },
+  order: { marginTop: SP.xs },
+  item: { ...T.body, color: C.ink, fontWeight: '600' },
   codeRow: { flexDirection: 'row', alignItems: 'center', gap: SP.sm, marginTop: SP.sm },
   code: { flex: 1, height: Z.primary, borderWidth: 2, borderColor: C.line, borderRadius: R.sm,
     fontSize: 24, fontWeight: '800', letterSpacing: 10, textAlign: 'center',

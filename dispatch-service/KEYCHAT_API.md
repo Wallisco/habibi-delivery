@@ -136,10 +136,28 @@ back to straight-line distance. Only `osrm` should be billed on.
   "customerCharge": 40.00,
   "tip": 20.00,
   "bagCount": 2,
+  "items": [
+    { "name": "Pizza Margherita", "qty": 3 },
+    { "name": "Coke", "qty": 1, "size": "500ml" },
+    { "name": "Sprite", "qty": 1, "size": "500ml" }
+  ],
   "deliveryMode": "HANDOFF_REQUIRED",
   "ageRestricted": false
 }
 ```
+
+`items` (optional, v1.2) is what is in the order. The driver sees it as a checklist
+at the store ("3 × Pizza Margherita, 1 × Coke 500ml") and confirms it with a
+photo, so wrong or missing items are caught before the food leaves.
+- `name`: the product as the store names it, up to 60 characters. Required.
+- `qty`: a whole number from 1 to 99. Defaults to 1.
+- `size`: optional, up to 20 characters ("500ml", "Large").
+- Up to 50 lines. Anything else is refused with 400 and the reason.
+- **Product names only.** No customer name, phone number or delivery notes:
+  drivers see this list.
+
+When `items` is sent, `itemCount` is worked out from it. Without it the driver sees
+only the bag count, as before.
 
 `tip` must be the amount the customer **committed at checkout**. It is shown to
 the driver in the offer as part of an all-inclusive figure, which is what makes
@@ -262,3 +280,13 @@ at 10% national share — about twenty-five times the entire infrastructure bill
 
 - No signature verification on inbound calls from Keychat.
 - `delivery.failed` is defined but the disposition flow behind it is not built.
+
+## Change log
+
+Every change to this contract is listed here. Additions are optional and
+backwards compatible unless marked otherwise.
+
+| Version | Date | Change |
+|---|---|---|
+| v1.2 | 7 Oct 2026 | `POST /v1/keychat/jobs` accepts `items: [{ name, qty, size? }]`, what is in the order, shown to the driver at the store (section 2). Optional. |
+| v1.1 | before 7 Oct 2026 | Everything above as documented before this log: quote, job creation with `Idempotency-Key`, the ready event, webhooks, reconciliation. |
