@@ -21,6 +21,15 @@ export const canStackOnRun = (s) =>
   !!s.job && s.jobs.filter((j) => !j.done).length < MAX_RUN
   && s.stopIndex === 0 && (s.stage ?? 'NAVIGATE_STORE') === 'NAVIGATE_STORE';
 
+/**
+ * Can dispatch line up a next job? Only with one order on board, already
+ * collected, and nothing lined up yet (dispatch checks the timing: the driver
+ * must reach the next store by the time its food is ready).
+ */
+export const canChainOnRun = (s) =>
+  !!s.job && !s.next && s.jobs.filter((j) => !j.done).length === 1
+  && (s.stopIndex >= 1 || s.stage === 'NAVIGATE_CUSTOMER');
+
 const Ctx = createContext(null);
 export const useApp = () => useContext(Ctx);
 
@@ -32,6 +41,7 @@ const initial = {
   position: null,
   trail: [],
   offer: null,
+  next: null,           // the job lined up after the current drop
   job: null,
   jobs: [],
   batchId: null,
@@ -56,11 +66,14 @@ function reducer(s, a) {
     case 'SUPPLY': return { ...s, supply: a.state };
     case 'POSITION': return { ...s, position: a.position, trail: [...s.trail, a.position].slice(-120) };
     case 'OFFER': return { ...s, offer: a.offer };
+    case 'NEXT': return { ...s, next: a.next ?? null };
     case 'ACCEPT': {
       const jobs = a.jobs?.length ? a.jobs : (a.job ? [a.job] : []);
       return {
         ...s,
         offer: null,
+        // The lined-up job has started: it is no longer "next".
+        next: s.next && jobs.some((j) => j.id === s.next.id) ? null : s.next,
         job: jobs[0] ?? null,
         jobs,
         batchId: a.batchId ?? null,
@@ -321,9 +334,25 @@ export function AppProvider({ children, onJobEnded }) {
       dispatch({ type: 'DROP_JOBS', jobIds: r.jobIds });
       if (r.message) dispatch({ type: 'TOAST', toast: r.message });
     } else if (r.action === 'restore') {
+      const startedNext = now.next && r.jobs.some((j) => j.id === now.next.id);
       dispatch({ type: 'ACCEPT', jobs: r.jobs.map(normaliseServerJob), batchId: r.batchId,
         stops: r.stops, stopIndex: r.stopIndex, stage: r.stage });
-      dispatch({ type: 'TOAST', toast: 'Picked up your delivery where you left off.' });
+      dispatch({ type: 'TOAST', toast: startedNext
+        ? `On to your next job: collect at ${now.next.pickup?.name ?? 'the store'}.`
+        : 'Picked up your delivery where you left off.' });
+    }
+
+    // The job lined up after this drop: keep it in step with dispatch.
+    if (result.ok) {
+      const theirs = result.body?.next ?? null;
+      const mine = latest.current.next;
+      const started = mine && (result.body?.jobs ?? []).some((j) => j.id === mine.id);
+      if (mine && !theirs && !started) {
+        dispatch({ type: 'NEXT', next: null });
+        dispatch({ type: 'TOAST', toast: 'Your next job went to another driver because this drop is taking longer. Your current delivery is not affected.' });
+      } else if (theirs && mine?.id !== theirs.id) {
+        dispatch({ type: 'NEXT', next: normaliseServerJob(theirs) });
+      }
     }
   }, []);
 
@@ -339,7 +368,7 @@ export function AppProvider({ children, onJobEnded }) {
   // infrastructure and is fine at this stage.
   // While carrying a job, keep looking only if a second order could still join
   // the run (on-the-run stacking).
-  const stackable = canStackOnRun(state);
+  const stackable = canStackOnRun(state) || canChainOnRun(state);
   useEffect(() => {
     if (DEMO || !state.driver) return;
     const canReceive = [SUPPLY.ZONE_COMMITTED, SUPPLY.ROAMING_ELIGIBLE, SUPPLY.RETURNING]
@@ -359,6 +388,7 @@ export function AppProvider({ children, onJobEnded }) {
             stops: o.stops ?? [],
             summary: o.summary ?? null,
             addsToRun: Boolean(o.addsToRun),
+            next: o.next ?? null,
           } });
         }
       } catch {
@@ -421,6 +451,14 @@ export function AppProvider({ children, onJobEnded }) {
       try {
         // On the run, dispatch answers with the whole run: replace what we hold.
         const res = await api.current.acceptJob(state.offer.id);
+        if (res.next) {
+          // Lined up after this drop. The run in the box carries on unchanged.
+          const lined = normaliseServerJob(res.next);
+          dispatch({ type: 'OFFER', offer: null });
+          dispatch({ type: 'NEXT', next: lined });
+          dispatch({ type: 'TOAST', toast: `Next job lined up: collect at ${lined.pickup?.name ?? 'the store'} after this drop.` });
+          return;
+        }
         dispatch({
           type: 'ACCEPT',
           jobs: (res.jobs ?? [res.job]).map(normaliseServerJob),
@@ -472,7 +510,16 @@ export function AppProvider({ children, onJobEnded }) {
     dispatch({ type: 'PENDING', count: q.length });
     // Only the last drop ends the run; the rest of the box is still to go.
     const others = latest.current.jobs.filter((j) => !j.done && j.id !== evidence.jobId);
-    dispatch(others.length ? { type: 'JOB_DONE', jobId: evidence.jobId } : { type: 'FINISH' });
+    const lined = latest.current.next;
+    if (others.length) {
+      dispatch({ type: 'JOB_DONE', jobId: evidence.jobId });
+    } else if (lined) {
+      // Straight on to the next job; dispatch starts it as this drop completes.
+      dispatch({ type: 'ACCEPT', jobs: [lined] });
+      dispatch({ type: 'TOAST', toast: `On to your next job: collect at ${lined.pickup?.name ?? 'the store'}.` });
+    } else {
+      dispatch({ type: 'FINISH' });
+    }
   };
 
   const syncNow = async () => {

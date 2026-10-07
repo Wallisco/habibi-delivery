@@ -15,7 +15,9 @@ export const ORDER_STATES = [
   { code: 'PENDING', label: 'Waiting for the kitchen',
     detail: 'Held by the ready gate until the food is nearly up' },
   { code: 'OFFERED', label: 'Offered to a driver',
-    detail: 'A driver has 25 seconds to accept' },
+    detail: 'A driver has 45 seconds to accept' },
+  { code: 'NEXT', label: 'Next job for a driver finishing a drop',
+    detail: 'The driver comes straight here after their current delivery' },
   { code: 'ASSIGNED', label: 'Driver on the way to collect', detail: null },
   { code: 'AT_STORE', label: 'Driver at the restaurant', detail: null },
   { code: 'IN_TRANSIT', label: 'Collected, on the way', detail: null },
@@ -47,6 +49,7 @@ export function timeline(job) {
     ? `merchant estimated ${job.merchantPrepMinutes} min` : null);
   for (const h of job.history ?? []) {
     if (h.to === 'OFFERED') push('OFFERED', h.at);
+    if (h.to === 'NEXT') push('NEXT', h.at, job.driverId ? `driver ${job.driverId}` : null);
     if (h.to === 'ASSIGNED') push('ASSIGNED', h.at, job.driverId ? `driver ${job.driverId}` : null);
   }
   push('AT_STORE', job.readyAt, 'merchant marked the order ready');

@@ -145,6 +145,13 @@ export class Simulator {
           continue;
         }
 
+        // Simulated drivers keep it simple: one run at a time. A next-job or
+        // add-to-run offer is passed on at once rather than left to run out.
+        const busyOffer = this.e.pendingOffers.get(id);
+        if (busyOffer && busyOffer.expiresAt > now) {
+          await this.call('POST', `/v1/jobs/${busyOffer.jobId}/decline`, { driverId: id });
+        }
+
         // Ask dispatch what this driver still carries, as the app does.
         const token = this.tokens.get(id);
         const cur = await this.call('GET', `/v1/driver/current?jobs=${run.jobIds.slice(run.i).join(',')}`,

@@ -27,6 +27,7 @@ export default function RunScreen({ navigation }) {
   const {
     jobs, stops, stopIndex, goToStop, markJobDone, position, trail, online,
     otpAttempts, noteOtpFail, completeJob, api, toastMsg, scanned, setScanned, batchId, toast,
+    next: lined,
   } = useApp();
 
   const [code, setCode] = useState('');
@@ -124,6 +125,7 @@ export default function RunScreen({ navigation }) {
         verified = /^\d{4}$/.test(code);
       }
       if (!verified) { noteOtpFail(); setErr('That code did not match.'); return; }
+      const goingOn = !!lined && live.length === 1;
 
       await completeJob({
         jobId: dropJob.id,
@@ -135,7 +137,9 @@ export default function RunScreen({ navigation }) {
       markJobDone(dropJob.id);
 
       const next = stopIndex + 1;
-      if (next < effectiveStops.length) {
+      if (goingOn) {
+        // The next job is now on this screen; stay here.
+      } else if (next < effectiveStops.length) {
         toastMsg(`Delivered. ${effectiveStops.length - next} stop${
           effectiveStops.length - next === 1 ? '' : 's'} left.`);
         goToStop(next, 'NAVIGATE_CUSTOMER');
@@ -172,6 +176,13 @@ export default function RunScreen({ navigation }) {
           </Text>
         </Card>
       )}
+
+      {lined ? (
+        <Card tone="wash" flat style={{ marginBottom: SP.md }}>
+          <Text style={T.label}>NEXT JOB, AFTER THIS DROP</Text>
+          <Text style={T.body}>Collect at {lined.pickup?.name ?? 'the store'}</Text>
+        </Card>
+      ) : null}
 
       <MapPanel
         pickup={isPickup ? { latitude: current.lat, longitude: current.lng,
