@@ -17,9 +17,28 @@ import Anthropic from '@anthropic-ai/sdk';
 import { betaZodOutputFormat } from '@anthropic-ai/sdk/helpers/beta/zod';
 import { z } from 'zod';
 
+/** The model whose answer the driver sees. */
 export const PHOTO_CHECK_MODEL = 'claude-opus-5-5';
-/** US$ per million tokens for PHOTO_CHECK_MODEL, for the trial's cost estimate. */
-export const PRICE_PER_MTOK = { input: 4, output: 20 };
+
+/**
+ * Models the trial can run, with list prices (US$ per million tokens, for the
+ * cost estimate) and what each request may set: Claude Haiku 4.5 takes no
+ * effort setting and no server-side refusal fallback.
+ */
+export const MODELS = {
+  'claude-opus-5-5': { label: 'Claude Opus 5.5', price: { input: 4, output: 20 }, effort: true, fallbacks: true },
+  'claude-sonnet-5-5': { label: 'Claude Sonnet 5.5', price: { input: 2, output: 10 }, effort: true, fallbacks: true },
+  'claude-haiku-4-5': { label: 'Claude Haiku 4.5', price: { input: 1, output: 5 }, effort: false, fallbacks: false },
+};
+/** Kept for callers of the first version: the driver-facing model's price. */
+export const PRICE_PER_MTOK = MODELS[PHOTO_CHECK_MODEL].price;
+
+/** Models run beside the main one for the trial (PHOTO_CHECK_COMPARE, comma-separated; "none" for none). */
+export function compareModels(env = process.env.PHOTO_CHECK_COMPARE) {
+  if (env === 'none') return [];
+  const list = (env ?? 'claude-sonnet-5-5,claude-haiku-4-5').split(',').map((s) => s.trim()).filter(Boolean);
+  return list.filter((m) => MODELS[m] && m !== PHOTO_CHECK_MODEL);
+}
 
 /*
  * The answer is written in this order on purpose: first everything visible,
@@ -73,10 +92,11 @@ export function verdictFrom({ lines }, items) {
   return { status: 'complete', missing: [], seen };
 }
 
-/** Estimated cost in US$ of one check, from its token counts. */
-export const checkCost = (usage) => usage
-  ? ((usage.input ?? 0) * PRICE_PER_MTOK.input + (usage.output ?? 0) * PRICE_PER_MTOK.output) / 1e6
-  : 0;
+/** Estimated cost in US$ of one check, from its token counts and the model's list price. */
+export const checkCost = (usage, model = PHOTO_CHECK_MODEL) => {
+  const price = (MODELS[model] ?? MODELS[PHOTO_CHECK_MODEL]).price;
+  return usage ? ((usage.input ?? 0) * price.input + (usage.output ?? 0) * price.output) / 1e6 : 0;
+};
 
 /**
  * @param apiKey  ANTHROPIC_API_KEY; without one, every check is "not_configured"
@@ -89,22 +109,24 @@ export function createPhotoChecker({
   effort = process.env.PHOTO_CHECK_EFFORT || 'medium',
   client = null,
   log = null,
+  compare = compareModels(),
 } = {}) {
   const sdk = client ?? (apiKey ? new Anthropic({ apiKey, timeout: 20_000, maxRetries: 1 }) : null);
 
-  async function check({ jpeg, items, bagCount }) {
+  /** @param model  which model looks (default: the one the driver sees) */
+  async function check({ jpeg, items, bagCount, model = PHOTO_CHECK_MODEL }) {
     const at = Date.now();
-    if (!sdk) return { status: 'not_configured', at };
+    if (!sdk) return { status: 'not_configured', at, model };
+    const can = MODELS[model] ?? MODELS[PHOTO_CHECK_MODEL];
     try {
       const res = await sdk.beta.messages.parse({
-        model: PHOTO_CHECK_MODEL,
+        model,
         max_tokens: 1000,
         // If the model declines, the API re-runs the request on a fallback
-        // model instead of failing the check.
-        betas: ['server-side-fallback-2026-07-01'],
-        fallbacks: 'default',
+        // model instead of failing the check (where the model supports it).
+        ...(can.fallbacks ? { betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default' } : {}),
         system: SYSTEM,
-        output_config: { effort, format: betaZodOutputFormat(CheckAnswer) },
+        output_config: { ...(can.effort ? { effort } : {}), format: betaZodOutputFormat(CheckAnswer) },
         messages: [{
           role: 'user',
           content: [
@@ -114,7 +136,8 @@ export function createPhotoChecker({
         }],
       });
       const base = {
-        at, ms: Date.now() - at, model: res.model ?? PHOTO_CHECK_MODEL, effort,
+        // `model` is the one asked; `servedBy` says if a fallback answered instead.
+        at, ms: Date.now() - at, model, servedBy: res.model ?? model, effort: can.effort ? effort : null,
         usage: { input: res.usage?.input_tokens ?? 0, output: res.usage?.output_tokens ?? 0 },
       };
       const out = res.stop_reason === 'refusal' ? null : res.parsed_output;
@@ -124,10 +147,36 @@ export function createPhotoChecker({
       log?.warn?.({ status: err?.status, err: err?.message }, 'photo check failed');
       // The API's own message says why (bad key, no access, a bad setting);
       // it never contains the key or the photo.
-      return { at, ms: Date.now() - at, status: 'error', reason: String(err?.status ?? err?.name ?? 'error'),
+      return { at, ms: Date.now() - at, model, status: 'error', reason: String(err?.status ?? err?.name ?? 'error'),
         detail: String(err?.message ?? '').slice(0, 300) };
     }
   }
 
-  return { configured: Boolean(sdk), check };
+  return { configured: Boolean(sdk), check, compare };
+}
+
+/* ------------------------------------------------------- which orders */
+
+/** Defaults for selective checking (settable per server). */
+export const SELECTIVE = {
+  minItems: Number(process.env.PHOTO_CHECK_MIN_ITEMS ?? 4),        // this many items or more
+  newDriverTrips: Number(process.env.PHOTO_CHECK_NEW_DRIVER_TRIPS ?? 20), // driver's first trips
+  samplePct: Number(process.env.PHOTO_CHECK_SAMPLE_PCT ?? 30),     // and this share of the rest
+};
+
+/** A stable 0-99 number per order, so the random sample doesn't change on a re-ask. */
+const bucket = (id) => [...String(id)].reduce((h, c) => (h * 31 + c.charCodeAt(0)) >>> 0, 7) % 100;
+
+/**
+ * Is this order checked, and why? `mode` is the store's setting: off, all, or
+ * selective (bigger orders, a driver's first trips, and a random share).
+ */
+export function selectForCheck({ mode, job, driverTrips, rules = SELECTIVE }) {
+  if (!job?.items?.length || !mode || mode === 'off') return { selected: false, reason: null };
+  if (mode === 'all') return { selected: true, reason: 'every order' };
+  const items = job.items.reduce((a, it) => a + (it.qty ?? 1), 0);
+  if (items >= rules.minItems) return { selected: true, reason: `${items} items` };
+  if (driverTrips != null && driverTrips < rules.newDriverTrips) return { selected: true, reason: `driver's trip ${driverTrips + 1}` };
+  if (bucket(job.id) < rules.samplePct) return { selected: true, reason: `random ${rules.samplePct}%` };
+  return { selected: false, reason: null };
 }

@@ -232,8 +232,8 @@ document.addEventListener('click', (e) => {
   if (action === 'orderClear')  { ORDER_SEARCH = ''; loadOrders(); }
   if (action === 'eventType')   { EVENT_TYPE = state; loadIntegration(); }
   if (action === 'openLedger')  openLedger(id);
-  if (action === 'photoCheckSwitch') setPhotoCheck(id, state === 'on');
-  if (action === 'photoCheckReview') reviewPhotoCheck(id, state === 'right');
+  if (action === 'photoCheckSwitch') setPhotoCheck(id, state);
+  if (action === 'photoCheckReview') reviewPhotoCheck(id, state);
   if (action === 'photoCheckRerun')  rerunPhotoCheck(id, act);
 });
 
@@ -486,6 +486,7 @@ async function openOrder(jobId){
                unclear: '<div><span class="tag a">Could not tell</span></div>',
                error: '<div><span class="tag n">Check failed</span></div>',
                not_configured: '<div><span class="tag n">Not configured</span></div>' }[o.photoCheck.status] ?? ''}
+          ${o.photoCheck.why ? '<div style="font-size:11px;color:var(--muted)">Checked because: ' + o.photoCheck.why + '</div>' : ''}
           ${o.photoCheck.missing?.length ? '<div style="font-size:12.5px">Not seen: ' + o.photoCheck.missing.map((m) => m.qty + ' × ' + m.name).join(', ') + '</div>' : ''}
           ${o.photoCheck.seen?.length && o.items?.length ? '<div style="font-size:11.5px;margin-top:4px">' + o.items.map((it) => {
               const s = o.photoCheck.seen.find((x) => x.name === it.name);
@@ -497,12 +498,21 @@ async function openOrder(jobId){
           ${o.photoCheck.status === 'error' ? '<div style="font-size:11.5px;color:var(--red)">Why: ' + (o.photoCheck.reason ?? '') + (o.photoCheck.detail ? ' · ' + o.photoCheck.detail : '') + '</div>' : ''}
           ${o.photoCheck.note ? '<div style="font-size:11.5px;color:var(--muted)">' + o.photoCheck.note + '</div>' : ''}
           ${o.photoCheck.ms != null ? '<div style="font-size:11px;color:var(--muted)">' + (o.photoCheck.ms / 1000).toFixed(1) + ' s · ' + (o.photoCheck.model ?? '') + (o.photoCheck.effort ? ' · ' + o.photoCheck.effort : '') + '</div>' : ''}
+          ${o.photoCheck.compare && Object.keys(o.photoCheck.compare).length ? '<div style="font-size:11px;margin-top:4px"><div style="font-weight:800;color:var(--muted)">OTHER MODELS (trial, not shown to the driver)</div>' + Object.entries(o.photoCheck.compare).map(([model, c]) => {
+              const truth = o.photoCheck.review?.truth;
+              const mark = truth && ['complete','missing','unclear'].includes(c.status) ? (c.status === truth ? ' <span style="color:var(--green)">✓</span>' : ' <span style="color:var(--red)">✗</span>') : '';
+              return '<div>' + model + ': <b>' + c.status + '</b>' + mark
+                + (c.missing?.length ? ' (not seen: ' + c.missing.map((m) => m.qty + ' × ' + m.name).join(', ') + ')' : '')
+                + (c.ms != null ? ' · ' + (c.ms / 1000).toFixed(1) + ' s' : '')
+                + (c.status === 'error' ? ' · ' + (c.reason ?? '') + (c.detail ? ' ' + c.detail : '') : '') + '</div>';
+            }).join('') + '</div>' : ''}
           ${o.photoCheck.previous ? '<div style="font-size:11px;color:var(--muted)">Before re-check: ' + o.photoCheck.previous.status + (o.photoCheck.previous.missing?.length ? ' (not seen: ' + o.photoCheck.previous.missing.map((m) => m.qty + ' × ' + m.name).join(', ') + ')' : '') + '</div>' : ''}
           ${['complete','missing','unclear'].includes(o.photoCheck.status) ? (o.photoCheck.review
-            ? '<div style="font-size:12px">Reviewed: ' + (o.photoCheck.review.correct ? 'right' : 'wrong') + '</div>'
-            : `<div style="display:flex;gap:6px;margin-top:4px">
-                 <button class="sm" data-act="photoCheckReview" data-id="${o.id}" data-state="right">Check was right</button>
-                 <button class="sm" data-act="photoCheckReview" data-id="${o.id}" data-state="wrong">Check was wrong</button></div>`) : ''}
+            ? '<div style="font-size:12px">Reviewed: ' + (o.photoCheck.review.truth ? (o.photoCheck.review.truth === 'complete' ? 'everything was there' : 'something was missing') + ' · ' : '') + 'check was ' + (o.photoCheck.review.correct ? 'right' : 'wrong') + '</div>'
+            : `<div style="font-size:11px;color:var(--muted);margin-top:4px">What was really in the photo?</div>
+               <div style="display:flex;gap:6px;margin-top:2px">
+                 <button class="sm" data-act="photoCheckReview" data-id="${o.id}" data-state="complete">Everything was there</button>
+                 <button class="sm" data-act="photoCheckReview" data-id="${o.id}" data-state="missing">Something was missing</button></div>`) : ''}
           </div>` : ''}
       </div>
       ${!o.collectedAt && !['DELIVERED','FAILED','CANCELLED'].includes(o.status) ? `
@@ -848,31 +858,50 @@ async function sendQuick(driverId,body){
 /* ------------------------------------------------------------------ stores */
 // Per-store switches. Today: the AI check of the collection photo (a trial).
 async function loadStores(){
-  const d = await (await fetch('/v1/ops/stores?days='+days())).json();
+  const [d, report] = await Promise.all([fetch('/v1/ops/stores?days='+days()).then((r) => r.json()),
+    fetch('/v1/ops/photo-checks?days='+days()).then((r) => r.json())]);
+  const sel = d.selective;
+  const MODE = { off: ['n', 'Off'], all: ['g', 'Every order'], selective: ['a', 'Selective'] };
+  const models = report.overall?.models ?? [];
   const pct = (v) => v == null ? '–' : Math.round(v * 100) + '%';
   const usd = (v) => 'US$' + v.toFixed(v < 1 ? 3 : 2);
   $('#tab-stores').innerHTML = `
     <section><h2>Stores</h2>
       <div class="hint">Photo check: when the driver photographs an order at collection, Claude compares the
         photo with the item list and warns the driver if something is not in it. It never stops a collection.
-        A trial: switch it on per store, then mark each check right or wrong on the order.</div>
+        A trial: switch it on per store, then on each order say what was really in the photo.</div>
+      ${sel ? `<div class="hint">Selective checks orders of ${sel.minItems}+ items, a driver's first ${sel.newDriverTrips} trips,
+        and ${sel.samplePct}% of the rest at random.</div>` : ''}
       ${d.checkConfigured ? '' : '<div class="hint" style="color:var(--red)">No ANTHROPIC_API_KEY on this server: checks report "not configured".</div>'}
-      ${d.stores.length ? table(['Store','Photo check','Checks','Missing','Unclear','Reviewed','Right','Avg time','Cost',''],
+      ${d.stores.length ? table(['Store','Photo check','Checks','Missing','Unclear','Reviewed','Right','Avg time','Cost','Set to'],
         d.stores.map((x) => {
           const p = x.photoChecks;
           return [`<span class="mono">${x.storeId}</span>`,
-            `<span class="tag ${x.photoCheck?'g':'n'}">${x.photoCheck?'On':'Off'}</span>`,
+            `<span class="tag ${MODE[x.photoMode]?.[0] ?? 'n'}">${MODE[x.photoMode]?.[1] ?? x.photoMode}</span>`,
             num(p.checks), num(p.missing), num(p.unclear), num(p.reviewed), num(pct(p.accuracy)),
             num(p.avgSeconds != null ? p.avgSeconds + ' s' : '–'),
             num(p.checks ? usd(p.costUsd) + ' (' + usd(p.costPerCheckUsd) + ' each)' : '–'),
-            `<td><button class="sm ${x.photoCheck?'':'go'}" data-act="photoCheckSwitch" data-id="${x.storeId}"
-              data-state="${x.photoCheck?'off':'on'}">${x.photoCheck?'Switch off':'Switch on'}</button></td>`];
+            `<td style="white-space:nowrap">${Object.keys(MODE).filter((m) => m !== x.photoMode).map((m) =>
+              `<button class="sm" data-act="photoCheckSwitch" data-id="${x.storeId}" data-state="${m}">${MODE[m][1]}</button>`).join(' ')}</td>`];
         })) : empty('No stores with orders in this period yet.')}
+    </section>
+    <section><h2>Photo check: models compared</h2>
+      <div class="hint">Every checked photo also goes to the comparison models (${(report.compare ?? []).join(', ') || 'none set'}).
+        The driver only sees ${models.find((m) => m.main)?.label ?? 'the main model'}. "Right" counts orders where the office said
+        what was really in the photo. "Missed a missing item" is the costly mistake.</div>
+      ${models.length ? table(['Model','Checks','Reviewed','Right','Accuracy','Missed a missing item','False alarms','Unclear','Errors','Avg time','Cost each','Per 1,000 checks'],
+        models.map((m) => [`${m.label}${m.main ? ' <span class="tag g">driver sees</span>' : ''}`,
+          num(m.checks), num(m.judged), num(m.right), num(pct(m.accuracy)),
+          num(m.missedMissing), num(m.falseAlarms), num(m.unclear), num(m.errors),
+          num(m.avgSeconds != null ? m.avgSeconds + ' s' : '–'),
+          num(m.costPerCheckUsd != null ? usd(m.costPerCheckUsd) : '–'),
+          num(m.costPerCheckUsd != null ? usd(m.costPerCheckUsd * 1000) : '–')]))
+        : empty('No checks in this period yet.')}
     </section>`;
 }
-async function setPhotoCheck(storeId, on){
+async function setPhotoCheck(storeId, mode){
   const res = await fetch('/v1/ops/stores/' + encodeURIComponent(storeId), { method: 'PUT',
-    headers: { 'content-type': 'application/json' }, body: JSON.stringify({ photoCheck: on }) });
+    headers: { 'content-type': 'application/json' }, body: JSON.stringify({ photoMode: mode }) });
   if (!res.ok) { alert((await res.json()).error ?? 'Could not change the store.'); return; }
   loadStores();
 }
@@ -882,8 +911,8 @@ async function rerunPhotoCheck(jobId, btn){
   if (!res.ok) { btn.disabled = false; btn.textContent = 'Re-check photo'; const m = $('#rerunMsg'); if (m) m.textContent = (await res.json()).error ?? 'Could not re-check.'; return; }
   openOrder(jobId);
 }
-async function reviewPhotoCheck(jobId, correct){
-  const res = await post('/v1/ops/orders/' + jobId + '/photo-check/review', { correct });
+async function reviewPhotoCheck(jobId, truth){
+  const res = await post('/v1/ops/orders/' + jobId + '/photo-check/review', { truth });
   if (!res.ok) { alert((await res.json()).error ?? 'Could not save the review.'); return; }
   openOrder(jobId);
 }

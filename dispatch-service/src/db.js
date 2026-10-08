@@ -249,6 +249,11 @@ export class Db {
     `).all(sinceMs).map((r) => JSON.parse(r.payload));
   }
 
+  /** How many orders this driver has delivered, ever (for "a new driver's first trips"). */
+  deliveredCount(driverId) {
+    return this.sql.prepare("SELECT COUNT(*) n FROM jobs WHERE driver_id = ? AND status = 'DELIVERED'").get(String(driverId)).n;
+  }
+
   /** Any job by id, live or long finished. */
   loadJob(id) {
     const r = this.sql.prepare('SELECT payload FROM jobs WHERE id = ?').get(id);

@@ -15,8 +15,8 @@
  * time rather than stacked.
  *
  * For each order it prints what to put in the photo, including which item to
- * LEAVE OUT on purpose. That is the right answer for the check: mark it
- * "Check was right" or "wrong" on the order in the back office.
+ * LEAVE OUT on purpose. On the order in the back office, press what was really
+ * in the photo: "Everything was there" or "Something was missing".
  */
 const args = process.argv.slice(2);
 const opt = (name, d) => { const i = args.indexOf(`--${name}`); return i >= 0 ? args[i + 1] : d; };
@@ -92,4 +92,4 @@ for (let i = 0; i < count; i++) {
   console.log('');
 }
 console.log('The orders come to your phone one at a time. Lay the items out (not in a closed bag) for each photo.');
-console.log('Then on each order in the back office: "Check was right" or "Check was wrong". Results: Stores tab.');
+console.log('Then on each order in the back office press what was really in the photo. Results, model by model: Stores tab.');

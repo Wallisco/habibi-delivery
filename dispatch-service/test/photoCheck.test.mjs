@@ -7,7 +7,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { build } from '../src/server.js';
 import { SUPPLY } from '../src/supply.js';
-import { createPhotoChecker, checkCost, verdictFrom, PHOTO_CHECK_MODEL } from '../src/photoCheck.js';
+import { DatabaseSync } from 'node:sqlite';
+import { createPhotoChecker, checkCost, verdictFrom, selectForCheck, compareModels, PHOTO_CHECK_MODEL } from '../src/photoCheck.js';
+import { StoreSettings } from '../src/stores.js';
 
 const JPEG = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(1500, 3)]);
 const ITEMS = [{ name: 'Pizza Margherita', qty: 3 }, { name: 'Sprite', qty: 1, size: '500ml' }];
@@ -108,10 +110,10 @@ test('cost is worked out from the tokens at $4 / $20 per million', () => {
 
 /* ------------------------------------------------ the flow on staging */
 
-function appFor(t, client) {
+function appFor(t, client, { compare = [] } = {}) {
   const photoDir = mkdtempSync(join(tmpdir(), 'dispatch-photocheck-'));
   const app = build({ dbPath: ':memory:', partnerAuth: false, opsAuth: false, photoDir,
-    photoChecker: createPhotoChecker({ client, effort: 'low' }) });
+    photoChecker: createPhotoChecker({ client, effort: 'low', compare }) });
   t.after(() => app.close());
   return app;
 }
@@ -249,11 +251,121 @@ test('re-check: the office re-runs the check on the same photo and sees what it 
   assert.equal(c.status, 'missing');
   assert.deepEqual(c.missing, [{ name: 'Sprite', qty: 1 }]);
   assert.equal(c.previous.status, 'complete', 'the earlier answer is kept beside it');
-  assert.equal(c.review, undefined, 'a new answer needs a new review');
+  // The review said what was really in the photo; the new answer is scored against it.
+  assert.deepEqual([c.review.truth, c.review.correct], ['missing', true]);
   assert.equal(client.calls.length, 2);
   assert.equal(client.calls[1].messages[0].content[0].source.data, JPEG.toString('base64'), 'the same photo');
 
   // No photo yet: nothing to re-check.
   const other = await driverWithOrder(app, { phone: '0823333333' });
   assert.equal((await app.inject({ method: 'POST', url: `/v1/ops/orders/${other.jobId}/photo-check/rerun`, payload: {} })).statusCode, 409);
+});
+
+/* --------------------------------------------- comparing models, trial */
+
+/** A fake client that answers differently per model. */
+function perModelClient(byModel) {
+  const calls = [];
+  return { calls, beta: { messages: { parse: async (params) => {
+    calls.push(params);
+    return { model: params.model, stop_reason: 'end_turn', usage: { input_tokens: 1800, output_tokens: 120 }, parsed_output: byModel[params.model] };
+  } } } };
+}
+
+test('comparison models see the same photo; the driver only ever gets the main answer', async (t) => {
+  const client = perModelClient({
+    'claude-opus-5-5': answer({ sprite: 0 }),
+    'claude-sonnet-5-5': answer({ sprite: 0 }),
+    'claude-haiku-4-5': answer(),            // misses the missing Sprite
+  });
+  const app = appFor(t, client, { compare: ['claude-sonnet-5-5', 'claude-haiku-4-5'] });
+  await app.inject({ method: 'PUT', url: '/v1/ops/stores/KFC-MIL', payload: { photoMode: 'all' } });
+  const d = await driverWithOrder(app);
+  await upload(app, d);
+  await app.engine.photoChecksDone();
+
+  assert.deepEqual(client.calls.map((c) => c.model).sort(), ['claude-haiku-4-5', 'claude-opus-5-5', 'claude-sonnet-5-5']);
+  const haiku = client.calls.find((c) => c.model === 'claude-haiku-4-5');
+  assert.equal(haiku.output_config.effort, undefined, 'Haiku 4.5 takes no effort setting');
+  assert.equal(haiku.fallbacks, undefined);
+  assert.equal(haiku.messages[0].content[0].source.data, JPEG.toString('base64'), 'the same photo');
+
+  assert.equal((await checkFor(app, d)).status, 'missing', 'the driver sees the main model');
+  const job = app.engine.jobs.get(d.jobId);
+  assert.equal(job.photoCheck.compare['claude-haiku-4-5'].status, 'complete');
+  assert.equal(job.photoCheck.compare['claude-sonnet-5-5'].status, 'missing');
+
+  // The office says what was really in the photo; every model is scored on it.
+  const bad = await app.inject({ method: 'POST', url: `/v1/ops/orders/${d.jobId}/photo-check/review`, payload: { truth: 'maybe' } });
+  assert.equal(bad.statusCode, 400);
+  const ok = await app.inject({ method: 'POST', url: `/v1/ops/orders/${d.jobId}/photo-check/review`, payload: { truth: 'missing' } });
+  assert.deepEqual([ok.json().review.truth, ok.json().review.correct], ['missing', true]);
+
+  const report = (await app.inject({ url: '/v1/ops/photo-checks' })).json();
+  assert.deepEqual(report.compare, ['claude-sonnet-5-5', 'claude-haiku-4-5']);
+  const m = Object.fromEntries(report.overall.models.map((x) => [x.model, x]));
+  assert.equal(m['claude-opus-5-5'].main, true);
+  assert.deepEqual([m['claude-opus-5-5'].accuracy, m['claude-sonnet-5-5'].accuracy, m['claude-haiku-4-5'].accuracy], [1, 1, 0]);
+  assert.equal(m['claude-haiku-4-5'].missedMissing, 1, 'the costly mistake is counted');
+  // Same tokens, different price: $4/$20, $2/$10, $1/$5 per million.
+  assert.deepEqual([m['claude-opus-5-5'].costPerCheckUsd, m['claude-sonnet-5-5'].costPerCheckUsd, m['claude-haiku-4-5'].costPerCheckUsd],
+    [0.0096, 0.0048, 0.0024]);
+  assert.equal(report.overall.costUsd, 0.0096, 'the overall figure is still the main model');
+});
+
+test('comparison models come from PHOTO_CHECK_COMPARE; unknown ones and the main model are ignored', () => {
+  assert.deepEqual(compareModels(undefined), ['claude-sonnet-5-5', 'claude-haiku-4-5']);
+  assert.deepEqual(compareModels('none'), []);
+  assert.deepEqual(compareModels('claude-haiku-4-5, claude-opus-5-5, gpt-x'), ['claude-haiku-4-5']);
+  assert.equal(Number(checkCost({ input: 1800, output: 120 }, 'claude-haiku-4-5').toFixed(4)), 0.0024);
+});
+
+/* -------------------------------------------------- selective checking */
+
+const RULES = { minItems: 4, newDriverTrips: 20, samplePct: 30 };
+const order = (id, qtys) => ({ id, items: qtys.map((qty, i) => ({ name: `Item ${i}`, qty })) });
+
+test('selective: bigger orders, a new driver\'s first trips, and a stable random share', () => {
+  const pick = (job, driverTrips, mode = 'selective') => selectForCheck({ mode, job, driverTrips, rules: RULES });
+  assert.equal(pick(order('a', [1]), 0, 'off').selected, false);
+  assert.deepEqual(pick(order('a', [1]), 500, 'all'), { selected: true, reason: 'every order' });
+  assert.deepEqual(pick(order('a', [3, 1]), 500), { selected: true, reason: '4 items' });
+  assert.deepEqual(pick(order('a', [1]), 3), { selected: true, reason: "driver's trip 4" });
+  assert.equal(pick({ id: 'a', items: [] }, 0).selected, false, 'nothing to check against');
+
+  // An experienced driver, a small order: about 30% are sampled, always the same ones.
+  const ids = Array.from({ length: 1000 }, (_, i) => `job-${i}`);
+  const sampled = ids.filter((id) => pick(order(id, [1]), 500).selected);
+  assert.ok(sampled.length > 200 && sampled.length < 400, `sampled ${sampled.length} of 1000`);
+  assert.deepEqual(ids.filter((id) => pick(order(id, [1]), 500).selected), sampled, 'stable');
+});
+
+test('a selective store checks a new driver\'s small order; the app is told before the photo', async (t) => {
+  const client = fakeClient(answer());
+  const app = appFor(t, client);
+  const put = await app.inject({ method: 'PUT', url: '/v1/ops/stores/KFC-MIL', payload: { photoMode: 'selective' } });
+  assert.deepEqual([put.statusCode, put.json().photoMode], [200, 'selective']);
+  const d = await driverWithOrder(app, { items: [{ name: 'Sprite', qty: 1 }] });   // a brand-new driver
+  assert.equal(d.accepted.job.photoCheck, true);
+  await upload(app, d);
+  await app.engine.photoChecksDone();
+  assert.equal(client.calls.length, 1);
+  assert.equal(app.engine.jobs.get(d.jobId).photoCheck.why, "driver's trip 1");
+
+  assert.equal((await app.inject({ method: 'PUT', url: '/v1/ops/stores/KFC-MIL', payload: { photoMode: 'sometimes' } })).statusCode, 400);
+  const list = (await app.inject({ url: '/v1/ops/stores' })).json();
+  assert.equal(list.stores.find((s) => s.storeId === 'KFC-MIL').photoMode, 'selective');
+});
+
+test('a store switched on before modes existed keeps checking every order', () => {
+  const sql = new DatabaseSync(':memory:');
+  sql.exec(`CREATE TABLE store_settings (store_id TEXT PRIMARY KEY, photo_check INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL, updated_by TEXT)`);
+  sql.prepare('INSERT INTO store_settings VALUES (?,?,?,?)').run('ON', 1, 1, 'ops');
+  sql.prepare('INSERT INTO store_settings VALUES (?,?,?,?)').run('OFF', 0, 1, 'ops');
+  const stores = new StoreSettings({ sql });
+  assert.deepEqual([stores.photoMode('ON'), stores.photoMode('OFF'), stores.photoMode('NEW')], ['all', 'off', 'off']);
+  new StoreSettings({ sql });   // a second start changes nothing
+  assert.equal(stores.photoMode('ON'), 'all');
+  assert.throws(() => stores.setPhotoMode('ON', 'sometimes'));
 });

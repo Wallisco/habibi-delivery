@@ -16,7 +16,8 @@ import { DriverTokens, registerDriverAuth } from './driverAuth.js';
 import { markStaging } from './stagingBanner.js';
 import { parseItems } from './items.js';
 import { PhotoStore, isJpeg, MAX_PHOTO_BYTES } from './photos.js';
-import { createPhotoChecker, checkCost } from './photoCheck.js';
+import { createPhotoChecker, checkCost, selectForCheck, PHOTO_CHECK_MODEL, MODELS, SELECTIVE } from './photoCheck.js';
+import { PHOTO_MODES } from './stores.js';
 import { StoreSettings } from './stores.js';
 import { tmpdir } from 'node:os';
 import { randomBytes } from 'node:crypto';
@@ -85,6 +86,55 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
   const stores = new StoreSettings(db);
   const checker = photoChecker ?? createPhotoChecker({ log: app.log });
   const checksRunning = new Set();
+
+  /**
+   * Is this order's photo checked, and why? The store's mode decides: off,
+   * every order, or selective (bigger orders, a new driver's first trips, a
+   * random share). Once a check exists the answer stays yes.
+   */
+  function photoSelection(j) {
+    if (j.photoCheck) return { selected: true, reason: j.photoCheck.why ?? null };
+    const mode = stores.photoMode(j.storeId);
+    const driverTrips = mode === 'selective' && j.driverId ? db.deliveredCount(j.driverId) : null;
+    return selectForCheck({ mode, job: j, driverTrips });
+  }
+
+  /** Change an order's photo check, live or finished (fn gets the current one). */
+  function patchPhotoCheck(id, fn) {
+    const job = jobs.get(id) ?? db.loadJob(id);
+    if (!job) return null;
+    const next = fn(job.photoCheck ?? {});
+    if (jobs.get(id)) jobs.update(id, { photoCheck: next });
+    else db.saveJob({ ...job, photoCheck: next });
+    return next;
+  }
+
+  /**
+   * Run the check on a photo. The main model's answer is what the driver sees;
+   * for the trial the same photo also goes to the comparison models, at the
+   * same time, and their answers are kept beside it (office only). Resolves
+   * with the main answer; the comparisons carry on in the background.
+   */
+  function runPhotoCheck(j, jpeg) {
+    const input = { jpeg, items: j.items, bagCount: j.bagCount };
+    const track = (promise) => {
+      const run = promise.catch((err) => { app.log.warn({ err: err?.message }, 'photo check crashed'); })
+        .finally(() => checksRunning.delete(run));
+      checksRunning.add(run);
+      return run;
+    };
+    for (const model of checker.compare ?? []) {
+      track(checker.check({ ...input, model }).then((r) => {
+        patchPhotoCheck(j.id, (c) => ({ ...c, compare: { ...c.compare, [model]: r } }));
+      }));
+    }
+    let main = null;
+    return track(checker.check(input).then((r) => {
+      // Keep what was set around the check: why it ran, the comparisons, the
+      // result before a re-check.
+      main = patchPhotoCheck(j.id, (c) => ({ ...r, why: c.why, compare: c.compare, previous: c.previous, rerunBy: c.rerunBy }));
+    })).then(() => main);
+  }
   // The app uploads the photo as raw JPEG bytes, up to 3 MB.
   app.addContentTypeParser('image/jpeg', { parseAs: 'buffer', bodyLimit: MAX_PHOTO_BYTES },
     (req, body, done) => done(null, body));
@@ -225,7 +275,7 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
       // What is in the order, for the driver's checklist at the store.
       items: j.items ?? null,
       // Whether this store checks the collection photo against the items.
-      photoCheck: Boolean(j.items?.length) && stores.photoCheck(j.storeId),
+      photoCheck: photoSelection(j).selected,
       deliveryMode: j.deliveryMode, proofPolicy: j.proofPolicy,
       distanceKm: j.distanceKm,
       distanceSource: j.distanceSource ?? 'estimated',
@@ -610,13 +660,11 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
     // Stores in the trial: check the photo against each order's items, in the
     // background so the upload answers at once. The app asks for the result.
     const jpeg = req.body;
-    for (const j of list.filter((x) => x.items?.length && stores.photoCheck(x.storeId))) {
-      jobs.update(j.id, { photoCheck: { status: 'pending', at: Date.now() } });
-      const run = checker.check({ jpeg, items: j.items, bagCount: j.bagCount })
-        .then((result) => { jobs.update(j.id, { photoCheck: result }); })
-        .catch((err) => { app.log.warn({ err: err?.message }, 'photo check crashed'); })
-        .finally(() => checksRunning.delete(run));
-      checksRunning.add(run);
+    for (const j of list) {
+      const { selected, reason } = photoSelection(jobs.get(j.id));
+      if (!selected) continue;
+      jobs.update(j.id, { photoCheck: { status: 'pending', at: Date.now(), why: reason } });
+      runPhotoCheck(j, jpeg);
     }
     return { ok: true, jobs: ids, bytes: photo.bytes };
   });
@@ -1318,10 +1366,19 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
     if (!job?.photoCheck || ['pending', 'not_configured'].includes(job.photoCheck.status)) {
       return reply.code(409).send({ error: 'This order has no photo check to review.' });
     }
-    if (typeof req.body?.correct !== 'boolean') return reply.code(400).send({ error: 'Say whether the check was right: { correct: true | false }' });
-    jobs.update(job.id, { photoCheck: { ...job.photoCheck,
-      review: { correct: req.body.correct, by: req.body.actor ?? 'ops', at: Date.now() } } });
-    return { ok: true };
+    // Best: what was really in the photo ({ truth: complete | missing }), so
+    // every model's answer can be scored. { correct } still works.
+    const status = job.photoCheck.status;
+    let truth = req.body?.truth;
+    if (truth == null && typeof req.body?.correct === 'boolean') {
+      if (['complete', 'missing'].includes(status)) truth = req.body.correct ? status : (status === 'complete' ? 'missing' : 'complete');
+    } else if (!['complete', 'missing'].includes(truth)) {
+      return reply.code(400).send({ error: 'Say what was in the photo: { truth: "complete" | "missing" } (or { correct: true | false })' });
+    }
+    const correct = truth ? status === truth : req.body.correct;
+    const review = { ...(truth ? { truth } : {}), correct, by: req.body.actor ?? 'ops', at: Date.now() };
+    jobs.update(job.id, { photoCheck: { ...job.photoCheck, review } });
+    return { ok: true, review };
   });
 
   /**
@@ -1335,11 +1392,12 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
     const jpeg = job?.collectionPhoto?.file ? photos.read(job.collectionPhoto.file) : null;
     if (!jpeg) return reply.code(409).send({ error: 'No collection photo to check (none taken, or deleted after 30 days).' });
     if (!job.items?.length) return reply.code(409).send({ error: 'This order has no item list to check against.' });
-    const { review: _r, previous: _p, ...before } = job.photoCheck ?? {};
-    const result = await checker.check({ jpeg, items: job.items, bagCount: job.bagCount });
-    const next = { ...result, rerunBy: req.body?.actor ?? 'ops', ...(job.photoCheck ? { previous: before } : {}) };
-    if (jobs.get(job.id)) jobs.update(job.id, { photoCheck: next });
-    else db.saveJob({ ...job, photoCheck: next });
+    const { review, previous: _p, compare: _c, ...before } = job.photoCheck ?? {};
+    // The review is about the photo, not the answer: what was in it hasn't changed.
+    patchPhotoCheck(job.id, () => ({ status: 'pending', at: Date.now(), why: before.why ?? 'rerun',
+      rerunBy: req.body?.actor ?? 'ops', ...(job.photoCheck ? { previous: before } : {}) }));
+    let next = await runPhotoCheck(job, jpeg);
+    if (review?.truth) next = patchPhotoCheck(job.id, (c) => ({ ...c, review: { ...review, correct: c.status === review.truth } }));
     return { ok: true, photoCheck: next };
   });
 
@@ -1354,7 +1412,7 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
     const reviewed = list.filter((j) => j.photoCheck.review);
     const right = reviewed.filter((j) => j.photoCheck.review.correct).length;
     const timed = list.filter((j) => j.photoCheck.ms != null);
-    const cost = list.reduce((a, j) => a + checkCost(j.photoCheck.usage), 0);
+    const cost = list.reduce((a, j) => a + checkCost(j.photoCheck.usage, j.photoCheck.model), 0);
     return {
       checks: list.length,
       complete: by('complete'), missing: by('missing'), unclear: by('unclear'), errors: by('error'),
@@ -1365,7 +1423,40 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
       costPerCheckUsd: list.length ? Number((cost / list.length).toFixed(4)) : null,
       inputTokens: list.reduce((a, j) => a + (j.photoCheck.usage?.input ?? 0), 0),
       outputTokens: list.reduce((a, j) => a + (j.photoCheck.usage?.output ?? 0), 0),
+      models: modelStats(list),
     };
+  }
+
+  /**
+   * The same photos, model by model: how often each was right against what
+   * the office said was really in the photo, how fast, and what it costs.
+   * "missedMissing" is the costly mistake: something missing, model said
+   * complete.
+   */
+  function modelStats(list) {
+    const answer = (j, model) => (j.photoCheck.model ?? PHOTO_CHECK_MODEL) === model ? j.photoCheck : j.photoCheck.compare?.[model];
+    const models = [...new Set(list.flatMap((j) => [j.photoCheck.model ?? PHOTO_CHECK_MODEL, ...Object.keys(j.photoCheck.compare ?? {})]))];
+    return models.map((model) => {
+      const rows = list.map((j) => ({ a: answer(j, model), truth: j.photoCheck.review?.truth })).filter((r) => r.a);
+      const n = (f) => rows.filter(f).length;
+      const judged = rows.filter((r) => r.truth);
+      const right = judged.filter((r) => r.a.status === r.truth).length;
+      const timed = rows.filter((r) => r.a.ms != null);
+      const cost = rows.reduce((t, r) => t + checkCost(r.a.usage, model), 0);
+      return {
+        model, label: MODELS[model]?.label ?? model, main: model === PHOTO_CHECK_MODEL,
+        checks: rows.length,
+        complete: n((r) => r.a.status === 'complete'), missing: n((r) => r.a.status === 'missing'),
+        unclear: n((r) => r.a.status === 'unclear'), errors: n((r) => r.a.status === 'error'),
+        judged: judged.length, right,
+        accuracy: judged.length ? Number((right / judged.length).toFixed(3)) : null,
+        missedMissing: judged.filter((r) => r.truth === 'missing' && r.a.status === 'complete').length,
+        falseAlarms: judged.filter((r) => r.truth === 'complete' && r.a.status === 'missing').length,
+        avgSeconds: timed.length ? Number((timed.reduce((t, r) => t + r.a.ms, 0) / timed.length / 1000).toFixed(1)) : null,
+        costUsd: Number(cost.toFixed(4)),
+        costPerCheckUsd: rows.length ? Number((cost / rows.length).toFixed(4)) : null,
+      };
+    });
   }
   const windowStart = (req, defDays) => Date.now() - Math.min(90, Math.max(1, Number(req.query?.days ?? defDays))) * 86400000;
 
@@ -1377,9 +1468,11 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
     for (const j of jobs.all()) if (j.storeId && j.createdAt >= since) seen.add(j.storeId);
     return {
       checkConfigured: checker.configured,
+      selective: SELECTIVE,
       stores: [...seen].filter(Boolean).sort().map((storeId) => ({
         storeId,
         photoCheck: settings.get(storeId)?.photoCheck ?? false,
+        photoMode: settings.get(storeId)?.photoMode ?? 'off',
         updatedBy: settings.get(storeId)?.updatedBy ?? null,
         photoChecks: photoCheckStats(since, storeId),
       })),
@@ -1387,9 +1480,12 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
   });
 
   app.put('/v1/ops/stores/:storeId', async (req, reply) => {
-    if (typeof req.body?.photoCheck !== 'boolean') return reply.code(400).send({ error: 'Send { photoCheck: true | false }' });
-    stores.setPhotoCheck(req.params.storeId, req.body.photoCheck, req.body.actor ?? 'ops');
-    return { ok: true, storeId: req.params.storeId, photoCheck: req.body.photoCheck };
+    const mode = req.body?.photoMode ?? req.body?.photoCheck;
+    if (typeof mode !== 'boolean' && !PHOTO_MODES.includes(mode)) {
+      return reply.code(400).send({ error: `Send { photoMode: ${PHOTO_MODES.map((m) => `"${m}"`).join(' | ')} } (or photoCheck: true | false)` });
+    }
+    const photoMode = stores.setPhotoMode(req.params.storeId, mode, req.body.actor ?? 'ops');
+    return { ok: true, storeId: req.params.storeId, photoCheck: photoMode !== 'off', photoMode };
   });
 
   /** The photo-check trial: accuracy, speed and cost, overall and per store. */
@@ -1398,6 +1494,7 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
     const storeIds = [...new Set(jobs.all().filter((j) => j.photoCheck?.at >= since).map((j) => j.storeId))].sort();
     return {
       configured: checker.configured,
+      compare: checker.compare ?? [],
       overall: photoCheckStats(since),
       stores: storeIds.map((storeId) => ({ storeId, ...photoCheckStats(since, storeId) })),
     };
