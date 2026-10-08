@@ -236,6 +236,7 @@ document.addEventListener('click', (e) => {
   if (action === 'photoCheckSwitch') setPhotoCheck(id, state);
   if (action === 'photoCheckReview') reviewPhotoCheck(id, state);
   if (action === 'photoCheckRerun')  rerunPhotoCheck(id, act);
+  if (action === 'saveCosts')        saveCosts();
 });
 
 // Enter in the search box should search, not reload the page.
@@ -914,10 +915,11 @@ async function loadStores(){
 let PERF_ZONE = '', PERF_STORE = '';
 async function loadPerformance(){
   const q = new URLSearchParams({ days: days(), ...(PERF_ZONE ? { zone: PERF_ZONE } : {}), ...(PERF_STORE ? { storeId: PERF_STORE } : {}) });
-  const d = await (await fetch('/v1/ops/performance?' + q)).json();
+  const [d, cfg] = await Promise.all([fetch('/v1/ops/performance?' + q).then((x) => x.json()),
+    fetch('/v1/ops/performance/settings').then((x) => x.json())]);
   const pc = (v) => v == null ? '–' : (v * 100).toFixed(1) + '%';
   const show = (m) => m.value == null ? '–' : m.unit === 'share' ? pc(m.value) : m.unit === 'R' ? R2(m.value)
-    : m.unit === 'min' ? r(m.value) + ' min' : m.unit === 'km' ? r(m.value) + ' km' : m.value;
+    : m.unit === 'min' ? r(m.value) + ' min' : m.unit === 'km' ? r(m.value) + ' km' : r(m.value, Number.isInteger(m.value) ? 0 : 2);
   const goal = (m) => m.target == null ? '' : (m.dir === 'atLeast' ? '≥ ' : '≤ ') + show({ ...m, value: m.target });
   const cls = (st) => st === 'bad' ? 'bad' : st === 'warn' ? 'warn' : '';
   const tag = (st) => st ? `<span class="tag ${{ good: 'g', warn: 'a', bad: 'r' }[st]}">${{ good: 'On target', warn: 'Close', bad: 'Off target' }[st]}</span>` : '<span class="tag n">No data</span>';
@@ -938,6 +940,12 @@ async function loadPerformance(){
     ['Revenue per order', M.revenuePerOrder, d.core.margin.note],
     ['Driver pay per order (COGS)', M.driverPayPerOrder],
     ['Contribution margin per order (CM1)', M.cm1PerOrder, M.cm1PerOrder.priced != null ? M.cm1PerOrder.priced + ' orders priced · total ' + R2(M.cm1PerOrder.total) : ''],
+    ['Contribution margin per order (CM2)', M.cm2PerOrder, M.cm2PerOrder.parts ? 'CM1 minus payment fees ' + R2(M.cm2PerOrder.parts.paymentFees)
+      + ', refunds ' + R2(M.cm2PerOrder.parts.refunds) + ', support ' + R2(M.cm2PerOrder.parts.support) + ', AI photo check ' + R2(M.cm2PerOrder.parts.photoCheck) + ' per order'
+      + (M.cm2PerOrder.unset?.length ? ' · <b style="color:var(--amber)">not set yet: ' + M.cm2PerOrder.unset.map((k) => cfg.fields[k].label).join('; ') + '</b>' : '') : ''],
+    ['Profitable order volume', M.profitableOrders, M.profitableOrders.share != null ? pc(M.profitableOrders.share) + ' of priced orders · ' + M.profitableOrders.note : M.profitableOrders.note],
+    ['Rider drops per hour', M.dropsPerHour, PERF_STORE ? 'not split by store: drivers are online for a zone'
+      : M.dropsPerHour.hours != null ? r(M.dropsPerHour.hours) + ' driver hours online (counted from this release)' : ''],
   ];
   $('#tab-performance').innerHTML = `
     <section style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
@@ -975,10 +983,27 @@ async function loadPerformance(){
           num(pc(w.within30)), num(pc(w.withinSla)), num(w.avgWait != null ? r(w.avgWait) + ' min' : '–'),
           num(pc(w.batching)), num(pc(w.fad)), num(R2(w.cm1PerOrder))]))}
     </section>
+    <section><h2>CM2 costs</h2>
+      <div class="hint">The costs that turn CM1 into CM2, per order. Refunds and support queries come from the query log (next step).
+        The AI photo check is measured on each checked order.</div>
+      <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end">
+        ${Object.entries(cfg.fields).map(([k, f]) => `<label style="font-size:12px">${f.label}<br>
+          <input type="number" step="0.01" min="${f.min}" max="${f.max}" data-cost="${k}" value="${cfg.values[k]}" style="width:110px">
+          ${cfg.set[k] ? '' : '<span class="tag a">not set</span>'}</label>`).join('')}
+        <button class="go sm" data-act="saveCosts">Save costs</button><span id="costMsg" class="hint" style="margin:0"></span>
+      </div>
+    </section>
     <section><h2>Coming next</h2>
       <div class="hint">These need data the system does not collect yet.</div>
       ${table(['Metric', 'Needs'], d.waiting.map((w) => [w.metric, w.why]))}
     </section>`;
+}
+async function saveCosts(){
+  const patch = {};
+  document.querySelectorAll('[data-cost]').forEach((el) => { patch[el.dataset.cost] = Number(el.value); });
+  const res = await fetch('/v1/ops/performance/settings', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(patch) });
+  if (!res.ok) { $('#costMsg').textContent = (await res.json()).error ?? 'Could not save.'; return; }
+  loadPerformance();
 }
 document.addEventListener('change', (e) => {
   if (e.target.id === 'perfZone') { PERF_ZONE = e.target.value; loadPerformance(); }

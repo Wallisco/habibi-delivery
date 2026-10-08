@@ -81,7 +81,7 @@ test('weeks, newest last; metrics without data say what they wait for', () => {
   assert.equal(p.core.gmv.value, null);
   assert.match(p.core.gmv.waiting, /Keychat/);
   assert.match(p.core.matu.waiting, /customer id/);
-  assert.ok(p.waiting.length >= 4);
+  assert.ok(p.waiting.some((w) => /query log/.test(w.why)));
 });
 
 test('good / warn / bad: shares within 3 points are nearly there, minutes within 20%', () => {
@@ -100,4 +100,81 @@ test('the back office route answers from the live orders', async (t) => {
   assert.equal(res.statusCode, 200);
   const p = res.json();
   assert.ok(p.core && p.metrics && Array.isArray(p.byZone) && Array.isArray(p.weeks));
+});
+
+/* ------------------------------------------- step 2: online time and CM2 */
+
+import { DatabaseSync } from 'node:sqlite';
+import { OnlineTime, MAX_GAP_MS } from '../src/onlineTime.js';
+import { PerfSettings } from '../src/perfSettings.js';
+
+test('online time counts the gaps between app signals, but not a gap over 2 minutes or time offline', () => {
+  const t0 = Date.UTC(2026, 9, 8, 8);
+  const ot = new OnlineTime({ sql: new DatabaseSync(':memory:') });
+  for (let i = 0; i <= 60; i++) ot.beat('D1', { online: true, zone: 'A', at: t0 + i * 60000 });   // an hour, a signal a minute
+  ot.beat('D1', { online: true, zone: 'A', at: t0 + 60 * 60000 + MAX_GAP_MS + 1000 });            // app closed: not counted
+  ot.beat('D1', { online: false, zone: 'A', at: t0 + 70 * 60000 });                              // went offline
+  ot.beat('D1', { online: false, zone: 'A', at: t0 + 71 * 60000 });
+  for (let i = 0; i <= 30; i++) ot.beat('D2', { online: true, zone: 'B', at: t0 + i * 60000 });
+  assert.equal(ot.hours(t0), 1.5);
+  assert.equal(ot.hours(t0, 'A'), 1);
+  assert.equal(ot.hours(t0, 'B'), 0.5);
+});
+
+test('drops per hour: deliveries over driver hours online', () => {
+  const p = performance([order(), order(), order()], { sinceMs: since, now: NOW, onlineHours: 2 });
+  assert.equal(p.metrics.dropsPerHour.value, 1.5);
+  assert.equal(performance([order()], { sinceMs: since, now: NOW, onlineHours: 0 }).metrics.dropsPerHour.value, null);
+  assert.equal(performance([order()], { sinceMs: since, now: NOW, onlineHours: 2, storeId: 'KFC-MIL' }).metrics.dropsPerHour.value,
+    null, 'hours are not split by store');
+});
+
+test('CM2: CM1 minus payment fees, refunds, support time and the AI photo check', () => {
+  // Revenue R6 + R30 = R36, driver pay R25: CM1 R11.
+  const checked = order({ charge: 30, pay: 25 });
+  checked.photoCheck = { model: 'claude-opus-5-5', usage: { input: 1800, output: 120 } };   // US$0.0096
+  const refunded = order({ charge: 30, pay: 25 });
+  const costs = { values: { paymentFeePct: 2.5, paymentFeeFixed: 1, supportCostPerQuery: 8, usdZar: 20 },
+    set: { paymentFeePct: true, paymentFeeFixed: true, supportCostPerQuery: true, usdZar: true } };
+  const p = performance([checked, refunded], { sinceMs: since, now: NOW, costs,
+    queries: [{ jobId: refunded.id, refund: 15 }] });
+  // Fees 0.9 + 1 each; photo 0.192 on one; refund 15 and support 8 on the other.
+  const cm2 = (11 - 1.9 - 0.192 + 11 - 1.9 - 15 - 8) / 2;
+  assert.equal(p.metrics.cm2PerOrder.value, Number(cm2.toFixed(2)));
+  assert.deepEqual(p.metrics.cm2PerOrder.parts, { paymentFees: 1.9, refunds: 7.5, support: 4, photoCheck: 0.1 });
+  assert.deepEqual(p.metrics.cm2PerOrder.unset, []);
+  assert.equal(p.metrics.profitableOrders.share, 0.5, 'the refunded order lost money');
+  assert.equal(p.metrics.profitableOrders.value, Math.round((1 / 7) * 30), 'a month at this rate');
+});
+
+test('cost settings: unset ones are flagged; bad values refused; ops can change them', async (t) => {
+  const ps = new PerfSettings({ sql: new DatabaseSync(':memory:') });
+  assert.equal(ps.get().set.paymentFeePct, false);
+  assert.match(ps.update({ paymentFeePct: 90 }), /from 0 to 20/);
+  assert.match(ps.update({ nonsense: 1 }), /Unknown/);
+  assert.equal(ps.update({ paymentFeePct: 2.9 }), null);
+  assert.deepEqual([ps.get().values.paymentFeePct, ps.get().set.paymentFeePct], [2.9, true]);
+  const p = performance([order()], { sinceMs: since, now: NOW, costs: ps.get() });
+  assert.ok(p.metrics.cm2PerOrder.unset.includes('supportCostPerQuery'));
+
+  const app = build({ dbPath: ':memory:', partnerAuth: false, opsAuth: false });
+  t.after(() => app.close());
+  assert.equal((await app.inject({ method: 'PUT', url: '/v1/ops/performance/settings', payload: { paymentFeePct: 'x' } })).statusCode, 400);
+  const ok = await app.inject({ method: 'PUT', url: '/v1/ops/performance/settings', payload: { supportCostPerQuery: 12 } });
+  assert.equal(ok.json().values.supportCostPerQuery, 12);
+  const got = (await app.inject({ url: '/v1/ops/performance/settings' })).json();
+  assert.ok(got.fields.usdZar.label);
+});
+
+test('a driver going online and sending positions is counted on the dashboard', async (t) => {
+  const app = build({ dbPath: ':memory:', partnerAuth: false, opsAuth: false, driverAuth: false });
+  t.after(() => app.close());
+  const { online, supply } = app.engine;
+  supply.upsert('D9', { state: 'ZONE_COMMITTED', zone: 'Milnerton' });
+  // Signals a minute apart, as if the app had sent them.
+  const t0 = Date.now() - 30 * 60000;
+  for (let i = 0; i <= 30; i++) online.beat('D9', { online: true, zone: 'Milnerton', at: t0 + i * 60000 });
+  online.flush();
+  const p = (await app.inject({ url: '/v1/ops/performance?days=1' })).json();
+  assert.equal(p.metrics.dropsPerHour.hours, 0.5);
 });

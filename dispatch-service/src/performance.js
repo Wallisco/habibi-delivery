@@ -12,6 +12,9 @@
  * data we do not have yet say so, and why, rather than showing a number.
  */
 
+import { checkCost } from './photoCheck.js';
+import { COST_SETTINGS } from './perfSettings.js';
+
 const MIN = 60000;
 const round = (v, d = 1) => (v == null || !Number.isFinite(v) ? null : Number(v.toFixed(d)));
 const share = (n, of) => (of ? round(n / of, 3) : null);
@@ -59,11 +62,30 @@ const firstTry = (j) => j.status === 'DELIVERED'
 const revenue = (j) => (j.customerCharge != null ? PLATFORM_FEE + j.customerCharge : null);
 const driverPay = (j) => j.earnings?.platformFunded ?? null;
 
+const DEFAULT_COSTS = Object.fromEntries(Object.entries(COST_SETTINGS).map(([k, d]) => [k, d.default]));
+/**
+ * What an order costs beyond driver pay, in Rand: payment fees, refunds and
+ * support time (from the query log), and the AI photo check. Only the model
+ * the driver sees is counted; the trial's comparison models are not a cost
+ * the business would carry.
+ */
+function extraCosts(j, costs, queries) {
+  const rev = revenue(j) ?? 0;
+  const q = queries.get(j.id) ?? [];
+  const photo = j.photoCheck?.usage ? checkCost(j.photoCheck.usage, j.photoCheck.model) * costs.usdZar : 0;
+  return {
+    paymentFees: (rev * costs.paymentFeePct) / 100 + costs.paymentFeeFixed,
+    refunds: q.reduce((a, x) => a + (x.refund ?? 0), 0),
+    support: q.length * costs.supportCostPerQuery,
+    photoCheck: photo,
+  };
+}
+
 export const DISTANCE_BANDS = [[0, 3], [3, 5], [5, 7], [7, Infinity]];
 const bandLabel = ([a, b]) => (b === Infinity ? `${a}+ km` : `${a}–${b} km`);
 
 /** The core numbers for a set of orders (used for the period, each zone, each week). */
-function core(list) {
+function core(list, costs = DEFAULT_COSTS, queries = new Map()) {
   const done = list.filter((j) => j.status === 'DELIVERED' && j.completedAt);
   const finished = list.filter((j) => ['DELIVERED', 'FAILED'].includes(j.status));
   const mins = done.map(minutes).filter((v) => v != null);
@@ -80,6 +102,15 @@ function core(list) {
   const priced = done.filter((j) => revenue(j) != null && driverPay(j) != null);
   const rev = priced.reduce((a, j) => a + revenue(j), 0);
   const pay = priced.reduce((a, j) => a + driverPay(j), 0);
+  const parts = { paymentFees: 0, refunds: 0, support: 0, photoCheck: 0 };
+  let profitable = 0;
+  for (const j of priced) {
+    const x = extraCosts(j, costs, queries);
+    for (const k of Object.keys(parts)) parts[k] += x[k];
+    const cm2 = revenue(j) - driverPay(j) - x.paymentFees - x.refunds - x.support - x.photoCheck;
+    if (cm2 > 0) profitable += 1;
+  }
+  const extra = Object.values(parts).reduce((a, b) => a + b, 0);
 
   return {
     orders: list.length, delivered: done.length, failed: list.filter((j) => j.status === 'FAILED').length,
@@ -97,6 +128,10 @@ function core(list) {
     driverPayPerOrder: priced.length ? round(pay / priced.length, 2) : null,
     cm1PerOrder: priced.length ? round((rev - pay) / priced.length, 2) : null,
     cm1Total: round(rev - pay, 2),
+    cm2PerOrder: priced.length ? round((rev - pay - extra) / priced.length, 2) : null,
+    cm2Total: round(rev - pay - extra, 2),
+    costParts: Object.fromEntries(Object.entries(parts).map(([k, v]) => [k, priced.length ? round(v / priced.length, 2) : null])),
+    profitable, profitableShare: share(profitable, priced.length),
     priced: priced.length,
   };
 }
@@ -106,10 +141,19 @@ function core(list) {
  * @param zone     only this zone (optional)
  * @param storeId  only this store (optional)
  */
-export function performance(jobs, { sinceMs, now = Date.now(), zone = null, storeId = null } = {}) {
+/**
+ * @param costs        CM2 costs (perfSettings.js): { values, set }
+ * @param onlineHours  driver hours online in the window (same zone filter)
+ * @param queries      support queries in the window: [{ jobId, refund }]
+ */
+export function performance(jobs, { sinceMs, now = Date.now(), zone = null, storeId = null,
+  costs = null, onlineHours = null, queries = [] } = {}) {
   const inScope = jobs.filter((j) => j.createdAt >= sinceMs
     && (!zone || j.zone === zone) && (!storeId || j.storeId === storeId));
-  const c = core(inScope);
+  const cv = { ...DEFAULT_COSTS, ...(costs?.values ?? {}) };
+  const byJob = new Map();
+  for (const q of queries) if (q.jobId) byJob.set(q.jobId, [...(byJob.get(q.jobId) ?? []), q]);
+  const c = core(inScope, cv, byJob);
   const days = Math.max(1, (now - sinceMs) / 86400000);
 
   const byZone = [...new Set(inScope.map((j) => j.zone ?? '(no zone)'))].sort().map((z) => {
@@ -158,10 +202,16 @@ export function performance(jobs, { sinceMs, now = Date.now(), zone = null, stor
       revenuePerOrder: { value: c.revenuePerOrder, unit: 'R' },
       driverPayPerOrder: { value: c.driverPayPerOrder, unit: 'R' },
       cm1PerOrder: { value: c.cm1PerOrder, unit: 'R', total: c.cm1Total, priced: c.priced },
+      // Store and zone filters narrow the orders but not the hours (a driver
+      // isn't online "for" one store), so drops per hour is shown unfiltered by store.
+      dropsPerHour: { value: !storeId && onlineHours ? round(c.delivered / onlineHours, 2) : null, unit: 'num',
+        hours: onlineHours != null ? round(onlineHours, 1) : null },
+      cm2PerOrder: { value: c.cm2PerOrder, unit: 'R', total: c.cm2Total, parts: c.costParts,
+        unset: Object.keys(COST_SETTINGS).filter((k) => costs && !costs.set?.[k]) },
+      profitableOrders: { value: round((c.profitable / days) * 30, 0), unit: 'num', share: c.profitableShare,
+        note: 'orders a month with CM2 above zero' },
     },
     waiting: [
-      { metric: 'Rider drops per hour', why: 'Needs online hours per driver: step 2.' },
-      { metric: 'CM2 and profitable order volume', why: 'Needs payment fees, refunds, support and photo-check cost per order: step 2.' },
       { metric: 'QA error rate, support queries, perfect order rate', why: 'Needs the query log: step 3.' },
       { metric: 'GMV run rate, MATU', why: 'Needs the basket total and a customer id from Keychat: step 4.' },
     ],
