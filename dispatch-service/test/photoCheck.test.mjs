@@ -401,3 +401,17 @@ test('"all there, but a different size or brand": a third review answer, and "ca
   assert.deepEqual([m['claude-haiku-4-5'].caughtRate, m['claude-haiku-4-5'].missedProblem], [0, 1]);
   assert.equal(app.engine.jobs.get(d.jobId).photoCheck.compare['claude-sonnet-5-5'].different[0].seenAs, 'Sprite 2L');
 });
+
+test('a review can be changed after a wrong press; the report uses the latest answer', async (t) => {
+  const client = fakeClient(answer({ sprite: 0 }));
+  const app = appFor(t, client);
+  await app.inject({ method: 'PUT', url: '/v1/ops/stores/KFC-MIL', payload: { photoMode: 'all' } });
+  const d = await driverWithOrder(app);
+  await upload(app, d);
+  await app.engine.photoChecksDone();
+  const review = (truth) => app.inject({ method: 'POST', url: `/v1/ops/orders/${d.jobId}/photo-check/review`, payload: { truth } });
+  assert.equal((await review('complete')).json().review.correct, false);
+  const fixed = (await review('missing')).json().review;
+  assert.deepEqual([fixed.truth, fixed.correct, fixed.was], ['missing', true, 'complete']);
+  assert.equal((await app.inject({ url: '/v1/ops/photo-checks' })).json().overall.accuracy, 1);
+});

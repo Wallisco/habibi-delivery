@@ -510,13 +510,16 @@ async function openOrder(jobId){
                 + (c.status === 'error' ? ' · ' + (c.reason ?? '') + (c.detail ? ' ' + c.detail : '') : '') + '</div>';
             }).join('') + '</div>' : ''}
           ${o.photoCheck.previous ? '<div style="font-size:11px;color:var(--muted)">Before re-check: ' + o.photoCheck.previous.status + (o.photoCheck.previous.missing?.length ? ' (not seen: ' + o.photoCheck.previous.missing.map((m) => m.qty + ' × ' + m.name).join(', ') + ')' : '') + '</div>' : ''}
-          ${['complete','missing','different','unclear'].includes(o.photoCheck.status) ? (o.photoCheck.review
-            ? '<div style="font-size:12px">Reviewed: ' + (o.photoCheck.review.truth ? ({ complete: 'everything was there', missing: 'something was missing', different: 'all there, but a different size or brand' }[o.photoCheck.review.truth] ?? o.photoCheck.review.truth) + ' · ' : '') + 'check was ' + (o.photoCheck.review.correct ? 'right' : 'wrong') + '</div>'
-            : `<div style="font-size:11px;color:var(--muted);margin-top:4px">What was really in the photo?</div>
-               <div style="display:flex;gap:6px;margin-top:2px">
-                 <button class="sm" data-act="photoCheckReview" data-id="${o.id}" data-state="complete">Everything was there</button>
-                 <button class="sm" data-act="photoCheckReview" data-id="${o.id}" data-state="missing">Something was missing</button>
-                 <button class="sm" data-act="photoCheckReview" data-id="${o.id}" data-state="different">All there, but a different size or brand</button></div>`) : ''}
+          ${['complete','missing','different','unclear'].includes(o.photoCheck.status) ? (() => {
+              const rv = o.photoCheck.review;
+              const TRUTH = { complete: 'Everything was there', missing: 'Something was missing', different: 'All there, but a different size or brand' };
+              // The buttons stay, so a wrong press can be put right; the chosen one is highlighted.
+              return (rv ? '<div style="font-size:12px;margin-top:4px">Reviewed: ' + (rv.truth ? TRUTH[rv.truth].toLowerCase() + ' · ' : '') + 'check was <b>' + (rv.correct ? 'right' : 'wrong') + '</b></div>' : '')
+                + '<div style="font-size:11px;color:var(--muted);margin-top:4px">' + (rv ? 'Pressed the wrong one? Change it:' : 'What was really in the photo?') + '</div>'
+                + '<div style="display:flex;gap:6px;margin-top:2px;flex-wrap:wrap">'
+                + Object.entries(TRUTH).map(([k, label]) => '<button class="sm' + (rv?.truth === k ? ' go' : '') + '" data-act="photoCheckReview" data-id="' + o.id + '" data-state="' + k + '"' + (rv?.truth === k ? ' disabled' : '') + '>' + label + '</button>').join('')
+                + '</div>';
+            })() : ''}
           </div>` : ''}
       </div>
       ${!o.collectedAt && !['DELIVERED','FAILED','CANCELLED'].includes(o.status) ? `

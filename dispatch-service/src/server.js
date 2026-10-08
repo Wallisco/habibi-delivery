@@ -1377,7 +1377,9 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
       return reply.code(400).send({ error: 'Say what was in the photo: { truth: "complete" | "missing" | "different" } (or { correct: true | false })' });
     }
     const correct = truth ? status === truth : req.body.correct;
-    const review = { ...(truth ? { truth } : {}), correct, by: req.body.actor ?? 'ops', at: Date.now() };
+    // A changed answer keeps what was pressed before, for the record.
+    const was = job.photoCheck.review ? { was: job.photoCheck.review.truth ?? (job.photoCheck.review.correct ? 'right' : 'wrong') } : {};
+    const review = { ...(truth ? { truth } : {}), correct, by: req.body.actor ?? 'ops', at: Date.now(), ...was };
     jobs.update(job.id, { photoCheck: { ...job.photoCheck, review } });
     return { ok: true, review };
   });
