@@ -29,6 +29,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { Db } from './db.js';
 import { Metrics } from './metrics.js';
+import { performance } from './performance.js';
 import { computeEarnings, costToServe } from './fees.js';
 import { RateBook, RATE_FIELDS, MRD_DEFAULT, DAY_NAMES } from './rates.js';
 import { routeJob, routingStatus, point } from './routing.js';
@@ -1676,6 +1677,12 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
        windows: rates.setSurge(req.params.zone, req.body?.windows, req.body?.actor ?? 'ops') }));
 
   app.get('/v1/ops/summary', async (req) => metrics.summary(since(req)));
+  /** The performance dashboard: core service metrics against targets, by zone, distance and week. */
+  app.get('/v1/ops/performance', async (req) => {
+    const sinceMs = since(req);
+    return performance(metrics.jobsSince(sinceMs), { sinceMs,
+      zone: req.query?.zone || null, storeId: req.query?.storeId || null });
+  });
   app.get('/v1/ops/merchants', async (req) => ({ stores: metrics.merchants(since(req)) }));
   app.get('/v1/ops/drivers', async (req) => ({ drivers: metrics.drivers(since(req)) }));
   app.get('/v1/ops/exceptions', async (req) => ({ exceptions: metrics.exceptions(since(req)) }));
