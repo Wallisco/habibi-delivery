@@ -106,6 +106,21 @@ Response:
 }
 ```
 
+### Distance limits and the extra-km fee (v1.2)
+
+Distances are store to customer **by road** (the road route; straight line × 1.4
+when the routing server can't answer). Per zone, on the rate card:
+
+| Setting | Default | Effect |
+|---|---|---|
+| `maxDeliveryKm` | 11 km | Further is refused: `422 { "error": "out_of_range", "deliverKm", "maxDeliveryKm", "message" }` on the quote, the job and an address change |
+| `includedDeliveryKm` | 5 km | Covered by the flat fee; every km after it is added at the zone's "Per km to customer" rate |
+| `noStackBeyondKm` | 7 km | An order going further always rides alone |
+| `maxReadyToDropMin` | 30 min | No order on a shared run more than this from ready to drop-off; a run that drifts past it is split and the later order goes to another driver |
+
+The quote shows the fee in parts: `customerCharge.baseFee`, `includedKm`, `extraKm`,
+`extraKmRate`, `extraKmFee`, and `routing.roadKm`.
+
 **Add `customerCharge.deliveryFee` to the order total.** The tip is collected
 separately at checkout and passed through to the driver in full.
 
@@ -288,5 +303,6 @@ backwards compatible unless marked otherwise.
 
 | Version | Date | Change |
 |---|---|---|
+| v1.2 | 8 Oct 2026 | Delivery limits per zone: 11 km by road maximum (`422 out_of_range`), customer fee per km after 5 km with its breakdown on the quote, no stacking beyond 7 km, 30 min ready to drop-off on a shared run. |
 | v1.2 | 7 Oct 2026 | `POST /v1/keychat/jobs` accepts `items: [{ name, qty, size? }]`, what is in the order, shown to the driver at the store (section 2). Optional. |
 | v1.1 | before 7 Oct 2026 | Everything above as documented before this log: quote, job creation with `Idempotency-Key`, the ready event, webhooks, reconciliation. |

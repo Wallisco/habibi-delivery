@@ -15,6 +15,7 @@ import { OpsUsers, registerOpsAuth } from './opsAuth.js';
 import { DriverTokens, registerDriverAuth } from './driverAuth.js';
 import { markStaging } from './stagingBanner.js';
 import { parseItems } from './items.js';
+import { roadKm, outOfRange, customerFee } from './limits.js';
 import { PhotoStore, isJpeg, MAX_PHOTO_BYTES } from './photos.js';
 import { createPhotoChecker, checkCost, selectForCheck, PHOTO_CHECK_MODEL, MODELS, SELECTIVE } from './photoCheck.js';
 import { PHOTO_MODES } from './stores.js';
@@ -181,6 +182,7 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
   const dispatcher = new Dispatcher({
     readyGate: gate, supply, jobs,
     maxHoldMs: staging ? 60_000 : null,
+    limitsFor: (zone) => rates.forZone(zone),
     onOffer: ({ batchId, jobs: batchJobs, carrying = [], driverId, expiresAt, stops, route,
                 marginal, storeCount, sameCustomer, next = null }) => {
       const margin = new Map((marginal ?? []).map((m) => [m.jobId, m.marginalKm]));
@@ -336,6 +338,12 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
     }
 
     const routing = await routeJob({ pickup, dropoff });
+    // How far we deliver, and the customer's fee for it (src/limits.js).
+    const card = rates.forZone(zone);
+    const km = roadKm(routing, pickup, dropoff);
+    const refused = outOfRange(km, card);
+    if (refused) return reply.code(422).send(refused);
+    const fee = customerFee(CUSTOMER_DELIVERY_FEE, km, card);
     const merchantPrep = b.prepMinutes != null ? Number(b.prepMinutes) : null;
 
     const prep = gate.predictPrepMinutes(storeId, merchantPrep);
@@ -365,7 +373,8 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
       earnings,
       routing,
       etaMinutes: Math.round((prep + routing.deliverMinutes + 4) * strain),
-      customerCharge: CUSTOMER_DELIVERY_FEE,
+      customerCharge: fee.deliveryFee,
+      feeBreakdown: fee,
       readyGate: {
         merchantPrepMinutes: merchantPrep,
         predictedPrepMinutes: Number(prep.toFixed(1)),
@@ -396,14 +405,24 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
     // We route it ourselves. Keychat's ETA is for their customer; our distance
     // is what the fee is built on, and it has to be defensible in a dispute.
     const routing = await routeJob({ pickup: b.pickup, dropoff: b.dropoff });
+    // Checked again here, not only on the quote: a stale quote or a changed
+    // address must not get a delivery past the limit.
+    const card = rates.forZone(b.zone);
+    const km = roadKm(routing, b.pickup, b.dropoff);
+    const refused = outOfRange(km, card);
+    if (refused) return reply.code(422).send(refused);
+    const fee = customerFee(CUSTOMER_DELIVERY_FEE, km, card);
     // The partner does not choose our ids or tokens.
     const { id: _id, trackingToken: _t, ...input } = b;
     if (!allowDispatchNow) delete input.dispatchNow;
     const job = jobs.create({
       ...input,
+      // What Keychat charged; our own figure when they did not say.
+      customerCharge: input.customerCharge != null ? Number(input.customerCharge) : fee.deliveryFee,
       deliverKm: routing.deliverKm,
       collectKm: routing.collectKm,
     });
+    jobs.update(job.id, { roadKm: km, expectedCustomerFee: fee });
     job.distanceSource = routing.source;
     job.routing = routing;
     gate.noteOrder(job.storeId, job.createdAt);
@@ -1318,9 +1337,15 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
     }
 
     const before = { name: job.dropoff?.name, km: job.distanceKm };
-    job.dropoff = { lat, lng, name: b.name ?? job.dropoff?.name ?? 'Delivery address' };
+    const moved = { lat, lng, name: b.name ?? job.dropoff?.name ?? 'Delivery address' };
+    const routing = await routeJob({ pickup: job.pickup, dropoff: moved });
+    // A corrected address is held to the same limit as a new order.
+    const km = roadKm(routing, job.pickup, moved);
+    const refused = outOfRange(km, rates.forZone(job.zone));
+    if (refused) return reply.code(422).send(refused);
+    job.dropoff = moved;
+    jobs.update(job.id, { roadKm: km });
 
-    const routing = await routeJob({ pickup: job.pickup, dropoff: job.dropoff });
     job.distanceKm = routing.deliverKm;
     job.distanceSource = routing.source;
     job.routing = routing;
@@ -1819,6 +1844,9 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
   const sim = staging ? new Simulator({ app, engine: { supply, jobs, accounts, pendingOffers, driverTokens }, closeJob, speed: simSpeed, log: app.log }) : null;
   // A next job handed back goes to the pool; on staging a simulated driver comes for it.
   dispatcher.onHandBack = (job) => sim?.onJob(job);
+  // An order taken off a slow run: the driver's app drops it on its next poll;
+  // staging sends another simulated driver for it.
+  dispatcher.onUnbatch = (job, driverId) => sim?.onJob(job, { exclude: driverId });
 
   app.decorate('engine', { opsUsers, driverTokens, photos, sweepPhotos, stores, checker,
     photoChecksDone: () => Promise.all([...checksRunning]), idem, sim, gate, supply, jobs, dispatcher, otp, outbound, pendingOffers, db, metrics, rates, keychat, accounts, messages, ledger });

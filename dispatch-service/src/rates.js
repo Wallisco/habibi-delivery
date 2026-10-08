@@ -66,6 +66,12 @@ export const MRD_DEFAULT = {
   stackedFuelSurcharge: 0.75,      // roughly half
   // Waiting is paid in full at every store. Time standing still is time
   // standing still, whether it is the first kitchen or the third.
+
+  // --- DELIVERY LIMITS (src/limits.js) -------------------------------------
+  maxDeliveryKm: 11,         // by road, store to customer; further is refused
+  includedDeliveryKm: 5,     // covered by the flat customer fee; then per km
+  noStackBeyondKm: 7,        // an order going further always rides alone
+  maxReadyToDropMin: 30,     // food ready to customer, on a stacked run
 };
 
 export const RATE_FIELDS = [
@@ -84,6 +90,10 @@ export const RATE_FIELDS = [
   { key: 'stackedDeliveryBaseFee', label: 'Stacked delivery base', unit: 'R', mrd: null },
   { key: 'stackedCollectionBaseFee', label: 'Stacked collection base', unit: 'R', mrd: null },
   { key: 'stackedFuelSurcharge', label: 'Stacked fuel surcharge', unit: 'R', mrd: null },
+  { key: 'maxDeliveryKm', label: 'Max delivery distance (road)', unit: 'km', mrd: null },
+  { key: 'includedDeliveryKm', label: 'Km in the flat customer fee', unit: 'km', mrd: null },
+  { key: 'noStackBeyondKm', label: 'No stacking beyond (road)', unit: 'km', mrd: null },
+  { key: 'maxReadyToDropMin', label: 'Max ready to drop-off, stacked', unit: 'min', mrd: null },
 ];
 
 /**

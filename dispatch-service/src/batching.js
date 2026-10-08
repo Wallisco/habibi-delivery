@@ -32,6 +32,7 @@
 
 import { metresBetween } from './supply.js';
 import { legMinutes } from './routing.js';
+import { limitsOf, jobRoadKm } from './limits.js';
 
 /** A number from the environment, or the default. */
 const setting = (name, d) => {
@@ -42,6 +43,10 @@ const setting = (name, d) => {
 export const MAX_BATCH = 2;
 
 /**
+ * Distance and time limits per zone live in src/limits.js: no order beyond
+ * 7 km by road on a run, and no order on a run more than 30 min from ready to
+ * drop-off.
+ *
  * The stacking rules from the brief: pickups within 100 m of each other,
  * drop-offs within 1 km, and no order more than 5 minutes later than it would
  * have been on its own. Each can be changed per server with an environment
@@ -82,11 +87,21 @@ function clustered(points, limit) {
  * Can `candidate` join `batch`?
  * Returns { ok, reason } so a dispatcher log says why a batch was refused.
  */
-export function canJoin(batch, candidate, gate, now = Date.now()) {
+export function canJoin(batch, candidate, gate, now = Date.now(), limitsFor = null) {
   if (batch.length >= MAX_BATCH) {
     return { ok: false, reason: `batch already at ${MAX_BATCH}` };
   }
   const all = [...batch, candidate];
+
+  // Long deliveries ride alone (src/limits.js): past the zone's limit, by road.
+  const lim = (j) => limitsOf(limitsFor ? limitsFor(j.zone) : {});
+  for (const j of all) {
+    const km = jobRoadKm(j), max = lim(j).noStackBeyondKm;
+    if (km > max) {
+      return { ok: false, reason: `order ${j.id} is ${km.toFixed(1)} km by road (no stacking beyond ${max} km)` };
+    }
+  }
+  const maxReadyToDropMin = Math.min(...all.map((j) => lim(j).maxReadyToDropMin));
 
   const pickups = all.map((j) => pt(j.pickup));
   if (!clustered(pickups, PICKUP_CLUSTER_M)) {
@@ -109,8 +124,14 @@ export function canJoin(batch, candidate, gate, now = Date.now()) {
 
   // No order may arrive more than MAX_ADDED_LATENESS_MIN later than it would
   // alone, on the best route for the whole run.
-  const plan = planRun(all, { readyAt: (j) => readyAt(j, gate), now, maxExtraMin: MAX_ADDED_LATENESS_MIN });
+  // And no order on the run more than maxReadyToDropMin from ready to door.
+  const plan = planRun(all, { readyAt: (j) => readyAt(j, gate), now,
+    maxExtraMin: MAX_ADDED_LATENESS_MIN, maxReadyToDropMin });
   if (!plan.feasible) {
+    const slow = plan.perOrder.find((o) => o.readyToDropMin > maxReadyToDropMin);
+    if (slow) {
+      return { ok: false, reason: `order ${slow.jobId} would take ${slow.readyToDropMin.toFixed(1)} min from ready to drop-off (limit ${maxReadyToDropMin} min)` };
+    }
     const worst = plan.perOrder.reduce((a, b) => (b.extraMin > a.extraMin ? b : a));
     return { ok: false, reason: `order ${worst.jobId} would arrive ${worst.extraMin.toFixed(1)} min later than alone (limit ${MAX_ADDED_LATENESS_MIN} min)` };
   }
@@ -174,10 +195,13 @@ function* sequences(stops, done = new Set()) {
 }
 
 /** Walk one sequence: arrival times, waits and drive minutes. */
-function walk(seq, { startAt, readyMs, source }) {
-  let t = startAt, drive = 0, prev = null;
+function walk(seq, { startAt, readyMs, source, from = null }) {
+  // From the driver's position when given: stores already visited are behind
+  // them and cost nothing more.
+  let t = startAt, drive = 0, prev = from ? { at: from } : null;
   const dropAt = new Map();
   for (const s of seq) {
+    if (from && s.done) continue;
     if (prev) {
       const leg = legMinutes(prev.at, s.at);
       if (leg.source === 'estimated') source.estimated = true;
@@ -198,7 +222,12 @@ function walk(seq, { startAt, readyMs, source }) {
  * @param opts.readyAt     job -> ms its food is ready (optional; none = ready now)
  * @param opts.now         ms the run starts at its first stop (default now)
  * @param opts.maxExtraMin per-order limit; sets `feasible`
- * @returns {{ stops, perOrder: [{jobId, extraMin}], feasible, driveMinutes, source }}
+ * @param opts.maxReadyToDropMin  on a run of two or more, no order may reach
+ *                         its customer more than this after its food is ready;
+ *                         sets `feasible`
+ * @param opts.from        the driver's position: plan from there, not from the
+ *                         first stop
+ * @returns {{ stops, perOrder: [{jobId, extraMin, readyToDropMin}], feasible, driveMinutes, source }}
  */
 export function planRun(jobs, opts = {}) {
   const now = opts.now ?? Date.now();
@@ -218,13 +247,18 @@ export function planRun(jobs, opts = {}) {
   let best = null;
   for (const tail of sequences(open, collected)) {
     const seq = [...fixed, ...tail];
-    const w = walk(seq, { startAt: now, readyMs, source });
+    const w = walk(seq, { startAt: now, readyMs, source, from: opts.from ? pt(opts.from) : null });
     // Each order alone: from its store, ready time, straight to the customer.
     const perOrder = jobs.map((j) => {
       const alone = Math.max(now, readyMs(j.id)) + legMinutes(pt(j.pickup), pt(j.dropoff)).minutes * 60000;
-      return { jobId: j.id, extraMin: Number((Math.max(0, w.dropAt.get(j.id) - alone) / 60000).toFixed(1)) };
+      return { jobId: j.id,
+        extraMin: Number((Math.max(0, w.dropAt.get(j.id) - alone) / 60000).toFixed(1)),
+        readyToDropMin: Number((Math.max(0, w.dropAt.get(j.id) - readyMs(j.id)) / 60000).toFixed(1)) };
     });
-    const feasible = opts.maxExtraMin == null || perOrder.every((o) => o.extraMin <= opts.maxExtraMin);
+    const tooSlow = opts.maxReadyToDropMin != null && jobs.length > 1
+      && perOrder.some((o) => o.readyToDropMin > opts.maxReadyToDropMin);
+    const feasible = !tooSlow
+      && (opts.maxExtraMin == null || perOrder.every((o) => o.extraMin <= opts.maxExtraMin));
     const score = (w.finish - now) + [...w.dropAt.values()].reduce((a, t) => a + (t - now), 0);
     const cand = { seq, perOrder, feasible, score, drive: w.drive, tie: seq.map(stopKey).join('>') };
     // Feasible beats infeasible, then the lower score, then less driving, then

@@ -7,6 +7,7 @@
  */
 
 import { SUPPLY, metresBetween, travelMinutes } from './supply.js';
+import { limitsOf } from './limits.js';
 import { canJoin, routeStops, routeMinutes, marginalDistances, storeCount,
   isSameCustomer, MAX_BATCH, planRun, planStamp, readyAt } from './batching.js';
 import { warmLegsInBackground, TABLE_MAX_POINTS, legMinutes } from './routing.js';
@@ -50,7 +51,10 @@ export const W = {
 };
 
 export class Dispatcher {
-  constructor({ readyGate, supply, jobs, onOffer, now = () => Date.now(), maxHoldMs = null }) {
+  constructor({ readyGate, supply, jobs, onOffer, now = () => Date.now(), maxHoldMs = null,
+    limitsFor = null }) {
+    // zone -> rate card, for the distance and time limits (src/limits.js).
+    this.limitsFor = limitsFor;
     // Staging only: release every order within this long, so an integration
     // test never waits on a 25-minute prep prior.
     this.maxHoldMs = maxHoldMs;
@@ -199,7 +203,7 @@ export class Dispatcher {
     if (!pool.length) return 0;
     // Any waiting order it could stack with, due yet or not, rules it out.
     const single = pool.filter((j) => !pool.some((o) => o !== j
-      && canJoin([j], o, this.gate, nowMs).ok));
+      && canJoin([j], o, this.gate, nowMs, this.limitsFor).ok));
     const drivers = [...this.supply.drivers.values()].filter((d) => d.activeJobId && d.position
       && !offered.has(d.id) && d.state !== SUPPLY.OFFLINE);
     let n = 0;
@@ -284,7 +288,7 @@ export class Dispatcher {
     if (run.length + add.length > MAX_BATCH) return null;
     let batch = run, last = null;
     for (const j of add) {
-      last = canJoin(batch, j, this.gate, this.now());
+      last = canJoin(batch, j, this.gate, this.now(), this.limitsFor);
       if (!last.ok) return null;
       batch = [...batch, j];
     }
@@ -343,7 +347,7 @@ export class Dispatcher {
 
       for (const other of pool) {
         if (used.has(other.id) || batch.length >= MAX_BATCH) continue;
-        const res = canJoin(batch, other, this.gate, nowMs);
+        const res = canJoin(batch, other, this.gate, nowMs, this.limitsFor);
         if (res.ok) { batch.push(other); used.add(other.id); }
       }
       batches.push(batch);
@@ -361,7 +365,7 @@ export class Dispatcher {
     const out = [];
     for (let i = 0; i < pool.length; i++) {
       for (let k = i + 1; k < pool.length; k++) {
-        const res = canJoin([pool[i]], pool[k], this.gate, nowMs);
+        const res = canJoin([pool[i]], pool[k], this.gate, nowMs, this.limitsFor);
         out.push({
           a: pool[i].orderNumber ?? pool[i].id,
           b: pool[k].orderNumber ?? pool[k].id,
@@ -451,9 +455,59 @@ export class Dispatcher {
     return planRun(jobs, { readyAt: (j) => readyAt(j, this.gate), now: nowMs });
   }
 
+  /**
+   * Unbatch a run that has drifted. Every tick, for each driver carrying two
+   * orders: plan the rest of the run from where they are now. If any order
+   * would reach its customer more than the zone's maxReadyToDropMin after its
+   * food was ready, the later order not yet collected goes back to dispatch
+   * for another driver, and this driver takes the first order alone. Once both
+   * are in the box nothing can move.
+   */
+  reviewRuns(nowMs = this.now()) {
+    const out = [];
+    for (const d of this.supply.drivers.values()) {
+      if (!d.activeJobId || !d.position) continue;
+      const run = this.runOf(d.id);
+      if (run.length < 2) continue;
+      const open = run.filter((j) => !j.collectedAt);
+      if (!open.length) continue;
+      const limit = Math.min(...run.map((j) =>
+        limitsOf(this.limitsFor ? this.limitsFor(j.zone) : {}).maxReadyToDropMin));
+      const plan = planRun(run, {
+        readyAt: (j) => j.readyAt ?? readyAt(j, this.gate), now: nowMs, from: d.position,
+        maxReadyToDropMin: limit });
+      const slow = plan.perOrder.filter((o) => o.readyToDropMin > limit);
+      if (!slow.length) continue;
+      const drop = open.at(-1);
+      const worst = slow.reduce((a, b) => (b.readyToDropMin > a.readyToDropMin ? b : a));
+      const reason = `Unbatched: order ${worst.jobId} would take ${worst.readyToDropMin.toFixed(0)} min from ready to drop-off (limit ${limit} min)`;
+      out.push(this.unbatch(drop, d.id, reason));
+    }
+    return out.filter(Boolean);
+  }
+
+  /** Take one order off a driver's run and put it back in the pool. */
+  unbatch(job, driverId, reason) {
+    const seen = this.declinedBy.get(job.id) ?? new Map();
+    seen.set(driverId, this.now() + DECLINE_COOLDOWN_MS);
+    this.declinedBy.set(job.id, seen);
+    this.offers.delete(job.id);
+    this.jobs.setStatus(job.id, 'PENDING', { driverId: null, batchId: null, runPlan: null },
+      { driverId, kind: 'UNBATCHED', reason });
+    // The orders left on the run get a fresh route; the stamp included this one.
+    const rest = this.runOf(driverId);
+    for (const j of rest) this.jobs.update(j.id, { runPlan: null });
+    this.supply.upsert(driverId, rest.length
+      ? { activeJobId: rest[0].id, activeBatchId: rest[0].batchId ?? null }
+      : { activeJobId: null, activeBatchId: null });
+    this.onUnbatch?.(job, driverId, reason);
+    return { jobId: job.id, driverId, reason };
+  }
+
   tick(nowMs = this.now()) {
     this.expireOffers(nowMs);
     this.reviewNext(nowMs);
+    this.reviewRuns(nowMs);
     this.warmRunLegs(nowMs);
     this.chainPass(nowMs);
     const pairs = this.solve(nowMs);
