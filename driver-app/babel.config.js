@@ -1,4 +1,6 @@
 module.exports = function (api) {
-  api.cache(true);
-  return { presets: ['babel-preset-expo'] };
+  // Tests only: yoga-layout (the layout test's flexbox engine) uses import.meta.
+  // App builds get exactly the preset they had before.
+  const test = api.env('test');
+  return { presets: [['babel-preset-expo', test ? { unstable_transformImportMeta: true } : {}]] };
 };

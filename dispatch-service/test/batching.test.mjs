@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { canJoin, routeStops, routeMinutes, marginalDistances, storeCount,
-  isSameCustomer, MAX_BATCH, PICKUP_CLUSTER_M } from '../src/batching.js';
+  isSameCustomer, MAX_BATCH, PICKUP_CLUSTER_M, DROPOFF_CLUSTER_M, READY_WINDOW_MIN,
+  MAX_ADDED_LATENESS_MIN, planRun, planStamp } from '../src/batching.js';
 import { computeEarnings } from '../src/fees.js';
 import { RateBook } from '../src/rates.js';
 import { ReadyGate } from '../src/readyGate.js';
@@ -41,7 +42,7 @@ test('two orders from one store dropping nearby can stack', () => {
   assert.equal(res.ok, true, res.reason);
 });
 
-test('drop-offs further apart than 500 m are refused', () => {
+test('drop-offs further apart than 1 km are refused', () => {
   const g = warmGate(['ROCO']);
   const a = job('A', 'ROCO', BASE, at(200, 0));
   const b = job('B', 'ROCO', BASE, at(900, 180));
@@ -50,7 +51,7 @@ test('drop-offs further apart than 500 m are refused', () => {
   assert.match(res.reason, /drop-offs/);
 });
 
-test('pickups further apart than 500 m are refused', () => {
+test('pickups further apart than 100 m are refused', () => {
   const g = warmGate(['ROCO', 'FAR']);
   const a = job('A', 'ROCO', BASE, at(200, 0));
   const b = job('B', 'FAR', at(1200, 90), at(250, 10));
@@ -63,7 +64,7 @@ test('two nearby stores for the same customer stack', () => {
   const g = warmGate(['ROCO', 'PIZZA']);
   const home = at(300, 45);
   const a = job('A', 'ROCO', BASE, home);
-  const b = job('B', 'PIZZA', at(400, 90), home);
+  const b = job('B', 'PIZZA', at(80, 90), home);
   const res = canJoin([a], b, g);
   assert.equal(res.ok, true, res.reason);
   assert.equal(isSameCustomer([a, b]), true);
@@ -79,25 +80,148 @@ test('a slow kitchen is not stacked onto a fast one', () => {
     g.observe('SLOW', 40, { source: 'print', persist: false });
   }
   const a = job('A', 'FAST', BASE, at(200, 0), 8);
-  const b = job('B', 'SLOW', at(200, 90), at(260, 20), 40);
+  const b = job('B', 'SLOW', at(80, 90), at(260, 20), 40);
   const res = canJoin([a], b, g);
   assert.equal(res.ok, false);
   assert.match(res.reason, /ready times/);
 });
 
-test('the batch is capped at three', () => {
+test('a run is capped at two orders', () => {
+  assert.equal(MAX_BATCH, 2);
   const g = warmGate(['ROCO']);
   const batch = [
     job('A', 'ROCO', BASE, at(200, 0)),
     job('B', 'ROCO', BASE, at(240, 40)),
-    job('C', 'ROCO', BASE, at(280, 80)),
   ];
-  const res = canJoin(batch, job('D', 'ROCO', BASE, at(300, 120)), g);
+  const res = canJoin(batch, job('C', 'ROCO', BASE, at(280, 80)), g);
   assert.equal(res.ok, false);
-  assert.match(res.reason, new RegExp(String(MAX_BATCH)));
+  assert.match(res.reason, /batch already at 2/);
+});
+
+test('a second order must be ready within 5 minutes of the first, either side', () => {
+  assert.equal(READY_WINDOW_MIN, 5);
+  const g = warmGate(['ROCO']);
+  const t0 = Date.now() - 20 * 60000;
+  // Same kitchen, same prep: ready times differ by exactly when they were placed.
+  const first = job('A', 'ROCO', BASE, at(200, 0), null, t0);
+  const at4 = job('B', 'ROCO', BASE, at(240, 40), null, t0 + 4 * 60000);
+  const at6 = job('C', 'ROCO', BASE, at(240, 40), null, t0 + 6 * 60000);
+  const before4 = job('D', 'ROCO', BASE, at(240, 40), null, t0 - 4 * 60000);
+  assert.equal(canJoin([first], at4, g).ok, true, 'ready 4 min after the first');
+  assert.equal(canJoin([first], before4, g).ok, true, 'ready 4 min before the first');
+  const late = canJoin([first], at6, g);
+  assert.equal(late.ok, false, 'ready 6 min after the first');
+  assert.match(late.reason, /6 min apart \(window 5 min from the first order\)/);
+});
+
+test('the stacking rules match the brief: 100 m, 1 km, 5 minutes', () => {
+  assert.equal(PICKUP_CLUSTER_M, 100);
+  assert.equal(DROPOFF_CLUSTER_M, 1000);
+  assert.equal(MAX_ADDED_LATENESS_MIN, 5);
+});
+
+test('no single order may arrive more than 5 minutes later than it would alone', () => {
+  // Same kitchen. A is ready now, its customer 700 m north. B is ready 4.5 min
+  // later (inside the ready window), its customer 290 m south. Deliver A first
+  // and B's customer waits for A's detour (5+ min); deliver B first and A's
+  // food waits 4.5 min for B, then for B's leg. Either way one customer is
+  // more than 5 minutes worse off, so they must not stack.
+  const g = warmGate(['ROCO']);
+  const t0 = Date.now() - 12 * 60000;
+  const a = job('A', 'ROCO', BASE, at(700, 0), null, t0);
+  const b = job('B', 'ROCO', BASE, at(290, 180), null, t0 + 4.5 * 60000);
+  const res = canJoin([a], b, g);
+  assert.equal(res.ok, false);
+  assert.match(res.reason, /would arrive [\d.]+ min later than alone \(limit 5 min\)/);
+  // The same pair with B ready at the same time as A fits easily.
+  const bNow = job('B', 'ROCO', BASE, at(290, 180), null, t0);
+  assert.equal(canJoin([a], bNow, g).ok, true);
+});
+
+test('an order that fits reports each order\u2019s extra minutes', () => {
+  const g = warmGate(['ROCO']);
+  const res = canJoin([job('A', 'ROCO', BASE, at(300, 0))], job('B', 'ROCO', BASE, at(340, 25)), g);
+  assert.equal(res.ok, true, res.reason);
+  assert.equal(res.perOrder.length, 2);
+  assert.ok(res.perOrder.every((o) => o.extraMin <= 5));
+  assert.ok(res.addedMinutes < 2, 'two customers 150 m apart cost the second about a minute');
 });
 
 /* ----------------------------------------------------------------- routing */
+
+test('the run starts at whichever store makes it best, not the first order\u2019s', () => {
+  // Two shops 80 m apart; both customers are east. B's shop is the eastern
+  // one. Starting at B's shop because B was listed first means walking back
+  // west for A and then east again; the planner starts at A's shop instead.
+  const jobs = [
+    job('B', 'PIZZA', at(80, 90), at(650, 85)),
+    job('A', 'ROCO', BASE, at(600, 95)),
+  ];
+  const keys = (stops) => stops.map((s) => (s.kind === 'PICKUP' ? `P:${s.storeId}` : `D:${s.jobIds[0]}`));
+  assert.deepEqual(keys(planRun(jobs).stops).slice(0, 2), ['P:ROCO', 'P:PIZZA']);
+  assert.deepEqual(keys(planRun(jobs).stops), keys(planRun(jobs.slice().reverse()).stops),
+    'the route does not depend on the order the jobs were listed in');
+});
+
+test('a drop-off never comes before its own pickup', () => {
+  const jobs = [
+    job('A', 'ROCO', BASE, at(60, 0)),
+    job('B', 'PIZZA', at(90, 180), at(120, 10)),
+  ];
+  const stops = planRun(jobs).stops;
+  for (const id of ['A', 'B']) {
+    const p = stops.findIndex((s) => s.kind === 'PICKUP' && s.jobIds.includes(id));
+    const d = stops.findIndex((s) => s.kind === 'DROPOFF' && s.jobIds[0] === id);
+    assert.ok(p >= 0 && d > p, `${id}: pickup ${p}, drop-off ${d}`);
+  }
+});
+
+test('while the second kitchen finishes, the first order is delivered instead of waiting', () => {
+  // A is ready now and its customer is 200 m away. B, from the shop next door,
+  // is ready in 4.5 minutes. Standing at the counter with A's food is worse
+  // for A's customer and no faster for B's: deliver A, come back, collect B.
+  const now = Date.now();
+  const a = job('A', 'ROCO', BASE, at(200, 0));
+  const b = job('B', 'PIZZA', at(60, 90), at(500, 20));
+  const ready = { A: now, B: now + 4.5 * 60000 };
+  const plan = planRun([a, b], { readyAt: (j) => ready[j.id], now });
+  const names = plan.stops.map((s) => `${s.kind[0]}${s.jobIds.join('')}`);
+  assert.deepEqual(names, ['PA', 'DA', 'PB', 'DB']);
+  assert.equal(plan.perOrder.find((o) => o.jobId === 'A').extraMin, 0);
+});
+
+test('ready times change the route; without them, collect both first', () => {
+  const a = job('A', 'ROCO', BASE, at(200, 0));
+  const b = job('B', 'PIZZA', at(60, 90), at(500, 20));
+  const names = planRun([a, b]).stops.map((s) => `${s.kind[0]}${s.jobIds.join('')}`);
+  assert.deepEqual(names.slice(0, 2).map((n) => n[0]), ['P', 'P']);
+});
+
+test('an accepted route is followed exactly, and done stops stay first', () => {
+  const jobs = [
+    job('A', 'ROCO', BASE, at(300, 0)),
+    job('B', 'ROCO', BASE, at(340, 25)),
+  ];
+  // Stamp the less obvious drop order and check it is honoured.
+  const stamp = { order: ['P:ROCO', 'D:B', 'D:A'], source: 'osrm', at: Date.now() };
+  for (const j of jobs) j.runPlan = stamp;
+  const names = routeStops(jobs).map((s) => `${s.kind[0]}${s.jobIds.join('')}`);
+  assert.deepEqual(names, ['PAB', 'DB', 'DA']);
+  // Once B is delivered it leaves the run; A's stops keep their order.
+  assert.deepEqual(routeStops([jobs[0]]).map((s) => s.kind), ['PICKUP', 'DROPOFF']);
+  // A job not in the stamp means a new route is planned.
+  const c = job('C', 'ROCO', BASE, at(320, 10));
+  assert.equal(routeStops([...jobs, c]).filter((s) => s.kind === 'DROPOFF').length, 3);
+});
+
+test('a collected store is never re-planned', () => {
+  const a = { ...job('A', 'ROCO', BASE, at(300, 0)), collectedAt: Date.now() };
+  const b = job('B', 'PIZZA', at(80, 90), at(320, 10));
+  const plan = planRun([a, b]);
+  assert.equal(plan.stops[0].kind, 'PICKUP');
+  assert.equal(plan.stops[0].storeId, 'ROCO', 'what is done stays at the front');
+  assert.ok(planStamp(plan).order.length === 4);
+});
 
 test('every pickup is visited before any drop-off', () => {
   const jobs = [
@@ -210,7 +334,7 @@ test('tips are never reduced by stacking', () => {
 test('a declined offer becomes available again after the cooldown', async (t) => {
   const { build } = await import('../src/server.js');
   const { TIMEOUT_COOLDOWN_MS } = await import('../src/dispatch.js');
-  const app = build({ dbPath: ':memory:', partnerAuth: false, opsAuth: false });
+  const app = build({ dbPath: ':memory:', partnerAuth: false, opsAuth: false, driverAuth: false });
   t.after(() => app.close());
 
   const res = await app.inject({ method: 'POST', url: '/v1/driver/signin',
@@ -250,7 +374,7 @@ test('a declined offer becomes available again after the cooldown', async (t) =>
 
 test('a second order from the same kitchen prefers the driver already there', async (t) => {
   const { build } = await import('../src/server.js');
-  const app = build({ dbPath: ':memory:', partnerAuth: false, opsAuth: false });
+  const app = build({ dbPath: ':memory:', partnerAuth: false, opsAuth: false, driverAuth: false });
   t.after(() => app.close());
 
   const ids = [];

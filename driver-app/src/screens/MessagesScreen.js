@@ -1,10 +1,10 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import {
-  View, Text, ScrollView, StyleSheet, TextInput, KeyboardAvoidingView, Platform,
+  View, Text, FlatList, StyleSheet, TextInput, KeyboardAvoidingView, Platform,
 } from 'react-native';
 import { useApp } from '../state/store';
-import { Button, Card, Label } from '../components/UI';
-import { C, T, R, SP, S } from '../theme';
+import { Button, Card, Label, useBottomPad } from '../components/UI';
+import { C, T, R, SP, S, Z } from '../theme';
 
 /**
  * Two-way messaging with the back office.
@@ -14,6 +14,8 @@ import { C, T, R, SP, S } from '../theme';
  * with the driver's live state and current job beside it.
  */
 export default function MessagesScreen() {
+  // The composer clears the phone's navigation buttons.
+  const composerPad = useBottomPad(SP.sm);
   const { fetchMessages, sendMessage, markMessagesRead, job } = useApp();
   const [messages, setMessages] = useState([]);
   const [body, setBody] = useState('');
@@ -56,39 +58,41 @@ export default function MessagesScreen() {
   return (
     <KeyboardAvoidingView style={S.screen}
       behavior={Platform.OS === 'ios' ? 'padding' : undefined} keyboardVerticalOffset={90}>
-      <ScrollView
-        ref={scroller}
-        contentContainerStyle={[S.content, { flexGrow: 1, justifyContent: 'flex-end' }]}
-        onContentSizeChange={() => scroller.current?.scrollToEnd({ animated: true })}>
-        {err ? (
-          <Card style={{ borderColor: C.red, borderWidth: 1.5, marginBottom: SP.md }}>
-            <Text style={[T.small, { color: C.red }]}>{err}</Text>
-          </Card>
-        ) : null}
+      {err ? (
+        <Card style={st.error}>
+          <Text style={[T.small, { color: C.red }]}>{err}</Text>
+        </Card>
+      ) : null}
 
-        {messages.length === 0 ? (
+      {/* The thread is the list: it scrolls, the composer stays put. */}
+      <FlatList
+        ref={scroller}
+        style={{ flex: 1 }}
+        data={messages}
+        keyExtractor={(m) => String(m.id)}
+        contentContainerStyle={st.thread}
+        onContentSizeChange={() => scroller.current?.scrollToEnd({ animated: true })}
+        ListEmptyComponent={
           <Card tone="wash" flat>
             <Text style={[T.h3, { color: C.green }]}>Nothing here yet</Text>
-            <Text style={[T.small, { color: C.green, marginTop: 4 }]}>
+            <Text style={[T.small, { color: C.green, marginTop: SP.xs }]}>
               Message the office if a restaurant is holding you up, an address is wrong, or
               anything else needs a person.
             </Text>
           </Card>
-        ) : (
-          messages.map((m) => (
-            <View key={m.id}
-              style={[st.bubble, m.from === 'ops' ? st.fromOps : st.fromMe]}>
-              <Text style={[T.body, m.from === 'driver' && { color: C.white }]}>{m.body}</Text>
-              <Text style={[st.meta, m.from === 'driver' && { color: 'rgba(255,255,255,0.65)' }]}>
-                {m.from === 'ops' ? (m.actor ?? 'Office') : 'You'} ·{' '}
-                {new Date(m.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-              </Text>
-            </View>
-          ))
+        }
+        renderItem={({ item: m }) => (
+          <View style={[st.bubble, m.from === 'ops' ? st.fromOps : st.fromMe]}>
+            <Text style={[T.body, m.from === 'driver' && { color: C.white }]}>{m.body}</Text>
+            <Text style={[st.meta, m.from === 'driver' && { color: 'rgba(255,255,255,0.65)' }]}>
+              {m.from === 'ops' ? (m.actor ?? 'Office') : 'You'} ·{' '}
+              {new Date(m.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+            </Text>
+          </View>
         )}
-      </ScrollView>
+      />
 
-      <View style={st.composer}>
+      <View style={[st.composer, composerPad]}>
         <TextInput
           style={st.input}
           value={body}
@@ -99,21 +103,23 @@ export default function MessagesScreen() {
           accessibilityLabel="Message to the office"
         />
         <Button title="Send" onPress={send} loading={busy} disabled={!body.trim()}
-          style={{ paddingHorizontal: 22, minHeight: 50 }} />
+          style={{ paddingHorizontal: SP.lg }} />
       </View>
     </KeyboardAvoidingView>
   );
 }
 
 const st = StyleSheet.create({
-  bubble: { maxWidth: '84%', padding: 13, borderRadius: 18, marginBottom: SP.sm },
+  error: { borderColor: C.red, borderWidth: 1.5, margin: SP.md, marginBottom: 0 },
+  thread: { flexGrow: 1, justifyContent: 'flex-end', padding: SP.md },
+  bubble: { maxWidth: '84%', paddingHorizontal: SP.md, paddingVertical: SP.sm, borderRadius: R.md, marginBottom: SP.sm },
   fromOps: { backgroundColor: C.white, borderWidth: 1, borderColor: C.line,
     alignSelf: 'flex-start', borderBottomLeftRadius: 5 },
   fromMe: { backgroundColor: C.forest, alignSelf: 'flex-end', borderBottomRightRadius: 5 },
-  meta: { ...T.tiny, marginTop: 5 },
-  composer: { flexDirection: 'row', gap: SP.sm, padding: SP.md,
+  meta: { ...T.tiny, marginTop: 2 },
+  composer: { flexDirection: 'row', gap: SP.sm, padding: SP.sm,
     borderTopWidth: 1, borderTopColor: C.line, backgroundColor: C.white, alignItems: 'flex-end' },
   input: { flex: 1, borderWidth: 1.5, borderColor: C.line, borderRadius: R.md,
-    paddingHorizontal: 14, paddingVertical: 12, fontSize: 15, color: C.ink,
-    backgroundColor: C.mist, maxHeight: 110 },
+    paddingHorizontal: SP.md, paddingVertical: SP.sm, fontSize: Z.body, color: C.ink,
+    backgroundColor: C.mist, minHeight: Z.primary, maxHeight: 110 },
 });

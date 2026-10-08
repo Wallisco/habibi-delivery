@@ -74,6 +74,8 @@ export class SupplyRegistry {
     };
     const next = { ...cur, ...patch, lastSeen: Date.now() };
     this.drivers.set(driverId, next);
+    // A signal from the app (where it is, what state it's in): online time.
+    if (this.onBeat && ('position' in patch || 'state' in patch)) this.onBeat(next);
     // Positions change every few seconds and are deliberately not persisted.
     if (!('position' in patch) || Object.keys(patch).length > 1) {
       this.db?.saveDriver(next);

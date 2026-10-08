@@ -119,7 +119,7 @@ export class KeychatClient {
  * rather than a negotiation at month end.
  */
 export function buildQuote({ quoteId, job, earnings, routing, etaMinutes, readyGate,
-  customerCharge, expiresInSeconds = 180 }) {
+  customerCharge, feeBreakdown = null, expiresInSeconds = 180 }) {
   return {
     quoteId,
     expiresInSeconds,
@@ -128,6 +128,15 @@ export function buildQuote({ quoteId, job, earnings, routing, etaMinutes, readyG
     // What Keychat adds to the customer's order.
     customerCharge: {
       deliveryFee: Number(customerCharge.toFixed(2)),
+      // The flat fee covers the first `includedKm` by road; each km after it
+      // is added at `extraKmRate` (src/limits.js).
+      ...(feeBreakdown ? {
+        baseFee: feeBreakdown.baseFee,
+        includedKm: feeBreakdown.includedKm,
+        extraKm: feeBreakdown.extraKm,
+        extraKmRate: feeBreakdown.extraKmRate,
+        extraKmFee: feeBreakdown.extraKmFee,
+      } : {}),
       tipIsSeparate: true,
       note: 'Tip is collected by Keychat at checkout and passed through in full to the driver.',
     },
@@ -146,6 +155,7 @@ export function buildQuote({ quoteId, job, earnings, routing, etaMinutes, readyG
     routing: {
       collectKm: routing.collectKm,
       deliverKm: routing.deliverKm,
+      ...(feeBreakdown ? { roadKm: feeBreakdown.roadKm } : {}),
       drivingMinutes: routing.deliverMinutes,
       source: routing.source,
     },

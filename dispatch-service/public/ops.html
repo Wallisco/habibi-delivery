@@ -125,11 +125,14 @@
   </header>
   <nav id="tabs"></nav>
   <div id="tab-overview"></div>
+  <div id="tab-performance" class="hidden"></div>
   <div id="tab-orders" class="hidden"></div>
   <div id="tab-drivers" class="hidden"></div>
   <div id="tab-earnings" class="hidden"></div>
   <div id="tab-messages" class="hidden"></div>
+  <div id="tab-stores" class="hidden"></div>
   <div id="tab-pricing" class="hidden"></div>
+  <div id="tab-settings" class="hidden"></div>
   <div id="tab-integration" class="hidden"></div>
   <div id="tab-staff" class="hidden"></div>
 </div>
@@ -219,6 +222,10 @@ document.addEventListener('click', (e) => {
   if (action === 'saveRates')  saveRates(zone);
   if (action === 'resetRates') resetRates(zone);
   if (action === 'saveSurge')  saveSurge(Number(zi));
+  if (action === 'settingsZone')  { SETTINGS_ZONE = SETTINGS.zones[Number(zi)].zone; SETTINGS_ERR = {}; SETTINGS_DRAFT = null; renderSettings(); }
+  if (action === 'saveSettings')  saveSettings();
+  if (action === 'clearSetting')  clearSetting(key);
+  if (action === 'resetSettings') resetSettings();
   if (action === 'openDriver') openDriver(id);
   if (action === 'openOrder')  openOrder(id);
   if (action === 'issueCode')  issueCode(id);
@@ -231,6 +238,12 @@ document.addEventListener('click', (e) => {
   if (action === 'orderClear')  { ORDER_SEARCH = ''; loadOrders(); }
   if (action === 'eventType')   { EVENT_TYPE = state; loadIntegration(); }
   if (action === 'openLedger')  openLedger(id);
+  if (action === 'photoCheckSwitch') setPhotoCheck(id, state);
+  if (action === 'photoCheckReview') reviewPhotoCheck(id, state);
+  if (action === 'photoCheckRerun')  rerunPhotoCheck(id, act);
+  if (action === 'saveCosts')        saveCosts();
+  if (action === 'logQuery')         logQuery(id);
+  if (action === 'deleteQuery')      deleteQuery(id, zone);
 });
 
 // Enter in the search box should search, not reload the page.
@@ -296,8 +309,8 @@ async function reassignJob(jobId) {
   await loadOrders(); openOrder(jobId);
 }
 
-const TABS = [['overview','Overview'],['orders','Orders'],['drivers','Drivers'],
-  ['earnings','Earnings'],['messages','Messages'],['pricing','Pricing'],['integration','Integration']];
+const TABS = [['overview','Overview'],['performance','Performance'],['orders','Orders'],['drivers','Drivers'],
+  ['earnings','Earnings'],['messages','Messages'],['stores','Stores'],['pricing','Pricing'],['settings','Settings'],['integration','Integration']];
 let active='overview', unreadCount=0;
 
 function renderTabs(){
@@ -457,6 +470,82 @@ async function openOrder(jobId){
           ${o.dropoff?.lat ? `<div><a style="font-size:11.5px;color:var(--green)" target="_blank"
             href="https://www.google.com/maps/search/?api=1&query=${o.dropoff.lat},${o.dropoff.lng}">
             ${o.dropoff.lat.toFixed(5)}, ${o.dropoff.lng.toFixed(5)} ↗</a></div>` : ''}</div>
+        <div><div style="font-size:10.5px;font-weight:800;color:var(--muted)">IN THE ORDER</div>
+          ${o.items?.length
+            ? o.items.map((it)=>`<div>${it.qty} × ${it.name}${it.size?' '+it.size:''}</div>`).join('')
+            : '<div style="color:var(--muted)">No item list from Keychat</div>'}
+          <div style="font-size:11.5px;color:var(--muted)">${o.bagCount??1} bag${(o.bagCount??1)===1?'':'s'}${o.ageRestricted?' · age restricted':''}</div></div>
+        <div><div style="font-size:10.5px;font-weight:800;color:var(--muted)">COLLECTION PHOTO</div>
+          ${o.collectionPhoto?.file && !o.collectionPhoto.deletedAt
+            ? `<a href="/v1/ops/orders/${o.id}/collection-photo" target="_blank">
+                 <img src="/v1/ops/orders/${o.id}/collection-photo" alt="Photo of the order at collection"
+                   style="width:140px;height:105px;object-fit:cover;border-radius:10px;border:1px solid var(--line);display:block"></a>
+               <div style="font-size:11.5px;color:var(--muted)">${time(o.collectionPhoto.at)}</div>
+               ${o.items?.length ? `<button class="sm" style="margin-top:4px" data-act="photoCheckRerun" data-id="${o.id}">Re-check photo</button>
+                 <div id="rerunMsg" style="font-size:11.5px;color:var(--muted)"></div>` : ''}`
+            : o.collectionPhoto?.deletedAt
+              ? '<div style="color:var(--muted)">Deleted after 30 days</div>'
+              : o.collectedAt
+                ? '<div style="color:var(--red)">No collection photo</div>'
+                : '<div style="color:var(--muted)">Taken when the driver collects</div>'}</div>
+        ${o.photoCheck ? `<div><div style="font-size:10.5px;font-weight:800;color:var(--muted)">PHOTO CHECK</div>
+          ${{ pending: '<div style="color:var(--muted)">Checking…</div>',
+               complete: '<div><span class="tag g">Matches the order</span></div>',
+               missing: '<div><span class="tag r">Something missing</span></div>',
+               different: '<div><span class="tag a">Different size or brand</span></div>',
+               unclear: '<div><span class="tag a">Could not tell</span></div>',
+               error: '<div><span class="tag n">Check failed</span></div>',
+               not_configured: '<div><span class="tag n">Not configured</span></div>' }[o.photoCheck.status] ?? ''}
+          ${o.photoCheck.why ? '<div style="font-size:11px;color:var(--muted)">Checked because: ' + o.photoCheck.why + '</div>' : ''}
+          ${o.photoCheck.missing?.length ? '<div style="font-size:12.5px">Not seen: ' + o.photoCheck.missing.map((m) => m.qty + ' × ' + m.name).join(', ') + '</div>' : ''}
+          ${o.photoCheck.different?.length ? '<div style="font-size:12.5px">Different: ' + o.photoCheck.different.map((d) => d.name + (d.seenAs ? ' (photo: ' + d.seenAs + ')' : '')).join(', ') + '</div>' : ''}
+          ${o.photoCheck.seen?.length && o.items?.length ? '<div style="font-size:11.5px;margin-top:4px">' + o.items.map((it) => {
+              const s = o.photoCheck.seen.find((x) => x.name === it.name);
+              const got = s ? s.qty : '?';
+              const ok = s && s.qty >= it.qty;
+              return '<div style="color:' + (ok ? 'var(--green)' : 'var(--red)') + '">' + got + ' of ' + it.qty + ' × ' + it.name + (it.size ? ' ' + it.size : '') + '</div>';
+            }).join('') + '</div>' : ''}
+          ${o.photoCheck.visible?.length ? '<div style="font-size:11px;color:var(--muted);margin-top:4px">In the photo: ' + o.photoCheck.visible.map((v) => v.qty + ' × ' + v.item).join(', ') + '</div>' : ''}
+          ${o.photoCheck.status === 'error' ? '<div style="font-size:11.5px;color:var(--red)">Why: ' + (o.photoCheck.reason ?? '') + (o.photoCheck.detail ? ' · ' + o.photoCheck.detail : '') + '</div>' : ''}
+          ${o.photoCheck.note ? '<div style="font-size:11.5px;color:var(--muted)">' + o.photoCheck.note + '</div>' : ''}
+          ${o.photoCheck.ms != null ? '<div style="font-size:11px;color:var(--muted)">' + (o.photoCheck.ms / 1000).toFixed(1) + ' s · ' + (o.photoCheck.model ?? '') + (o.photoCheck.effort ? ' · ' + o.photoCheck.effort : '') + '</div>' : ''}
+          ${o.photoCheck.compare && Object.keys(o.photoCheck.compare).length ? '<div style="font-size:11px;margin-top:4px"><div style="font-weight:800;color:var(--muted)">OTHER MODELS (trial, not shown to the driver)</div>' + Object.entries(o.photoCheck.compare).map(([model, c]) => {
+              const truth = o.photoCheck.review?.truth;
+              const mark = truth && ['complete','missing','different','unclear'].includes(c.status) ? (c.status === truth ? ' <span style="color:var(--green)">✓</span>' : ' <span style="color:var(--red)">✗</span>') : '';
+              return '<div>' + model + ': <b>' + c.status + '</b>' + mark
+                + (c.missing?.length ? ' (not seen: ' + c.missing.map((m) => m.qty + ' × ' + m.name).join(', ') + ')' : '')
+                + (c.different?.length ? ' (different: ' + c.different.map((d) => d.name + (d.seenAs ? ' → ' + d.seenAs : '')).join(', ') + ')' : '')
+                + (c.ms != null ? ' · ' + (c.ms / 1000).toFixed(1) + ' s' : '')
+                + (c.status === 'error' ? ' · ' + (c.reason ?? '') + (c.detail ? ' ' + c.detail : '') : '') + '</div>';
+            }).join('') + '</div>' : ''}
+          ${o.photoCheck.previous ? '<div style="font-size:11px;color:var(--muted)">Before re-check: ' + o.photoCheck.previous.status + (o.photoCheck.previous.missing?.length ? ' (not seen: ' + o.photoCheck.previous.missing.map((m) => m.qty + ' × ' + m.name).join(', ') + ')' : '') + '</div>' : ''}
+          ${['complete','missing','different','unclear'].includes(o.photoCheck.status) ? (() => {
+              const rv = o.photoCheck.review;
+              const TRUTH = { complete: 'Everything was there', missing: 'Something was missing', different: 'All there, but a different size or brand' };
+              // The buttons stay, so a wrong press can be put right; the chosen one is highlighted.
+              return (rv ? '<div style="font-size:12px;margin-top:4px">Reviewed: ' + (rv.truth ? TRUTH[rv.truth].toLowerCase() + ' · ' : '') + 'check was <b>' + (rv.correct ? 'right' : 'wrong') + '</b></div>' : '')
+                + '<div style="font-size:11px;color:var(--muted);margin-top:4px">' + (rv ? 'Pressed the wrong one? Change it:' : 'What was really in the photo?') + '</div>'
+                + '<div style="display:flex;gap:6px;margin-top:2px;flex-wrap:wrap">'
+                + Object.entries(TRUTH).map(([k, label]) => '<button class="sm' + (rv?.truth === k ? ' go' : '') + '" data-act="photoCheckReview" data-id="' + o.id + '" data-state="' + k + '"' + (rv?.truth === k ? ' disabled' : '') + '>' + label + '</button>').join('')
+                + '</div>';
+            })() : ''}
+          </div>` : ''}
+      </div>
+      <div style="margin-bottom:12px;font-size:13px">
+        <div style="font-size:10.5px;font-weight:800;color:var(--muted)">CUSTOMER QUERIES</div>
+        ${(d.queries ?? []).length ? (d.queries.map((q) => `<div style="display:flex;gap:8px;align-items:center;margin:3px 0">
+            <span class="tag ${d.queryTypes[q.type]?.quality ? 'r' : 'n'}">${d.queryTypes[q.type]?.label ?? q.type}</span>
+            <span>${d.queryChannels[q.channel] ?? q.channel}${q.refund ? ' · refund ' + R2(q.refund) : ''}${q.note ? ' · ' + q.note : ''}</span>
+            <span class="hint" style="margin:0">${time(q.at)} · ${q.by ?? ''}</span>
+            <button class="sm" data-act="deleteQuery" data-id="${q.id}" data-zone="${o.id}">Remove</button></div>`).join('')) : '<div class="hint" style="margin:2px 0">None logged.</div>'}
+        <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:4px">
+          <select id="qType">${Object.entries(d.queryTypes ?? {}).map(([k, t]) => `<option value="${k}">${t.label}</option>`).join('')}</select>
+          <select id="qChannel">${Object.entries(d.queryChannels ?? {}).map(([k, l]) => `<option value="${k}">${l}</option>`).join('')}</select>
+          <input id="qRefund" type="number" min="0" step="0.01" placeholder="Refund R" style="width:95px">
+          <input id="qNote" placeholder="What the customer said" style="flex:1;min-width:160px">
+          <button class="sm go" data-act="logQuery" data-id="${o.id}">Log query</button>
+          <span id="qMsg" class="hint" style="margin:0"></span>
+        </div>
       </div>
       ${!o.collectedAt && !['DELIVERED','FAILED','CANCELLED'].includes(o.status) ? `
         <div class="hint" style="margin-bottom:12px">The customer tracking link is released when the driver collects the order.</div>` : ''}
@@ -769,6 +858,9 @@ async function openThread(driverId){
   CURRENT_THREAD = driverId;
   const d = await (await fetch('/v1/ops/messages/'+driverId)).json();
   const q = await (await fetch('/v1/ops/messages')).json();
+  // Never lose a reply someone is typing when the thread is redrawn.
+  const draft = $('#msgBody')?.value ?? '';
+  const typing = document.activeElement?.id === 'msgBody';
   $('#threadPane').innerHTML = `
     <div style="font-weight:700;margin-bottom:10px">Driver <span class="mono">${driverId}</span></div>
     <div class="thread" id="thread">${d.thread.length?d.thread.map((m)=>`
@@ -782,13 +874,222 @@ async function openThread(driverId){
     <div class="quick">${q.quickReplies.map((t)=>
       `<button data-act="quick" data-id="${driverId}">${t}</button>`).join('')}</div>`;
   const el=$('#thread'); if(el) el.scrollTop=el.scrollHeight;
+  const box=$('#msgBody');
+  if (box && draft) box.value = draft;
+  if (box && typing) box.focus();
 }
 async function sendMsg(driverId){
-  const body=$('#msgBody').value.trim(); if(!body) return;
+  const box=$('#msgBody'); const body=box.value.trim(); if(!body) return;
+  box.value='';
   await post(`/v1/ops/messages/${driverId}`,{body,actor:'ops'}); openThread(driverId);
 }
 async function sendQuick(driverId,body){
   await post(`/v1/ops/messages/${driverId}`,{body,actor:'ops'}); openThread(driverId);
+}
+
+/* ------------------------------------------------------------------ stores */
+// Per-store switches. Today: the AI check of the collection photo (a trial).
+async function loadStores(){
+  const [d, report] = await Promise.all([fetch('/v1/ops/stores?days='+days()).then((r) => r.json()),
+    fetch('/v1/ops/photo-checks?days='+days()).then((r) => r.json())]);
+  const sel = d.selective;
+  const MODE = { off: ['n', 'Off'], all: ['g', 'Every order'], selective: ['a', 'Selective'] };
+  const models = report.overall?.models ?? [];
+  const pct = (v) => v == null ? '–' : Math.round(v * 100) + '%';
+  const usd = (v) => 'US$' + v.toFixed(v < 1 ? 3 : 2);
+  $('#tab-stores').innerHTML = `
+    <section><h2>Stores</h2>
+      <div class="hint">Photo check: when the driver photographs an order at collection, Claude compares the
+        photo with the item list and warns the driver if something is not in it. It never stops a collection.
+        A trial: switch it on per store, then on each order say what was really in the photo.</div>
+      ${sel ? `<div class="hint">Selective checks orders of ${sel.minItems}+ items, a driver's first ${sel.newDriverTrips} trips,
+        and ${sel.samplePct}% of the rest at random.</div>` : ''}
+      ${d.checkConfigured ? '' : '<div class="hint" style="color:var(--red)">No ANTHROPIC_API_KEY on this server: checks report "not configured".</div>'}
+      ${d.stores.length ? table(['Store','Photo check','Checks','Missing','Unclear','Reviewed','Right','Avg time','Cost','Set to'],
+        d.stores.map((x) => {
+          const p = x.photoChecks;
+          return [`<span class="mono">${x.storeId}</span>`,
+            `<span class="tag ${MODE[x.photoMode]?.[0] ?? 'n'}">${MODE[x.photoMode]?.[1] ?? x.photoMode}</span>`,
+            num(p.checks), num(p.missing), num(p.unclear), num(p.reviewed), num(pct(p.accuracy)),
+            num(p.avgSeconds != null ? p.avgSeconds + ' s' : '–'),
+            num(p.checks ? usd(p.costUsd) + ' (' + usd(p.costPerCheckUsd) + ' each)' : '–'),
+            `<td style="white-space:nowrap">${Object.keys(MODE).filter((m) => m !== x.photoMode).map((m) =>
+              `<button class="sm" data-act="photoCheckSwitch" data-id="${x.storeId}" data-state="${m}">${MODE[m][1]}</button>`).join(' ')}</td>`];
+        })) : empty('No stores with orders in this period yet.')}
+    </section>
+    <section><h2>Photo check: models compared</h2>
+      <div class="hint">Every checked photo also goes to the comparison models (${(report.compare ?? []).join(', ') || 'none set'}).
+        The driver only sees ${models.find((m) => m.main)?.label ?? 'the main model'}. Scored on orders where the office said what was
+        really in the photo. "Exact" needs the exact answer; "Caught" asks only whether it warned when something was wrong and stayed
+        quiet when nothing was. "Missed a problem" is the costly mistake.</div>
+      ${models.length ? table(['Model','Checks','Reviewed','Exact','Caught','Missed a problem','False alarms','Unclear','Errors','Avg time','Cost each','Per 1,000 checks'],
+        models.map((m) => [`${m.label}${m.main ? ' <span class="tag g">driver sees</span>' : ''}`,
+          num(m.checks), num(m.judged), num(pct(m.accuracy)), num(pct(m.caughtRate)),
+          num(m.missedProblem), num(m.falseAlarms), num(m.unclear), num(m.errors),
+          num(m.avgSeconds != null ? m.avgSeconds + ' s' : '–'),
+          num(m.costPerCheckUsd != null ? usd(m.costPerCheckUsd) : '–'),
+          num(m.costPerCheckUsd != null ? usd(m.costPerCheckUsd * 1000) : '–')]))
+        : empty('No checks in this period yet.')}
+    </section>`;
+}
+/* ------------------------------------------------------------- performance */
+// The five core service metrics and the operational ones under them, each
+// against its target. Worked out from the orders (src/performance.js).
+let PERF_ZONE = '', PERF_STORE = '';
+async function loadPerformance(){
+  const q = new URLSearchParams({ days: days(), ...(PERF_ZONE ? { zone: PERF_ZONE } : {}), ...(PERF_STORE ? { storeId: PERF_STORE } : {}) });
+  const [d, cfg] = await Promise.all([fetch('/v1/ops/performance?' + q).then((x) => x.json()),
+    fetch('/v1/ops/performance/settings').then((x) => x.json())]);
+  const pc = (v) => v == null ? '–' : (v * 100).toFixed(1) + '%';
+  const show = (m) => m.value == null ? '–' : m.unit === 'share' ? pc(m.value) : m.unit === 'R' ? R2(m.value)
+    : m.unit === 'R' && Math.abs(m.value) >= 1000 ? R(m.value) : m.unit === 'min' ? r(m.value) + ' min' : m.unit === 'km' ? r(m.value) + ' km' : r(m.value, Number.isInteger(m.value) ? 0 : 2);
+  const goal = (m) => m.target == null ? '' : (m.dir === 'atLeast' ? '≥ ' : '≤ ') + show({ ...m, value: m.target });
+  const cls = (st) => st === 'bad' ? 'bad' : st === 'warn' ? 'warn' : '';
+  const tag = (st) => st ? `<span class="tag ${{ good: 'g', warn: 'a', bad: 'r' }[st]}">${{ good: 'On target', warn: 'Close', bad: 'Off target' }[st]}</span>` : '<span class="tag n">No data</span>';
+  const card = (m) => m.waiting ? kpi(m.label, '–', 'Waiting for data. ' + m.waiting)
+    : kpi(m.label, show(m), m.target != null ? 'target ' + goal(m) : (m.note ?? ''), cls(m.status));
+  const opt = (list, cur, all) => `<option value="">${all}</option>` + list.map((x) => `<option ${x === cur ? 'selected' : ''}>${x}</option>`).join('');
+  const M = d.metrics;
+  const rows = [
+    ['Delivered within 30 min of order', M.within30],
+    ['Delivered within SLA (promised time)', M.withinSla],
+    ['Orders over 30 min (SLA breaches)', M.zoneBreaches],
+    ['Driver wait at store (average)', M.driverWait, M.driverWait.value != null ? 'p90 ' + r(M.driverWait.p90) + ' min · ' + pc(M.driverWait.over5) + ' over 5 min' : ''],
+    ['Order batching efficiency', M.batching, 'orders that went out in a run of 2'],
+    ['First-attempt delivery (FAD)', M.fad, 'delivered first time: not failed, reassigned or cleared'],
+    ['Longest delivery distance', M.distance, M.distance.avg != null ? 'average ' + r(M.distance.avg) + ' km' : ''],
+    ['Orders over 7 km', M.over7km],
+    ['Order to delivered (average)', M.avgMinutes],
+    ['Revenue per order', M.revenuePerOrder, d.core.margin.note],
+    ['Driver pay per order (COGS)', M.driverPayPerOrder],
+    ['Contribution margin per order (CM1)', M.cm1PerOrder, M.cm1PerOrder.priced != null ? M.cm1PerOrder.priced + ' orders priced · total ' + R2(M.cm1PerOrder.total) : ''],
+    ['Contribution margin per order (CM2)', M.cm2PerOrder, M.cm2PerOrder.parts ? 'CM1 minus payment fees ' + R2(M.cm2PerOrder.parts.paymentFees)
+      + ', refunds ' + R2(M.cm2PerOrder.parts.refunds) + ', support ' + R2(M.cm2PerOrder.parts.support) + ', AI photo check ' + R2(M.cm2PerOrder.parts.photoCheck) + ' per order'
+      + (M.cm2PerOrder.unset?.length ? ' · <b style="color:var(--amber)">not set yet: ' + M.cm2PerOrder.unset.map((k) => cfg.fields[k].label).join('; ') + '</b>' : '') : ''],
+    ['Profitable order volume', M.profitableOrders, M.profitableOrders.share != null ? pc(M.profitableOrders.share) + ' of priced orders · ' + M.profitableOrders.note : M.profitableOrders.note],
+    ['Rider drops per hour', M.dropsPerHour, PERF_STORE ? 'not split by store: drivers are online for a zone'
+      : M.dropsPerHour.hours != null ? r(M.dropsPerHour.hours) + ' driver hours online (counted from this release)' : ''],
+  ];
+  $('#tab-performance').innerHTML = `
+    <section style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+      <b>${d.volume.delivered} delivered</b><span class="hint" style="margin:0">of ${d.volume.orders} orders · last ${days()} days · about ${d.volume.perMonth ?? 0} a month</span>
+      <select id="perfZone">${opt(d.zones, PERF_ZONE, 'All zones')}</select>
+      <select id="perfStore">${opt(d.stores, PERF_STORE, 'All stores')}</select>
+    </section>
+    <div class="grid">
+      ${card({ ...d.core.speed, label: 'Speed: within 30 min' })}
+      ${card({ ...d.core.quality, label: 'Quality: perfect orders' })}
+      ${card(d.core.gmv)}
+      ${card({ ...d.core.margin, label: 'Margin per order (CM1)' })}
+      ${card(d.core.matu)}
+    </div>
+    <section><h2>Service metrics</h2>
+      <div class="hint">Each against its target. "Close" is within 3 points (or 20% for minutes and km).</div>
+      ${table(['Metric', 'Now', 'Target', '', ''], rows.map(([label, m, note]) =>
+        [label, num(show(m)), num(goal(m)), m.target != null ? tag(m.status) : '', `<span class="hint" style="margin:0">${note ?? m.note ?? ''}</span>`]))}
+    </section>
+    ${(() => {
+      const qa = d.qa, pcq = qa.photoCheck, ch = pcq.checked, un = pcq.unchecked;
+      return `<section><h2>QA and customer support</h2>
+      <div class="hint">From the queries logged on each order (open an order: Customer queries). ${qa.queries} queries
+        (${qa.calls} calls) · ${qa.qualityQueries} about missing, wrong or damaged items · refunds ${R2(qa.refunds)}.</div>
+      <div class="grid">
+        ${kpi('QA error rate', pc(qa.qaErrorRate.value), qa.qaErrorRate.note)}
+        ${kpi('Support queries', qa.queriesPer100.value == null ? '–' : r(qa.queriesPer100.value) + ' / 100', qa.queriesPer100.note)}
+        ${kpi('Perfect order rate', pc(qa.por.value), qa.por.note)}
+      </div>
+      ${table(['Query type', 'Count', 'Per 100 orders', 'Refunds', ''], qa.byType.map((t) =>
+        [t.label, num(t.count), num(t.per100 == null ? '–' : r(t.per100)), num(R2(t.refunds)), t.quality ? '<span class="tag r">quality</span>' : '']))}
+      </section>
+      <section><h2>Does the AI photo check pay off?</h2>
+      <div class="hint">Orders whose photo was checked against orders that weren't: what quality problems cost after delivery
+        (refunds plus support time for missing, wrong or damaged items), and what the check costs. Selective stores check bigger orders
+        and new drivers, so the groups differ: ${pcq.enough ? 'compare with that in mind.' : '<b>fewer than 20 orders in a group: too early to judge.</b>'}</div>
+      ${table(['', 'Orders', 'Quality queries / 100', 'Quality cost / order', 'Check cost / order', 'Caught at the store'], [
+        ['Photo checked', num(ch.orders), num(ch.qualityPer100 ?? '–'), num(R2(ch.qualityCostPerOrder)), num(R2(ch.checkCostPerOrder)), num(ch.caughtAtStore)],
+        ['Not checked', num(un.orders), num(un.qualityPer100 ?? '–'), num(R2(un.qualityCostPerOrder)), num('–'), num('–')]])}
+      <div class="hint" style="margin-top:10px">
+        ${pcq.savingPerCheckedOrder == null ? 'Needs checked and unchecked orders in this period.'
+          : `Net per checked order: <b style="color:var(${pcq.paysOff ? '--green' : '--red'})">${R2(pcq.savingPerCheckedOrder)}</b>
+             (${pcq.paysOff ? 'the check saves more than it costs' : 'the check costs more than it saves'}).`}
+        ${pcq.breakEvenPer100 != null ? ` Break-even: the check pays for itself if it prevents ${r(pcq.breakEvenPer100, 2)} quality
+          queries per 100 orders (a quality query costs ${R2(pcq.costPerQualityQuery)} on average).` : ''}
+      </div>
+      </section>`;
+    })()}
+    <section><h2>SLA breaches by zone</h2>
+      <div class="hint">Orders over 30 minutes from order to door. Target under 3% in every zone.</div>
+      ${d.byZone.length ? table(['Zone', 'Delivered', 'Within 30 min', 'Over 30 min', '', 'Within SLA', 'Avg km', 'Over 7 km', 'Avg wait', 'FAD'],
+        d.byZone.map((z) => [z.zone, num(z.delivered), num(pc(z.within30)), num(pc(z.breaches)), tag(z.breachStatus),
+          num(pc(z.withinSla)), num(r(z.avgKm)), num(pc(z.over7km)), num(z.avgWait != null ? r(z.avgWait) + ' min' : '–'), num(pc(z.fad))]))
+        : empty('No orders in this period.')}
+    </section>
+    <section><h2>SLA breaches by distance</h2>
+      <div class="hint">Store to customer. We aim to deliver within 7 km.</div>
+      ${table(['Distance', 'Delivered', 'Within 30 min', 'Over 30 min', ''],
+        d.byDistance.map((b) => [b.band, num(b.orders), num(pc(b.within30)), num(pc(b.breaches)), b.orders ? tag(b.breachStatus) : '']))}
+    </section>
+    <section><h2>Week by week</h2>
+      ${table(['Week from', 'Delivered', 'Within 30 min', 'Within SLA', 'Perfect orders', 'QA errors', 'Avg wait', 'Batched', 'FAD', 'CM1 / order'],
+        d.weeks.map((w) => [new Date(w.from).toLocaleDateString('en-ZA', { day: 'numeric', month: 'short' }), num(w.delivered),
+          num(pc(w.within30)), num(pc(w.withinSla)), num(pc(w.por)), num(pc(w.qaErrorRate)), num(w.avgWait != null ? r(w.avgWait) + ' min' : '–'),
+          num(pc(w.batching)), num(pc(w.fad)), num(R2(w.cm1PerOrder))]))}
+    </section>
+    <section><h2>CM2 costs</h2>
+      <div class="hint">The costs that turn CM1 into CM2, per order. Refunds and support queries come from the query log (next step).
+        The AI photo check is measured on each checked order.</div>
+      <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end">
+        ${Object.entries(cfg.fields).map(([k, f]) => `<label style="font-size:12px">${f.label}<br>
+          <input type="number" step="0.01" min="${f.min}" max="${f.max}" data-cost="${k}" value="${cfg.values[k]}" style="width:110px">
+          ${cfg.set[k] ? '' : '<span class="tag a">not set</span>'}</label>`).join('')}
+        <button class="go sm" data-act="saveCosts">Save costs</button><span id="costMsg" class="hint" style="margin:0"></span>
+      </div>
+    </section>
+    ${d.waiting.length ? `<section><h2>Coming next</h2>
+      <div class="hint">These need data the system does not collect yet.</div>
+      ${table(['Metric', 'Needs'], d.waiting.map((w) => [w.metric, w.why]))}
+    </section>` : ''}`;
+}
+async function logQuery(jobId){
+  const res = await post('/v1/ops/queries', { jobId, type: $('#qType').value, channel: $('#qChannel').value,
+    refund: Number($('#qRefund').value || 0), note: $('#qNote').value });
+  if (!res.ok) { $('#qMsg').textContent = (await res.json()).error ?? 'Could not log the query.'; return; }
+  openOrder(jobId);
+}
+async function deleteQuery(id, jobId){
+  if (!confirm('Remove this query? Only for one logged by mistake.')) return;
+  const res = await fetch('/v1/ops/queries/' + id, { method: 'DELETE' });
+  if (!res.ok) { alert((await res.json()).error ?? 'Could not remove it.'); return; }
+  openOrder(jobId);
+}
+async function saveCosts(){
+  const patch = {};
+  document.querySelectorAll('[data-cost]').forEach((el) => { patch[el.dataset.cost] = Number(el.value); });
+  const res = await fetch('/v1/ops/performance/settings', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(patch) });
+  if (!res.ok) { $('#costMsg').textContent = (await res.json()).error ?? 'Could not save.'; return; }
+  loadPerformance();
+}
+document.addEventListener('change', (e) => {
+  if (e.target.id === 'perfZone') { PERF_ZONE = e.target.value; loadPerformance(); }
+  if (e.target.id === 'perfStore') { PERF_STORE = e.target.value; loadPerformance(); }
+});
+
+async function setPhotoCheck(storeId, mode){
+  const res = await fetch('/v1/ops/stores/' + encodeURIComponent(storeId), { method: 'PUT',
+    headers: { 'content-type': 'application/json' }, body: JSON.stringify({ photoMode: mode }) });
+  if (!res.ok) { alert((await res.json()).error ?? 'Could not change the store.'); return; }
+  loadStores();
+}
+async function rerunPhotoCheck(jobId, btn){
+  btn.disabled = true; btn.textContent = 'Checking…';
+  const res = await post('/v1/ops/orders/' + jobId + '/photo-check/rerun', {});
+  if (!res.ok) { btn.disabled = false; btn.textContent = 'Re-check photo'; const m = $('#rerunMsg'); if (m) m.textContent = (await res.json()).error ?? 'Could not re-check.'; return; }
+  openOrder(jobId);
+}
+async function reviewPhotoCheck(jobId, truth){
+  const res = await post('/v1/ops/orders/' + jobId + '/photo-check/review', { truth });
+  if (!res.ok) { alert((await res.json()).error ?? 'Could not save the review.'); return; }
+  openOrder(jobId);
 }
 
 /* ----------------------------------------------------------------- pricing */
@@ -863,6 +1164,99 @@ async function saveSurge(zi){
   });
   await fetch('/v1/ops/surge/'+encodeURIComponent(z.zone),{method:'PUT',
     headers:{'content-type':'application/json'},body:JSON.stringify({windows})}); loadPricing();
+}
+
+/* ---------------------------------------------------------------- settings */
+/*
+ * Distance, batching and driver-search rules. "All zones" sets the value every
+ * zone follows; a zone can set its own, and clearing it follows "All zones"
+ * again. Only finance and admin can save (the extra-km fee is money).
+ */
+let SETTINGS=null, SETTINGS_ZONE='*', SETTINGS_ERR={}, SETTINGS_DRAFT=null;
+// Zone names arrive HTML-escaped (see the fetch wrapper); URLs need the real name.
+const unesc = (v) => { const t=document.createElement('textarea'); t.innerHTML=v; return t.value; };
+const settingsUrl = (suffix='') => '/v1/ops/settings/'+encodeURIComponent(unesc(SETTINGS_ZONE))+suffix;
+const canEditSettings = () => ME && ['finance','admin'].includes(ME.role);
+async function loadSettings(){
+  SETTINGS = await (await fetch('/v1/ops/settings')).json();
+  if (!SETTINGS.zones.some((z)=>z.zone===SETTINGS_ZONE)) SETTINGS_ZONE='*';
+  SETTINGS_ERR={}; SETTINGS_DRAFT=null; renderSettings();
+}
+function settingsCrowKm(){
+  const g=(k)=>{ const i=document.querySelector(`[data-setting="${k}"]`); const z=SETTINGS.zones.find((x)=>x.zone===SETTINGS_ZONE);
+    return i && i.value!=='' ? Number(i.value) : z.values[k]; };
+  const max=g('maxDeliveryKm'), f=g('roadFactor');
+  return `${max} km by road is about ${(max/f).toFixed(1)} km as the crow flies (road = straight line × ${f}).`;
+}
+function renderSettings(){
+  const z = SETTINGS.zones.find((x)=>x.zone===SETTINGS_ZONE);
+  const edit = canEditSettings();
+  const isAll = z.zone==='*';
+  const row = (f) => {
+    const own = Object.prototype.hasOwnProperty.call(z.own, f.key);
+    const from = isAll ? 'default' : 'All zones';
+    const err = SETTINGS_ERR[f.key];
+    return `<tr>
+      <td style="width:42%"><strong>${f.label}</strong>
+        <div style="color:var(--muted);font-size:11.5px;margin-top:2px">${f.help}</div></td>
+      <td style="width:150px"><input data-setting="${f.key}" type="number" step="${f.step}" min="${f.min}" max="${f.max}"
+          value="${SETTINGS_DRAFT ? (SETTINGS_DRAFT[f.key] ?? '') : (own ? z.own[f.key] : '')}" placeholder="${z.inherited[f.key]}" ${edit?'':'disabled'}
+          style="width:100%;text-align:right${err?';border-color:var(--red)':''}">
+        ${err?`<div style="color:var(--red);font-size:11px;margin-top:3px">${err}</div>`:''}</td>
+      <td style="color:var(--muted);font-size:12px">${f.unit}</td>
+      <td style="font-size:12px">${own
+        ? `<span class="tag g">set here</span>${edit?` <button class="sm" data-act="clearSetting" data-key="${f.key}" title="Follow ${from} again">Use ${from} (${z.inherited[f.key]})</button>`:''}`
+        : `<span style="color:var(--muted)">from ${from}: ${z.inherited[f.key]}</span>`}</td></tr>`;
+  };
+  $('#tab-settings').innerHTML = `
+    <section><h2>Dispatch settings</h2>
+      <div class="hint">How far we deliver, when orders share a driver, and how we find drivers.
+        Set a value for <strong>All zones</strong>, or give a zone its own. A blank field follows the value shown beside it.
+        Changes apply to the next quote and the next dispatch round (within seconds); every change is kept.
+        ${edit?'':'<br><strong>Only finance and admin can change these.</strong>'}</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin:12px 0">
+        ${SETTINGS.zones.map((x,xi)=>`<button class="sm ${x.zone===SETTINGS_ZONE?'go':''}" data-act="settingsZone" data-zi="${xi}">${x.label}${
+          Object.keys(x.own).length && x.zone!=='*' ? ` · ${Object.keys(x.own).length} own` : ''}</button>`).join('')}
+      </div>
+      ${z.lastChange?`<div class="hint" style="margin-bottom:10px">Last changed by ${z.lastChange.actor} on ${new Date(z.lastChange.at).toLocaleString('en-ZA')}</div>`:''}
+      ${SETTINGS.groups.map((g)=>`<div style="border:1px solid var(--line);border-radius:12px;padding:14px;margin-bottom:12px">
+        <div style="font-weight:800;margin-bottom:8px">${g.label}</div>
+        ${g.key==='distance'?`<div class="hint" id="crowNote" style="margin-bottom:8px">${settingsCrowKm()}</div>`:''}
+        <table><tbody>${SETTINGS.fields.filter((f)=>f.group===g.key).map(row).join('')}</tbody></table></div>`).join('')}
+      ${edit?`<div style="display:flex;gap:8px">
+        <button class="go" data-act="saveSettings">Save ${z.label}</button>
+        ${Object.keys(z.own).length?`<button data-act="resetSettings">${isAll?'Back to defaults':'Clear everything set for '+z.label}</button>`:''}
+        <span id="settingsMsg" style="align-self:center;color:var(--muted)"></span></div>`:''}
+    </section>`;
+  document.querySelectorAll('[data-setting="maxDeliveryKm"],[data-setting="roadFactor"]').forEach((i)=>
+    i.addEventListener('input',()=>{ const n=$('#crowNote'); if(n) n.textContent=settingsCrowKm(); }));
+}
+async function putSettings(values){
+  const res = await fetch(settingsUrl(),{method:'PUT',
+    headers:{'content-type':'application/json'},body:JSON.stringify({settings:values})});
+  const body = await res.json();
+  if (!res.ok) {
+    // Keep what was typed, so a refused save can be corrected rather than retyped.
+    SETTINGS_DRAFT = {}; document.querySelectorAll('[data-setting]').forEach((i)=>{ SETTINGS_DRAFT[i.dataset.setting]=i.value; });
+    SETTINGS_ERR = body.fields ?? {}; renderSettings();
+    const m=$('#settingsMsg'); if (m) m.textContent = body.error ?? 'Not saved.'; return false; }
+  await loadSettings(); const m=$('#settingsMsg'); if (m) m.textContent='Saved.'; return true;
+}
+function saveSettings(){
+  const z = SETTINGS.zones.find((x)=>x.zone===SETTINGS_ZONE);
+  const values = {};
+  document.querySelectorAll('[data-setting]').forEach((i)=>{
+    const k=i.dataset.setting, own=Object.prototype.hasOwnProperty.call(z.own,k);
+    if (i.value!=='') values[k]=Number(i.value);
+    else if (own) values[k]=null;   // emptied: follow the inherited value again
+  });
+  putSettings(values);
+}
+function clearSetting(key){ putSettings({[key]:null}); }
+async function resetSettings(){
+  const z = SETTINGS.zones.find((x)=>x.zone===SETTINGS_ZONE);
+  if (!confirm(`Clear every value set for ${z.label}?`)) return;
+  await post(settingsUrl('/reset'),{}); loadSettings();
 }
 
 /* -------------------------------------------------------------- integration */
@@ -969,7 +1363,7 @@ document.addEventListener('click', (e) => {
 $('#signout').onclick = async () => { await fetch('/v1/ops/logout', { method: 'POST' }); location.href = '/ops/login'; };
 
 const LOADERS={overview:loadOverview,orders:loadOrders,drivers:loadDrivers,earnings:loadEarnings,
-  messages:loadMessages,pricing:loadPricing,integration:loadIntegration,staff:loadStaff};
+  messages:loadMessages,stores:loadStores,performance:loadPerformance,pricing:loadPricing,settings:loadSettings,integration:loadIntegration,staff:loadStaff};
 $('#refresh').onclick=()=>LOADERS[active]?.();
 $('#days').onchange=()=>LOADERS[active]?.();
 fetch('/v1/ops/me').then((r)=>r.json()).then((d)=>{
@@ -978,8 +1372,23 @@ fetch('/v1/ops/me').then((r)=>r.json()).then((d)=>{
   if (ME.role === 'admin') { TABS.push(['staff','Staff']); renderTabs(); }
 });
 renderTabs(); loadOverview();
-setInterval(()=>{ if(['orders','messages'].includes(active)) LOADERS[active](); }, 6000);
-setInterval(()=>{ if(active==='overview') loadOverview(); }, 20000);
+// Auto-refresh, slow on purpose: the Refresh button is there for "now".
+// It never runs while the tab is hidden, or while someone is busy: typing in
+// any field, a reply half written, or an order open. A refresh redraws the
+// whole tab, and that used to wipe what was being typed.
+const REFRESH_LIVE_MS = 30000;      // Orders, Messages
+const REFRESH_OVERVIEW_MS = 60000;  // Overview
+function userBusy(){
+  const a = document.activeElement;
+  if (a && ['INPUT','TEXTAREA','SELECT'].includes(a.tagName)) return true;
+  if ($('#msgBody')?.value.trim()) return true;
+  if ($('#orderDetail')?.innerHTML.trim()) return true;
+  if (window.getSelection && String(window.getSelection()).trim()) return true;
+  return false;
+}
+const quiet = () => !document.hidden && !userBusy();
+setInterval(()=>{ if(quiet() && ['orders','messages'].includes(active)) LOADERS[active](); }, REFRESH_LIVE_MS);
+setInterval(()=>{ if(quiet() && active==='overview') loadOverview(); }, REFRESH_OVERVIEW_MS);
 </script>
 </body>
 </html>

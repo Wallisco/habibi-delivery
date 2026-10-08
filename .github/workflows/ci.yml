@@ -4,6 +4,8 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Called by the deploy workflow, so production only ships a commit that passed.
+  workflow_call:
 
 jobs:
   test:

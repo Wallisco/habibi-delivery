@@ -9,6 +9,14 @@
       "distribution": "internal",
       "android": { "buildType": "apk" }
     },
+    "staging": {
+      "distribution": "internal",
+      "android": { "buildType": "apk" },
+      "env": {
+        "APP_VARIANT": "staging",
+        "API_BASE_URL": "https://habibi-staging.quikr.co.za"
+      }
+    },
     "production": {
       "autoIncrement": true,
       "android": { "buildType": "app-bundle" },

@@ -96,6 +96,17 @@ CREATE TABLE IF NOT EXISTS rate_cards (
 );
 CREATE INDEX IF NOT EXISTS rate_zone ON rate_cards(zone, created_at);
 
+-- Dispatch settings (src/settings.js): a zone's own overrides, '*' for all
+-- zones. Every change is a new row, like rate cards.
+CREATE TABLE IF NOT EXISTS dispatch_settings (
+  id         INTEGER PRIMARY KEY,
+  zone       TEXT NOT NULL,
+  settings   TEXT NOT NULL,
+  actor      TEXT NOT NULL DEFAULT 'ops',
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS dispatch_settings_zone ON dispatch_settings(zone, created_at);
+
 -- Scheduled surge windows per zone. Versioned like rate cards.
 CREATE TABLE IF NOT EXISTS surge_windows (
   id         INTEGER PRIMARY KEY,
@@ -249,6 +260,11 @@ export class Db {
     `).all(sinceMs).map((r) => JSON.parse(r.payload));
   }
 
+  /** How many orders this driver has delivered, ever (for "a new driver's first trips"). */
+  deliveredCount(driverId) {
+    return this.sql.prepare("SELECT COUNT(*) n FROM jobs WHERE driver_id = ? AND status = 'DELIVERED'").get(String(driverId)).n;
+  }
+
   /** Any job by id, live or long finished. */
   loadJob(id) {
     const r = this.sql.prepare('SELECT payload FROM jobs WHERE id = ?').get(id);
@@ -301,6 +317,27 @@ export class Db {
     `).all(zone, limit).map((r) => ({
       card: JSON.parse(r.card), actor: r.actor, at: r.created_at,
     }));
+  }
+
+  saveDispatchSettings(zone, values, actor = 'ops') {
+    this.sql.prepare(`
+      INSERT INTO dispatch_settings (zone, settings, actor, created_at) VALUES (?,?,?,?)
+    `).run(zone, JSON.stringify(values), actor, Date.now());
+  }
+
+  /** The latest overrides per zone. */
+  loadDispatchSettings() {
+    return this.sql.prepare(`
+      SELECT zone, settings FROM dispatch_settings
+      WHERE id IN (SELECT MAX(id) FROM dispatch_settings GROUP BY zone)
+    `).all().map((r) => ({ zone: r.zone, values: JSON.parse(r.settings) }));
+  }
+
+  dispatchSettingsHistory(zone, limit = 20) {
+    return this.sql.prepare(`
+      SELECT settings, actor, created_at FROM dispatch_settings
+      WHERE zone = ? ORDER BY id DESC LIMIT ?
+    `).all(zone, limit).map((r) => ({ values: JSON.parse(r.settings), actor: r.actor, at: r.created_at }));
   }
 
   saveSurge(zone, windows, actor = 'ops') {

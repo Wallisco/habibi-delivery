@@ -16,7 +16,7 @@ const collect = (app, jobId) => app.inject({ method: 'POST', url: `/v1/jobs/${jo
 const events = (app, type) => app.engine.outbound.filter((e) => e.type === type);
 
 test('no tracking link leaves the service before collection', async (t) => {
-  const app = build({ dbPath: ':memory:', partnerAuth: false, opsAuth: false });
+  const app = build({ dbPath: ':memory:', partnerAuth: false, opsAuth: false, driverAuth: false });
   t.after(() => app.close());
   const { res, jobId, token } = await newJob(app);
 
@@ -39,7 +39,7 @@ test('no tracking link leaves the service before collection', async (t) => {
 });
 
 test('delivery.collected releases the link, exactly once', async (t) => {
-  const app = build({ dbPath: ':memory:', partnerAuth: false, opsAuth: false });
+  const app = build({ dbPath: ':memory:', partnerAuth: false, opsAuth: false, driverAuth: false });
   t.after(() => app.close());
   const { jobId, token } = await newJob(app, { externalId: 'KC-1' });
 
@@ -67,7 +67,7 @@ test('delivery.collected releases the link, exactly once', async (t) => {
 });
 
 test('the job id never opens tracking', async (t) => {
-  const app = build({ dbPath: ':memory:', partnerAuth: false, opsAuth: false });
+  const app = build({ dbPath: ':memory:', partnerAuth: false, opsAuth: false, driverAuth: false });
   t.after(() => app.close());
   const { jobId } = await newJob(app);
   await collect(app, jobId);
@@ -75,7 +75,7 @@ test('the job id never opens tracking', async (t) => {
 });
 
 test('the partner cannot choose the job id or token', async (t) => {
-  const app = build({ dbPath: ':memory:', partnerAuth: false, opsAuth: false });
+  const app = build({ dbPath: ':memory:', partnerAuth: false, opsAuth: false, driverAuth: false });
   t.after(() => app.close());
   const { jobId, token } = await newJob(app, { id: 'JOB-1', trackingToken: 'guessable' });
   assert.notEqual(jobId, 'JOB-1');
@@ -84,7 +84,7 @@ test('the partner cannot choose the job id or token', async (t) => {
 
 test('a finished order hides location, then the link expires', async (t) => {
   process.env.TRACKING_LINK_TTL_MIN = '60';
-  const app = build({ dbPath: ':memory:', partnerAuth: false, opsAuth: false });
+  const app = build({ dbPath: ':memory:', partnerAuth: false, opsAuth: false, driverAuth: false });
   t.after(() => app.close());
   const { jobId, token } = await newJob(app);
   await collect(app, jobId);

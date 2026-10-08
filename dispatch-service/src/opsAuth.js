@@ -19,6 +19,7 @@
  * one on the server with `node scripts/ops-user.js add --email … --role admin`.
  */
 import { createHash, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
+import { markStaging } from './stagingBanner.js';
 
 export const ROLES = ['viewer', 'ops', 'finance', 'admin'];
 export const COOKIE = 'ops_sid';
@@ -95,7 +96,11 @@ export function allowed(role, method, path) {
   if (/^\/v1\/ops\/rates\/[^/]+\/preview$/.test(p)) return true;
   if (role === 'admin') return true;
   if (role === 'viewer') return false;
-  const money = p.startsWith('/v1/ops/rates') || p.startsWith('/v1/ops/surge') || p.startsWith('/v1/ops/ledger');
+  // The CM2 cost assumptions are a finance number as much as an ops one.
+  if (p === '/v1/ops/performance/settings') return role === 'ops' || role === 'finance';
+  // Settings change what customers pay (the extra-km fee), so they sit with rates.
+  const money = p.startsWith('/v1/ops/rates') || p.startsWith('/v1/ops/surge') || p.startsWith('/v1/ops/ledger')
+    || p.startsWith('/v1/ops/settings');
   return money ? role === 'finance' : role === 'ops';
 }
 
@@ -205,8 +210,9 @@ const PUBLIC_OPS = new Set(['/v1/ops/login', '/v1/ops/logout']);
  * @param users    OpsUsers
  * @param enabled  false only in unit tests that exercise business logic
  * @param secure   mark the cookie Secure (on behind HTTPS in production)
+ * @param staging  show the staging banner on the login page
  */
-export function registerOpsAuth(app, users, { enabled = true, secure = process.env.NODE_ENV === 'production' } = {}) {
+export function registerOpsAuth(app, users, { enabled = true, secure = process.env.NODE_ENV === 'production', staging = false } = {}) {
   const failures = new Map(); // ip|email -> [timestamps]
   const tooMany = (key) => {
     const now = Date.now();
@@ -259,7 +265,7 @@ export function registerOpsAuth(app, users, { enabled = true, secure = process.e
 
   app.get('/ops/login', async (req, reply) => {
     reply.type('text/html').header('cache-control', 'no-store').header('x-frame-options', 'DENY');
-    return LOGIN_HTML(users.count() === 0);
+    return markStaging(LOGIN_HTML(users.count() === 0), staging);
   });
 
   app.post('/v1/ops/login', async (req, reply) => {

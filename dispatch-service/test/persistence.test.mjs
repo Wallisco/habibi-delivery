@@ -58,7 +58,7 @@ test('state survives a restart', async (t) => {
   t.after(clean);
 
   /* ---------------------------------------------- first process lifetime */
-  let app = build({ dbPath: DBP, partnerAuth: false, opsAuth: false });
+  let app = build({ dbPath: DBP, partnerAuth: false, opsAuth: false, driverAuth: false });
 
   const driverId = await onboard(app, '0821234567', 'Milnerton');
   await app.inject({ method: 'POST', url: `/v1/driver/${driverId}/state`,
@@ -80,7 +80,7 @@ test('state survives a restart', async (t) => {
   await app.close();
 
   /* --------------------------------------------- second process lifetime */
-  app = build({ dbPath: DBP, partnerAuth: false, opsAuth: false });
+  app = build({ dbPath: DBP, partnerAuth: false, opsAuth: false, driverAuth: false });
   t.after(async () => { shut(app); await app.close(); });
 
   const stats = (await app.inject({ url: '/v1/ops/stats' })).json();
@@ -111,7 +111,7 @@ test('a completed delivery leaves durable evidence', async (t) => {
   clean();
   t.after(clean);
 
-  let app = build({ dbPath: DBP, partnerAuth: false, opsAuth: false });
+  let app = build({ dbPath: DBP, partnerAuth: false, opsAuth: false, driverAuth: false });
   const created = await app.inject({ method: 'POST', url: '/v1/keychat/jobs',
     payload: { storeId: 'S1', zone: 'Z', pickup: DBN, dropoff: near(100) } });
   const jobId = created.json().jobId;
@@ -125,7 +125,7 @@ test('a completed delivery leaves durable evidence', async (t) => {
   shut(app);
   await app.close();
 
-  app = build({ dbPath: DBP, partnerAuth: false, opsAuth: false });
+  app = build({ dbPath: DBP, partnerAuth: false, opsAuth: false, driverAuth: false });
   t.after(async () => { shut(app); await app.close(); });
 
   const after = app.engine.db.stats();
@@ -140,14 +140,14 @@ test('after a restart the back office still shows finished orders and statements
   const { tmpdir } = await import('node:os');
   const { join } = await import('node:path');
   const path = join(mkdtempSync(join(tmpdir(), 'dispatch-')), 'd.db');
-  let app = build({ dbPath: path, partnerAuth: false, opsAuth: false });
+  let app = build({ dbPath: path, partnerAuth: false, opsAuth: false, driverAuth: false });
   const body = { externalId: 'KC-HIST-1', storeId: 'S1', zone: 'Milnerton', customerCharge: 40,
     pickup: { lat: -33.833, lng: 18.531 }, dropoff: { lat: -33.8325, lng: 18.5311 } };
   const { jobId } = (await app.inject({ method: 'POST', url: '/v1/keychat/jobs', payload: body })).json();
   await app.inject({ method: 'POST', url: `/v1/ops/orders/${jobId}/close`, payload: { outcome: 'DELIVERED', reason: 'test' } });
   await app.close();
 
-  app = build({ dbPath: path, partnerAuth: false, opsAuth: false });
+  app = build({ dbPath: path, partnerAuth: false, opsAuth: false, driverAuth: false });
   t.after(() => app.close());
   const orders = (await app.inject({ url: '/v1/ops/orders?days=7' })).json();
   assert.ok(JSON.stringify(orders).includes(jobId), 'delivered order still listed after restart');

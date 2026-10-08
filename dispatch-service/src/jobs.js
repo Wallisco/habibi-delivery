@@ -82,7 +82,15 @@ export class JobStore {
       pickup: input.pickup,
       dropoff: input.dropoff,
       bagCount: input.bagCount ?? 1,
-      itemCount: input.itemCount ?? 1,
+      // What is in the order (validated by items.js at intake), and the count
+      // that follows from it when Keychat sends the list.
+      items: Array.isArray(input.items) && input.items.length ? input.items : null,
+      itemCount: Array.isArray(input.items) && input.items.length
+        ? input.items.reduce((a, it) => a + (it.qty ?? 1), 0)
+        : (input.itemCount ?? 1),
+      // Kept on the job so the driver is told to hand it over in person. It
+      // used to be dropped here, so the warning never showed.
+      ageRestricted: Boolean(input.ageRestricted),
 
       // Road distance. Keychat routes the order for its own ETA, so we take
       // their number when they send it rather than paying a routing API to
@@ -111,6 +119,10 @@ export class JobStore {
       // What Keychat charged the customer for delivery, so reconciliation is
       // arithmetic rather than a negotiation.
       customerCharge: input.customerCharge != null ? Number(input.customerCharge) : null,
+      // The basket total (for GMV) and a fingerprint of Keychat's customer id
+      // (for monthly transacting users; customerRef.js). Both optional, v1.3.
+      orderValue: input.orderValue != null ? Number(input.orderValue) : null,
+      customerRef: input.customerRef ?? null,
       quoteId: input.quoteId ?? null,
       fee: input.fee ?? 35,
       requiredCapabilities: input.requiredCapabilities ?? [],
@@ -141,10 +153,33 @@ export class JobStore {
   pending() { return this.all().filter((j) => j.status === 'PENDING'); }
   pendingInZone(zone) { return this.pending().filter((j) => j.zone === zone); }
 
-  setStatus(id, status, patch = {}) {
+  /** Change fields that are not a status change (no history entry). */
+  update(id, patch) {
     const j = this.byId.get(id);
     if (!j) return null;
-    j.history.push({ at: Date.now(), from: j.status, to: status });
+    Object.assign(j, patch);
+    this.db?.saveJob(j);
+    return j;
+  }
+
+  /**
+   * @param note  optional, kept on the history entry: { driverId, by, reason, kind }.
+   *              This is how a driver's app learns why a job left them
+   *              (cancelled, closed, reassigned, cleared by the office).
+   */
+  /** Change fields without a status change (no history entry). */
+  patch(id, fields) {
+    const j = this.byId.get(id);
+    if (!j) return null;
+    Object.assign(j, fields);
+    this.db?.saveJob(j);
+    return j;
+  }
+
+  setStatus(id, status, patch = {}, note = null) {
+    const j = this.byId.get(id);
+    if (!j) return null;
+    j.history.push({ at: Date.now(), from: j.status, to: status, ...(note ?? {}) });
     Object.assign(j, patch, { status });
     this.db?.saveJob(j);
     return j;

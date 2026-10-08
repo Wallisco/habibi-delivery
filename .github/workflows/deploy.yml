@@ -7,8 +7,12 @@ on:
   workflow_dispatch:
 
 # Staging first (Keychat's integration environment, simulated drivers), then
-# production. If staging fails its health check, production is not touched.
+# production. Production runs only when CI has passed on this same commit and
+# staging passed its health check; otherwise production is not touched.
 jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
   staging:
     runs-on: ubuntu-latest
     steps:
@@ -35,7 +39,9 @@ jobs:
             echo "staging deployed"
 
   production:
-    needs: staging
+    needs: [ci, staging]
+    # Only from main: a manual run started on a branch must not reach production.
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - name: Deploy production over SSH
@@ -48,7 +54,8 @@ jobs:
             set -e
             cd /opt/dispatch
             git fetch --all
-            git reset --hard origin/main
+            # The commit CI tested, not whatever main points at by now.
+            git reset --hard ${{ github.sha }}
             cd dispatch-service
             npm ci --omit=dev || npm install --omit=dev
             # Back up the database before restarting. Cheap insurance.

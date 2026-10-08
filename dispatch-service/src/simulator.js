@@ -12,6 +12,13 @@
  *   SIMFAIL  collected, then closed as failed (delivery.failed)
  *   SIMSLOW  every step takes 3× longer
  *
+ * And one more hook, NOSIM: simulated drivers leave that order alone, so a
+ * real phone on staging gets the offer.
+ *
+ * Like the app, a simulated driver holds a sign-in token and checks
+ * /v1/driver/current as it goes: a job the office cancelled, closed, reassigned
+ * or cleared is dropped, and an office sign-out (401) stops the driver.
+ *
  * The simulator never runs unless DISPATCH_ENV=staging (see server.js), and
  * its drivers are ordinary accounts named "Test driver" with SIM- phones.
  */
@@ -22,6 +29,7 @@ import { ONBOARDING, REQUIRED_DOCS } from './accounts.js';
 export const STEPS = { accept: 8, collect: 50, approach: 60, complete: 25 };
 const MAX_DRIVERS = 25;
 const TERMINAL = ['DELIVERED', 'FAILED', 'CANCELLED'];
+const isNoSim = (job) => /NOSIM/i.test(job?.externalId ?? '');
 
 const offset = (p, metres) => ({
   lat: (p.lat ?? p.latitude) + metres / 111320,
@@ -35,7 +43,7 @@ const lerp = (a, b, f) => ({
 export class Simulator {
   /**
    * @param app       the Fastify app (driver calls go through app.inject)
-   * @param engine    { supply, jobs, accounts, pendingOffers }
+   * @param engine    { supply, jobs, accounts, pendingOffers, driverTokens }
    * @param closeJob  (job, { outcome, reason, actor }) — the back office close
    * @param speed     1 in staging; tests pass a large number to compress time
    */
@@ -47,6 +55,7 @@ export class Simulator {
     this.log = log;
     this.runs = new Map();   // driverId -> { jobId, step, dueAt, collectedAt, slow, fail }
     this.offerSeen = new Map(); // driverId -> ms the offer was first seen
+    this.tokens = new Map();    // driverId -> sign-in token
     this.timer = null;
     this.busy = false;
   }
@@ -61,11 +70,16 @@ export class Simulator {
 
   simDrivers() { return this.e.accounts.all().filter((a) => String(a.phone).startsWith('SIM-')); }
 
-  /** Make sure a free simulated driver is standing near this order's store. */
-  onJob(job) {
+  /**
+   * Make sure a free simulated driver is standing near this order's store.
+   * `exclude`: an order the office put back in the pool goes to someone other
+   * than the driver it was taken from.
+   */
+  onJob(job, { exclude = null } = {}) {
+    if (isNoSim(job)) return null;
     const free = this.simDrivers().find((a) => {
       const d = this.e.supply.get(a.driverId);
-      return !this.runs.has(a.driverId) && !d?.activeJobId;
+      return a.driverId !== exclude && !this.runs.has(a.driverId) && !d?.activeJobId;
     });
     let acct = free;
     if (!acct) {
@@ -81,11 +95,13 @@ export class Simulator {
       state: SUPPLY.ZONE_COMMITTED, zone: job.zone ?? null, position: offset(job.pickup, 250),
       phone: acct.phone,
     });
+    // Signed in, the way the app is (again, after an office sign-out).
+    if (!this.tokens.has(acct.driverId)) this.tokens.set(acct.driverId, this.e.driverTokens.issue(acct.driverId));
     return acct.driverId;
   }
 
-  async call(method, url, payload) {
-    const res = await this.app.inject({ method, url, payload });
+  async call(method, url, payload, headers) {
+    const res = await this.app.inject({ method, url, payload, headers });
     if (res.statusCode >= 400) this.log?.warn?.({ url, status: res.statusCode, body: res.body }, 'simulator call refused');
     return res;
   }
@@ -105,10 +121,16 @@ export class Simulator {
           // Idle: stay fresh for dispatch, and take any offer after a pause.
           if (d.state !== SUPPLY.OFFLINE && d.position) this.e.supply.upsert(id, { position: d.position });
           const offer = this.e.pendingOffers.get(id);
-          if (!offer) { this.offerSeen.delete(id); continue; }
+          if (!offer || offer.expiresAt <= now) { this.offerSeen.delete(id); continue; }
           const first = this.offerSeen.get(id) ?? now;
           this.offerSeen.set(id, first);
           const job = this.e.jobs.get(offer.jobId);
+          if (isNoSim(job)) {
+            // Pass it on at once, so it reaches the real phone it is meant for.
+            this.offerSeen.delete(id);
+            await this.call('POST', `/v1/jobs/${offer.jobId}/decline`, { driverId: id });
+            continue;
+          }
           const slow = /SIMSLOW/i.test(job?.externalId ?? '');
           if (now - first < this.ms(STEPS.accept, slow)) continue;
           this.offerSeen.delete(id);
@@ -121,6 +143,33 @@ export class Simulator {
             fail: /SIMFAIL/i.test(job?.externalId ?? ''), legStart: now,
           });
           continue;
+        }
+
+        // Simulated drivers keep it simple: one run at a time. A next-job or
+        // add-to-run offer is passed on at once rather than left to run out.
+        const busyOffer = this.e.pendingOffers.get(id);
+        if (busyOffer && busyOffer.expiresAt > now) {
+          await this.call('POST', `/v1/jobs/${busyOffer.jobId}/decline`, { driverId: id });
+        }
+
+        // Ask dispatch what this driver still carries, as the app does.
+        const token = this.tokens.get(id);
+        const cur = await this.call('GET', `/v1/driver/current?jobs=${run.jobIds.slice(run.i).join(',')}`,
+          undefined, token ? { authorization: `Bearer ${token}` } : {});
+        if (cur.statusCode === 401) {
+          // Signed out by the office: stop where we are, like a phone at sign-in.
+          this.runs.delete(id);
+          this.tokens.delete(id);
+          this.log?.info?.({ driverId: id }, 'simulated driver signed out by the office');
+          continue;
+        }
+        if (cur.statusCode === 200) {
+          const gone = new Set(cur.json().ended.filter((e) => e.reason !== 'DELIVERED').map((e) => e.jobId));
+          if (gone.has(run.jobIds[run.i])) {
+            this.log?.info?.({ driverId: id, jobId: run.jobIds[run.i] }, 'simulated driver dropped a job the office ended');
+            this.next(id, run, now);
+            continue;
+          }
         }
 
         const job = this.e.jobs.get(run.jobIds[run.i]);

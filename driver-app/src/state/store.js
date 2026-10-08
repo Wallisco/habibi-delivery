@@ -5,6 +5,35 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { S as SUPPLY, transition, estimateRoamingPremium, acceptsJobKind } from '../lib/supplyState';
 import { createApi, makeDemoJob, DEMO } from '../lib/api';
 import { enqueue, drain, isBlocked, readQueue } from '../lib/queue';
+import { reconcile, dropJobs } from '../lib/currentJob';
+import * as ImagePicker from 'expo-image-picker';
+import { enqueuePhoto, drainPhotos, readPhotos } from '../lib/photoQueue';
+
+/** How often waiting collection photos are retried. */
+export const PHOTO_RETRY_MS = 30000;
+
+/** How often the app asks dispatch what it is carrying (spec: within 10 s). */
+export const CURRENT_CHECK_MS = 10000;
+/** Most orders on one run (dispatch-service/src/batching.js MAX_BATCH). */
+export const MAX_RUN = 2;
+
+/**
+ * Can dispatch still add an order to this run? Only while the driver is on the
+ * way to collect their only order (dispatch checks again: same pickup area,
+ * ready within 5 minutes of the first order).
+ */
+export const canStackOnRun = (s) =>
+  !!s.job && s.jobs.filter((j) => !j.done).length < MAX_RUN
+  && s.stopIndex === 0 && (s.stage ?? 'NAVIGATE_STORE') === 'NAVIGATE_STORE';
+
+/**
+ * Can dispatch line up a next job? Only with one order on board, already
+ * collected, and nothing lined up yet (dispatch checks the timing: the driver
+ * must reach the next store by the time its food is ready).
+ */
+export const canChainOnRun = (s) =>
+  !!s.job && !s.next && s.jobs.filter((j) => !j.done).length === 1
+  && (s.stopIndex >= 1 || s.stage === 'NAVIGATE_CUSTOMER');
 
 const Ctx = createContext(null);
 export const useApp = () => useContext(Ctx);
@@ -17,6 +46,7 @@ const initial = {
   position: null,
   trail: [],
   offer: null,
+  next: null,           // the job lined up after the current drop
   job: null,
   jobs: [],
   batchId: null,
@@ -41,11 +71,14 @@ function reducer(s, a) {
     case 'SUPPLY': return { ...s, supply: a.state };
     case 'POSITION': return { ...s, position: a.position, trail: [...s.trail, a.position].slice(-120) };
     case 'OFFER': return { ...s, offer: a.offer };
+    case 'NEXT': return { ...s, next: a.next ?? null };
     case 'ACCEPT': {
       const jobs = a.jobs?.length ? a.jobs : (a.job ? [a.job] : []);
       return {
         ...s,
         offer: null,
+        // The lined-up job has started: it is no longer "next".
+        next: s.next && jobs.some((j) => j.id === s.next.id) ? null : s.next,
         job: jobs[0] ?? null,
         jobs,
         batchId: a.batchId ?? null,
@@ -63,6 +96,11 @@ function reducer(s, a) {
       // food in the box for the remaining stops.
       const jobs = s.jobs.map((j) => (j.id === a.jobId ? { ...j, done: true } : j));
       return { ...s, jobs };
+    }
+    case 'DROP_JOBS': {
+      // The office ended some orders on this run; carry on with the rest.
+      const next = dropJobs(s, a.jobIds);
+      return { ...s, ...next, job: next.jobs[0] ?? null, otpAttempts: 0 };
     }
     case 'STAGE': return { ...s, stage: a.stage };
     case 'SCANNED': return { ...s, scanned: a.count };
@@ -116,11 +154,24 @@ function normaliseServerJob(j) {
   };
 }
 
-export function AppProvider({ children }) {
+/**
+ * @param onJobEnded  called when the office ended the whole run, after the
+ *                    message is set: the app goes Home (App.js).
+ */
+export function AppProvider({ children, onJobEnded }) {
   const [state, dispatch] = useReducer(reducer, initial);
-  const api = useRef(createApi(null));
+  // Any 401 from dispatch signs the driver out (see signOut below).
+  const unauthorized = useRef(() => {});
+  const makeApi = (token, driverId) =>
+    createApi(token, driverId, { onUnauthorized: () => unauthorized.current() });
+  const api = useRef(makeApi(null));
   const watcher = useRef(null);
   const offerTimer = useRef(null);
+  // The latest state, for timers and callbacks that outlive a render.
+  const latest = useRef(state);
+  latest.current = state;
+  const jobEnded = useRef(onJobEnded);
+  jobEnded.current = onJobEnded;
 
   const ACTIVE_KEY = 'active_delivery_v1';
 
@@ -133,8 +184,8 @@ export function AppProvider({ children }) {
         const raw = await SecureStore.getItemAsync('driver');
         driver = raw ? JSON.parse(raw) : null;
       } catch { /* first run */ }
-      api.current = createApi(token, driver?.id);
-      const q = await readQueue();
+      api.current = makeApi(token, driver?.id);
+      const q = await readQueue(driver?.id);
 
       // Restore an in-flight delivery. Without this, backgrounding the app or
       // a Metro reload leaves a driver holding food with no destination.
@@ -166,7 +217,7 @@ export function AppProvider({ children }) {
     } else {
       AsyncStorage.removeItem(ACTIVE_KEY).catch(() => {});
     }
-  }, [state.job, state.stage, state.scanned, state.ready]);
+  }, [state.job, state.jobs, state.stops, state.stopIndex, state.stage, state.scanned, state.ready]);
 
   // ------------------------------------------------------------ location
   const startLocation = useCallback(async () => {
@@ -238,10 +289,8 @@ export function AppProvider({ children }) {
     dispatch({ type: 'SUPPLY', state: next });
   }, [state.supply, state.job, startLocation, stopLocation]);
 
-  // ------------------------------------------------- demo offer generator
-  // The server knows what this driver is carrying. If local state and the
-  // server disagree, the server wins -- it survived the restart, we may not
-  // have.
+  // After a restart, come back online if dispatch still has us online. What
+  // we are carrying is the current-job check's business (below).
   const reconciled = useRef(false);
   useEffect(() => {
     if (DEMO || !state.ready || !state.driver || reconciled.current) return;
@@ -249,33 +298,130 @@ export function AppProvider({ children }) {
     (async () => {
       try {
         const shift = await api.current.fetchShift();
-        if (shift.activeJob && !state.job) {
-          dispatch({
-            type: 'ACCEPT',
-            jobs: (shift.activeJobs?.length ? shift.activeJobs : [shift.activeJob])
-              .map(normaliseServerJob),
-            batchId: shift.activeBatchId ?? null,
-            stops: shift.activeStops ?? [],
-            stage: shift.activeStage ?? 'NAVIGATE_STORE',
-          });
-          dispatch({ type: 'TOAST', toast: 'Picked up your delivery where you left off.' });
-        }
         if (shift.state && shift.state !== SUPPLY.OFFLINE) {
           dispatch({ type: 'SUPPLY', state: shift.state });
           startLocation();
         }
       } catch { /* offline; local state stands */ }
     })();
-  }, [state.ready, state.driver, state.job, startLocation]);
+  }, [state.ready, state.driver, startLocation]);
+
+  // ------------------------------------------------------- never stuck
+  // Ask dispatch what we are carrying, every 10 seconds and on every screen
+  // change (App.js). The server wins: if the office cancelled, closed,
+  // reassigned or cleared a job, the driver is told in one sentence and goes
+  // Home; if the office signed them out, they go to sign-in. No signal changes
+  // nothing -- a driver in a dead spot keeps their delivery.
+  const checking = useRef(false);
+  const checkNow = useCallback(async () => {
+    const s = latest.current;
+    if (DEMO || checking.current || !s.ready || !s.token || !api.current.current) return;
+    checking.current = true;
+    let result;
+    try {
+      result = { ok: true, body: await api.current.current(s.jobs.filter((j) => !j.done).map((j) => j.id)) };
+      dispatch({ type: 'CONNECTIVITY', online: true });
+    } catch (e) {
+      result = { ok: false, status: e.status ?? 0 };
+    } finally {
+      checking.current = false;
+    }
+    const now = latest.current;
+    if (now.token !== s.token) return;   // signed out meanwhile
+    const r = reconcile(now, result);
+    if (r.action === 'signout') {
+      unauthorized.current();
+    } else if (r.action === 'end') {
+      dispatch({ type: 'FINISH' });
+      if (r.message) dispatch({ type: 'TOAST', toast: r.message });
+      jobEnded.current?.(r);
+    } else if (r.action === 'drop') {
+      dispatch({ type: 'DROP_JOBS', jobIds: r.jobIds });
+      if (r.message) dispatch({ type: 'TOAST', toast: r.message });
+    } else if (r.action === 'restore') {
+      const startedNext = now.next && r.jobs.some((j) => j.id === now.next.id);
+      dispatch({ type: 'ACCEPT', jobs: r.jobs.map(normaliseServerJob), batchId: r.batchId,
+        stops: r.stops, stopIndex: r.stopIndex, stage: r.stage });
+      dispatch({ type: 'TOAST', toast: startedNext
+        ? `On to your next job: collect at ${now.next.pickup?.name ?? 'the store'}.`
+        : 'Picked up your delivery where you left off.' });
+    }
+
+    // The job lined up after this drop: keep it in step with dispatch.
+    if (result.ok) {
+      const theirs = result.body?.next ?? null;
+      const mine = latest.current.next;
+      const started = mine && (result.body?.jobs ?? []).some((j) => j.id === mine.id);
+      if (mine && !theirs && !started) {
+        dispatch({ type: 'NEXT', next: null });
+        dispatch({ type: 'TOAST', toast: 'Your next job went to another driver because this drop is taking longer. Your current delivery is not affected.' });
+      } else if (theirs && mine?.id !== theirs.id) {
+        dispatch({ type: 'NEXT', next: normaliseServerJob(theirs) });
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    if (DEMO || !state.ready || !state.token) return;
+    checkNow();
+    const t = setInterval(checkNow, CURRENT_CHECK_MS);
+    return () => clearInterval(t);
+  }, [state.ready, state.token, checkNow]);
+
+  // ----------------------------------------------- collection photos
+  // Uploaded in the background; a dead spot only delays them.
+  const uploading = useRef(false);
+  const uploadPhotos = useCallback(async () => {
+    const s = latest.current;
+    if (DEMO || uploading.current || !s.token || !s.driver) return;
+    uploading.current = true;
+    try {
+      const res = await drainPhotos(api.current, s.driver.id);
+      if (res.unauthorized) unauthorized.current();
+    } finally {
+      uploading.current = false;
+    }
+  }, []);
+
+  useEffect(() => {
+    if (DEMO || !state.ready || !state.token) return;
+    uploadPhotos();
+    const t = setInterval(async () => {
+      if ((await readPhotos(latest.current.driver?.id)).length) uploadPhotos();
+    }, PHOTO_RETRY_MS);
+    return () => clearInterval(t);
+  }, [state.ready, state.token, uploadPhotos]);
+
+  /**
+   * Take the photo of the order at the store. Returns the photo's local uri,
+   * or null if the driver backed out or refused the camera. It is queued at
+   * once and uploaded when there is signal.
+   */
+  const takeCollectionPhoto = async (jobIds) => {
+    const perm = await ImagePicker.requestCameraPermissionsAsync();
+    if (perm.status !== 'granted') {
+      dispatch({ type: 'TOAST', toast: 'Allow the camera to take the collection photo.' });
+      return null;
+    }
+    const shot = await ImagePicker.launchCameraAsync({ mediaTypes: ['images'], quality: 0.4, exif: false });
+    const uri = shot.canceled ? null : shot.assets?.[0]?.uri;
+    if (!uri) return null;
+    await enqueuePhoto({ uri, jobIds, driverId: latest.current.driver?.id ?? null });
+    uploadPhotos();
+    return uri;
+  };
 
   // Real mode: poll the dispatcher for an offer. Production would use FCM/APNs
   // so an offer wakes the device; polling keeps the app honest without push
   // infrastructure and is fine at this stage.
+  // While carrying a job, keep looking only if a second order could still join
+  // the run (on-the-run stacking).
+  const stackable = canStackOnRun(state) || canChainOnRun(state);
   useEffect(() => {
     if (DEMO || !state.driver) return;
     const canReceive = [SUPPLY.ZONE_COMMITTED, SUPPLY.ROAMING_ELIGIBLE, SUPPLY.RETURNING]
       .includes(state.supply);
-    if (!canReceive || state.job) return;
+    if (!canReceive || (state.job && !stackable)) return;
 
     const poll = setInterval(async () => {
       try {
@@ -289,6 +435,8 @@ export function AppProvider({ children }) {
             jobs: (o.jobs ?? [o.job]).map(normaliseServerJob),
             stops: o.stops ?? [],
             summary: o.summary ?? null,
+            addsToRun: Boolean(o.addsToRun),
+            next: o.next ?? null,
           } });
         }
       } catch {
@@ -296,7 +444,7 @@ export function AppProvider({ children }) {
       }
     }, 3000);
     return () => clearInterval(poll);
-  }, [state.supply, state.job, state.offer, state.driver]);
+  }, [state.supply, state.job, state.offer, state.driver, stackable]);
 
   useEffect(() => {
     if (!DEMO) return;
@@ -305,7 +453,7 @@ export function AppProvider({ children }) {
     if (!canReceive || state.job || state.offer) return;
 
     offerTimer.current = setTimeout(async () => {
-      const blocked = await isBlocked();
+      const blocked = await isBlocked(state.driver?.id);
       if (blocked.blocked) {
         dispatch({ type: 'TOAST', toast: blocked.reason });
         return;
@@ -322,7 +470,7 @@ export function AppProvider({ children }) {
   // ------------------------------------------------------------- actions
   const signIn = async (phone) => {
     const res = await api.current.signIn(phone);
-    api.current = createApi(res.token, res.driver.id);
+    api.current = makeApi(res.token, res.driver.id);
     try {
       await SecureStore.setItemAsync('token', res.token);
       await SecureStore.setItemAsync('driver', JSON.stringify(res.driver));
@@ -330,30 +478,50 @@ export function AppProvider({ children }) {
     dispatch({ type: 'SIGN_IN', token: res.token, driver: res.driver });
   };
 
+  // Also what a 401 does: the office signed this driver out. Queued offline
+  // completions stay on the phone for when they sign in again.
   const signOut = async () => {
     stopLocation();
+    api.current = makeApi(null);
+    reconciled.current = false;
+    dispatch({ type: 'SIGN_OUT' });
     try {
       await SecureStore.deleteItemAsync('token');
       await SecureStore.deleteItemAsync('driver');
     } catch { /* ignore */ }
-    dispatch({ type: 'SIGN_OUT' });
   };
+  unauthorized.current = signOut;
 
   const acceptOffer = async () => {
     if (!state.offer) return;
     if (!DEMO) {
+      const addsToRun = !!state.job;
       try {
+        // On the run, dispatch answers with the whole run: replace what we hold.
         const res = await api.current.acceptJob(state.offer.id);
+        if (res.next) {
+          // Lined up after this drop. The run in the box carries on unchanged.
+          const lined = normaliseServerJob(res.next);
+          dispatch({ type: 'OFFER', offer: null });
+          dispatch({ type: 'NEXT', next: lined });
+          dispatch({ type: 'TOAST', toast: `Next job lined up: collect at ${lined.pickup?.name ?? 'the store'} after this drop.` });
+          return;
+        }
         dispatch({
           type: 'ACCEPT',
           jobs: (res.jobs ?? [res.job]).map(normaliseServerJob),
           batchId: res.batchId ?? null,
           stops: res.stops ?? [],
         });
+        if (addsToRun) dispatch({ type: 'TOAST', toast: 'Second order added to your run.' });
         return;
-      } catch {
+      } catch (e) {
         dispatch({ type: 'OFFER', offer: null });
-        dispatch({ type: 'TOAST', toast: 'That job went to someone else.' });
+        // Dispatch's own reason ("Offer expired", "Offer no longer valid"),
+        // not a guess. Only a failure to reach dispatch gets a generic line.
+        dispatch({ type: 'TOAST', toast: e.status === 409 && e.message
+          ? `${e.message}.`.replace(/\.\.$/, '.')
+          : 'Could not reach dispatch. The offer was not accepted.' });
         return;
       }
     }
@@ -365,23 +533,46 @@ export function AppProvider({ children }) {
     dispatch({ type: 'OFFER', offer: null });
   };
 
+  // Ran out of time. Not a decline: dispatch expires it and offers it to
+  // someone else, and this driver can see it again sooner.
+  const expireOffer = () => {
+    if (!latest.current.offer) return;
+    dispatch({ type: 'OFFER', offer: null });
+    dispatch({ type: 'TOAST', toast: 'Offer expired.' });
+  };
+
   const completeJob = async (evidence) => {
+    const driverId = state.driver?.id ?? null;
     if (state.online) {
       try {
         await api.current.postCompletion(evidence);
-      } catch {
-        await enqueue(evidence);
+      } catch (e) {
+        // Refused for good (cancelled or closed meanwhile): nothing to keep.
+        // Anything else -- no signal, a 5xx, signed out -- is kept and synced later.
+        if (![404, 409, 410, 422].includes(e.status)) await enqueue(evidence, driverId);
       }
     } else {
-      await enqueue(evidence);
+      await enqueue(evidence, driverId);
     }
-    const q = await readQueue();
+    const q = await readQueue(driverId);
     dispatch({ type: 'PENDING', count: q.length });
-    dispatch({ type: 'FINISH' });
+    // Only the last drop ends the run; the rest of the box is still to go.
+    const others = latest.current.jobs.filter((j) => !j.done && j.id !== evidence.jobId);
+    const lined = latest.current.next;
+    if (others.length) {
+      dispatch({ type: 'JOB_DONE', jobId: evidence.jobId });
+    } else if (lined) {
+      // Straight on to the next job; dispatch starts it as this drop completes.
+      dispatch({ type: 'ACCEPT', jobs: [lined] });
+      dispatch({ type: 'TOAST', toast: `On to your next job: collect at ${lined.pickup?.name ?? 'the store'}.` });
+    } else {
+      dispatch({ type: 'FINISH' });
+    }
   };
 
   const syncNow = async () => {
-    const res = await drain(api.current);
+    const res = await drain(api.current, state.driver?.id);
+    if (res.unauthorized) { signOut(); return; }
     dispatch({ type: 'PENDING', count: res.remaining });
     dispatch({
       type: 'TOAST',
@@ -412,8 +603,8 @@ export function AppProvider({ children }) {
     ...state,
     api: api.current,
     roamingPremium: estimateRoamingPremium(state.supplyRatio),
-    setSupply, signIn, signOut, acceptOffer, declineOffer,
-    completeJob, syncNow, loadEarnings,
+    setSupply, signIn, signOut, acceptOffer, declineOffer, expireOffer,
+    completeJob, syncNow, loadEarnings, checkNow, takeCollectionPhoto,
     setStage: (stage) => dispatch({ type: 'STAGE', stage }),
     setScanned: (count) => dispatch({ type: 'SCANNED', count }),
     goToStop: (index, stage) => dispatch({ type: 'STOP', index, stage }),

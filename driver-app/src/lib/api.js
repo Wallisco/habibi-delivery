@@ -19,10 +19,16 @@ const TIMEOUT_MS = 8000;
  * Every call is time-boxed. Without this a driver on a bad connection sees a
  * spinner forever instead of an error they can act on -- and on a delivery
  * app, "nothing is happening" is the worst possible failure mode.
+ *
+ * Errors carry `status`: the HTTP status, or 0 when dispatch could not be
+ * reached. Recovery depends on telling them apart -- a 401 means signed out,
+ * a 0 means bad signal and must never end a delivery.
  */
-async function req(path, options = {}, token) {
+const failure = (message, status) => Object.assign(new Error(message), { status });
+
+async function req(path, { timeoutMs = TIMEOUT_MS, ...options } = {}, token) {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const res = await fetch(`${BASE}${path}`, {
       ...options,
@@ -45,14 +51,15 @@ async function req(path, options = {}, token) {
           detail += ` (${body.outstanding.join(', ')} not verified)`;
         }
       } catch { /* not JSON */ }
-      throw new Error(detail ?? `Server returned ${res.status}`);
+      throw failure(detail ?? `Server returned ${res.status}`, res.status);
     }
     return await res.json();
   } catch (e) {
+    if (e.status) throw e;
     if (e.name === 'AbortError') {
-      throw new Error(`Could not reach dispatch at ${BASE}. Check the server is running and that your phone is on the same network.`);
+      throw failure(`Could not reach dispatch at ${BASE}. Check the server is running and that your phone is on the same network.`, 0);
     }
-    throw new Error(`${e.message} (${BASE})`);
+    throw failure(`${e.message} (${BASE})`, 0);
   } finally {
     clearTimeout(timer);
   }
@@ -122,7 +129,11 @@ export function makeDemoJob(kind = 'ZONE') {
 
 /* ---------------------------------------------------------------- public API */
 
-export function createApi(token, driverId) {
+/**
+ * @param onUnauthorized  called when dispatch answers 401 to a signed-in call:
+ *                        the token was revoked (office sign-out) or expired.
+ */
+export function createApi(token, driverId, { onUnauthorized } = {}) {
   if (DEMO) {
     return {
       demo: true,
@@ -152,35 +163,54 @@ export function createApi(token, driverId) {
     };
   }
 
+  // A signed-in call. Any 401 means this driver is signed out, whatever the
+  // call was; the store answers by going to sign-in.
+  const call = (path, options = {}) => req(path, options, token).catch((e) => {
+    if (e.status === 401 && token) onUnauthorized?.();
+    throw e;
+  });
+
   // Endpoints match dispatch-service/src/server.js exactly.
   return {
     demo: false,
     signIn: (phone) =>
       req('/v1/driver/signin', { method: 'POST', body: JSON.stringify({ phone }) }),
+    // What this driver is carrying, and what happened to the jobs the phone holds.
+    current: (jobIds = []) =>
+      call(`/v1/driver/current${jobIds.length ? `?jobs=${encodeURIComponent(jobIds.join(','))}` : ''}`),
     setState: (state, zone) =>
-      req(`/v1/driver/${driverId}/state`, { method: 'POST', body: JSON.stringify({ state, zone }) }, token),
+      call(`/v1/driver/${driverId}/state`, { method: 'POST', body: JSON.stringify({ state, zone }) }),
     pushPosition: (lat, lng) =>
-      req(`/v1/driver/${driverId}/position`, { method: 'POST', body: JSON.stringify({ lat, lng }) }, token),
-    fetchShift: () => req(`/v1/driver/${driverId}/shift`, {}, token),
+      call(`/v1/driver/${driverId}/position`, { method: 'POST', body: JSON.stringify({ lat, lng }) }),
+    fetchShift: () => call(`/v1/driver/${driverId}/shift`),
     acceptJob: (jobId) =>
-      req(`/v1/jobs/${jobId}/accept`, { method: 'POST', body: JSON.stringify({ driverId }) }, token),
+      call(`/v1/jobs/${jobId}/accept`, { method: 'POST', body: JSON.stringify({ driverId }) }),
     declineJob: (jobId) =>
-      req(`/v1/jobs/${jobId}/decline`, { method: 'POST', body: JSON.stringify({ driverId }) }, token),
-    collect: (jobId) => req(`/v1/jobs/${jobId}/collect`, { method: 'POST' }, token),
+      call(`/v1/jobs/${jobId}/decline`, { method: 'POST', body: JSON.stringify({ driverId }) }),
+    collect: (jobId) => call(`/v1/jobs/${jobId}/collect`, { method: 'POST' }),
     // Tells the server to issue the customer's code. The response deliberately
     // never contains it.
-    approach: (jobId) => req(`/v1/jobs/${jobId}/approach`, { method: 'POST' }, token),
+    approach: (jobId) => call(`/v1/jobs/${jobId}/approach`, { method: 'POST' }),
     verifyOtp: (jobId, code, position) =>
-      req(`/v1/jobs/${jobId}/verify`,
-        { method: 'POST', body: JSON.stringify({ code, position }) }, token),
+      call(`/v1/jobs/${jobId}/verify`, { method: 'POST', body: JSON.stringify({ code, position }) }),
     postCompletion: (evidence) =>
-      req('/v1/jobs/complete', { method: 'POST', body: JSON.stringify(evidence) }, token),
-    fetchEarnings: () => req(`/v1/driver/${driverId}/earnings`, {}, token),
-    fetchJobs: () => req(`/v1/driver/${driverId}/jobs`, {}, token),
-    fetchAccount: () => req(`/v1/driver/${driverId}/account`, {}, token),
-    fetchMessages: () => req(`/v1/driver/${driverId}/messages`, {}, token),
-    sendMessage: (body, jobId) => req(`/v1/driver/${driverId}/messages`,
-      { method: 'POST', body: JSON.stringify({ body, jobId }) }, token),
-    markMessagesRead: () => req(`/v1/driver/${driverId}/messages/read`, { method: 'POST' }, token),
+      call('/v1/jobs/complete', { method: 'POST', body: JSON.stringify(evidence) }),
+    fetchEarnings: () => call(`/v1/driver/${driverId}/earnings`),
+    fetchJobs: () => call(`/v1/driver/${driverId}/jobs`),
+    fetchAccount: () => call(`/v1/driver/${driverId}/account`),
+    fetchMessages: () => call(`/v1/driver/${driverId}/messages`),
+    sendMessage: (body, jobId) => call(`/v1/driver/${driverId}/messages`,
+      { method: 'POST', body: JSON.stringify({ body, jobId }) }),
+    markMessagesRead: () => call(`/v1/driver/${driverId}/messages/read`, { method: 'POST' }),
+    // Did the photo match the order? (stores in the photo-check trial)
+    photoCheck: (jobIds) =>
+      call(`/v1/driver/photo-check?jobs=${encodeURIComponent(jobIds.join(','))}`),
+    // The photo of the order at collection: raw JPEG from the camera's file.
+    // A slow connection gets longer than the usual 8 s.
+    uploadCollectionPhoto: async (uri, jobIds) => {
+      const blob = await (await fetch(uri)).blob();
+      return call(`/v1/driver/collection-photo?jobs=${encodeURIComponent(jobIds.join(','))}`,
+        { method: 'POST', body: blob, headers: { 'Content-Type': 'image/jpeg' }, timeoutMs: 30000 });
+    },
   };
 }

@@ -1,10 +1,19 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { View, Text, ScrollView, StyleSheet, Linking, Platform, TextInput } from 'react-native';
+import { View, Text, FlatList, Image, StyleSheet, Linking, Platform, TextInput, Pressable } from 'react-native';
 import { useApp } from '../state/store';
-import { Card, Button, Row, Pill, Divider, Label } from '../components/UI';
+import { Card, Button, Pill, useBottomPad } from '../components/UI';
 import MapPanel from '../components/MapPanel';
+import OfferSheet from '../components/OfferSheet';
 import { metresBetween, insideGeofence } from '../lib/proof';
-import { C, T, R, SP, S } from '../theme';
+import { C, T, R, SP, S, Z } from '../theme';
+import { stepOf, STEP } from '../lib/currentJob';
+
+/** Waiting for the photo check: every 2 s, for up to 30 s (upload included). */
+const PHOTO_CHECK_POLL_MS = 2000;
+const PHOTO_CHECK_TRIES = 15;
+
+/** "3 × Pizza Margherita" / "1 × Coke 500ml" (same as dispatch-service/src/items.js). */
+const itemLine = (it) => `${it.qty} × ${it.name}${it.size ? ` ${it.size}` : ''}`;
 
 /**
  * A run: one to three orders, collected together and delivered in sequence.
@@ -23,15 +32,21 @@ import { C, T, R, SP, S } from '../theme';
 const PICKUP_RADIUS_M = 250;
 
 export default function RunScreen({ navigation }) {
+  // Clear the phone's navigation buttons (Android draws edge to edge).
+  const bottomPad = useBottomPad();
   const {
     jobs, stops, stopIndex, goToStop, markJobDone, position, trail, online,
-    otpAttempts, noteOtpFail, completeJob, api, toastMsg, scanned, setScanned, batchId,
+    otpAttempts, noteOtpFail, completeJob, api, toastMsg, scanned, setScanned, batchId, toast,
+    takeCollectionPhoto,
+    next: lined,
   } = useApp();
 
   const [code, setCode] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState(null);
   const [collected, setCollected] = useState(false);
+  // The collection photo for this stop (its local file; it uploads on its own).
+  const [photo, setPhoto] = useState(null);
 
   const live = (jobs ?? []).filter((j) => !j.done);
   const stop = stops?.[stopIndex] ?? null;
@@ -60,7 +75,60 @@ export default function RunScreen({ navigation }) {
   const stopJobs = (current?.jobIds ?? []).map((id) => jobs.find((j) => j.id === id)).filter(Boolean);
   const dropJob = current?.kind === 'DROPOFF' ? stopJobs[0] : null;
 
-  useEffect(() => { setCode(''); setErr(null); }, [stopIndex]);
+  useEffect(() => { setCode(''); setErr(null); setPhoto(null); }, [stopIndex]);
+
+  // Messages in the header, top right: always one tap away, and the screen
+  // keeps its bottom row clear of the phone's navigation buttons.
+  useEffect(() => {
+    navigation.setOptions?.({
+      headerRight: () => (
+        <Pressable onPress={() => navigation.navigate('Messages')} accessibilityRole="button"
+          style={st.headerBtn} hitSlop={8}>
+          <Text style={st.linkText}>Messages</Text>
+        </Pressable>
+      ),
+    });
+  }, [navigation]);
+
+  const snap = async () => {
+    const uri = await takeCollectionPhoto?.(stopJobs.map((j) => j.id));
+    if (uri) setPhoto(uri);
+  };
+
+  // Stores in the photo-check trial: dispatch compares the photo with the
+  // order and the result appears here within seconds. It only ever warns.
+  const [check, setCheck] = useState(null);   // { status, missing, different }
+  const wantsCheck = stopJobs.some((j) => j.photoCheck);
+  const checkIds = stopJobs.map((j) => j.id).join(',');
+  useEffect(() => {
+    setCheck(null);
+    if (!photo || !wantsCheck || !api?.photoCheck) return undefined;
+    setCheck({ status: 'pending' });
+    let tries = 0;
+    const t = setInterval(async () => {
+      tries += 1;
+      try {
+        const res = await api.photoCheck(checkIds.split(','));
+        const results = Object.values(res?.checks ?? {}).filter(Boolean);
+        if (results.length && results.every((c) => c.status !== 'pending')) {
+          clearInterval(t);
+          const missing = results.flatMap((c) => c.missing ?? []);
+          const different = results.flatMap((c) => c.different ?? []);
+          if (results.some((c) => c.status === 'missing')) setCheck({ status: 'missing', missing });
+          else if (results.some((c) => c.status === 'different')) setCheck({ status: 'different', different });
+          else if (results.every((c) => c.status === 'complete')) setCheck({ status: 'complete' });
+          else if (results.every((c) => c.status === 'not_configured')) setCheck(null);
+          else setCheck({ status: 'unclear' });
+          return;
+        }
+      } catch { /* no signal yet: keep trying */ }
+      if (tries >= PHOTO_CHECK_TRIES) {
+        clearInterval(t);
+        setCheck((c) => (c?.status === 'pending' ? { status: 'unclear' } : c));
+      }
+    }, PHOTO_CHECK_POLL_MS);
+    return () => clearInterval(t);
+  }, [photo, wantsCheck, checkIds]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!jobs?.length) {
     return (
@@ -123,6 +191,7 @@ export default function RunScreen({ navigation }) {
         verified = /^\d{4}$/.test(code);
       }
       if (!verified) { noteOtpFail(); setErr('That code did not match.'); return; }
+      const goingOn = !!lined && live.length === 1;
 
       await completeJob({
         jobId: dropJob.id,
@@ -134,7 +203,9 @@ export default function RunScreen({ navigation }) {
       markJobDone(dropJob.id);
 
       const next = stopIndex + 1;
-      if (next < effectiveStops.length) {
+      if (goingOn) {
+        // The next job is now on this screen; stay here.
+      } else if (next < effectiveStops.length) {
         toastMsg(`Delivered. ${effectiveStops.length - next} stop${
           effectiveStops.length - next === 1 ? '' : 's'} left.`);
         goToStop(next, 'NAVIGATE_CUSTOMER');
@@ -149,152 +220,215 @@ export default function RunScreen({ navigation }) {
   /* --------------------------------------------------------------- view */
 
   const isPickup = current?.kind === 'PICKUP';
-  const done = effectiveStops.filter((_, i) => i < stopIndex).length;
+  const step = stepOf({ stops, jobs, stopIndex, position });
+  const stepAt = STEPS.findIndex((x) => x.key === step);
+  const away = metres == null ? 'Waiting for GPS'
+    : metres < 1000 ? `${metres} m away` : `${(metres / 1000).toFixed(1)} km away`;
 
+  // Fits a 360×640 phone with nothing to scroll: where you are in the
+  // delivery, where to go, and the one thing to do there.
   return (
-    <ScrollView style={S.screen} contentContainerStyle={S.content}>
-      {jobs.length > 1 && (
-        <Card tone="forest" style={{ marginBottom: SP.md }}>
-          <Text style={st.runLabel}>RUN OF {jobs.length} ORDERS</Text>
-          <Text style={st.runProgress}>Stop {stopIndex + 1} of {effectiveStops.length}</Text>
-          <Text style={st.runSub}>
-            {totalBags} bag{totalBags === 1 ? '' : 's'} · {live.length} still to deliver
-          </Text>
-        </Card>
+    <View style={[S.page, bottomPad]}>
+      {/* The four steps across the top, plus the stop count on a run. */}
+      <View style={st.steps}>
+        {STEPS.map((x, i) => (
+          <View key={x.key} style={st.stepCell}>
+            <View style={[st.stepBar, i <= stepAt && st.stepBarOn]} />
+            <Text style={[st.stepText, i === stepAt && st.stepTextNow]} numberOfLines={1}>{x.label}</Text>
+          </View>
+        ))}
+      </View>
+      {effectiveStops.length > 2 ? (
+        <Text style={st.runLine}>
+          Stop {stopIndex + 1} of {effectiveStops.length} · {totalBags} bag{totalBags === 1 ? '' : 's'}
+          {' · '}{live.length} to deliver
+        </Text>
+      ) : null}
+
+      {/* Messages from dispatch mid-run, e.g. one order of the run cancelled. */}
+      {toast ? (
+        <Pressable onPress={() => toastMsg(null)} accessibilityRole="button" style={st.toast}>
+          <Text style={T.small} numberOfLines={2}>{toast}</Text>
+          <Text style={T.tiny}>Tap to dismiss</Text>
+        </Pressable>
+      ) : null}
+
+      {/* At the store the map adds nothing; the checklist needs the room. */}
+      {isPickup && inRange ? null : (
+        <MapPanel
+          pickup={isPickup ? { latitude: current.lat, longitude: current.lng,
+            name: current.name } : null}
+          dropoff={!isPickup && current ? { latitude: current.lat, longitude: current.lng,
+            name: current.name } : null}
+          driver={position ? { latitude: position.latitude, longitude: position.longitude,
+            name: 'You' } : null}
+          height={Z.map}
+        />
       )}
 
-      <MapPanel
-        pickup={isPickup ? { latitude: current.lat, longitude: current.lng,
-          name: current.name } : null}
-        dropoff={!isPickup && current ? { latitude: current.lat, longitude: current.lng,
-          name: current.name } : null}
-        driver={position ? { latitude: position.latitude, longitude: position.longitude,
-          name: 'You' } : null}
-        height={180}
-      />
+      {/* The next job, lined up for after this drop (dispatch holds it as NEXT). */}
+      {lined ? (
+        <Text style={st.nextLine} numberOfLines={1}>
+          Next job, after this drop: collect at {lined.pickup?.name ?? 'the store'}
+        </Text>
+      ) : null}
 
-      <Card tone="wash" flat style={{ marginBottom: SP.md }}>
+      <Card tone="wash" flat>
         <Text style={T.label}>{isPickup ? 'COLLECT FROM' : 'DELIVER TO'}</Text>
-        <Text style={st.address}>{current?.name ?? 'Address not supplied'}</Text>
-        {dropJob ? <Text style={T.tiny}>ORDER {dropJob.orderNumber ?? dropJob.id}</Text> : null}
+        <Text style={st.address} numberOfLines={1}>{current?.name ?? 'Address not supplied'}</Text>
         <View style={st.row}>
-          <Text style={[T.small, { flex: 1 }]}>
-            {metres == null ? 'Waiting for GPS'
-              : metres < 1000 ? `${metres} m away` : `${(metres / 1000).toFixed(1)} km away`}
+          <Text style={[T.small, { flex: 1 }]} numberOfLines={1}>
+            {away}{dropJob ? ` · ${dropJob.orderNumber ?? dropJob.id}` : ''}
           </Text>
           {dropJob?.earningsPreview ? (
             <Pill text={`R${dropJob.earningsPreview.total.toFixed(0)}`} tone="live" />
           ) : null}
+          <Button title="Navigate" kind="ghost" onPress={openMaps} style={st.navigate} />
         </View>
-        <Button title="Open in maps" kind="ghost" onPress={openMaps} style={{ marginTop: SP.md }} />
       </Card>
 
       {isPickup ? (
-        <Card>
-          <Text style={T.h3}>Collect {stopJobs.length} order{stopJobs.length === 1 ? '' : 's'}</Text>
-          <Text style={[T.small, { marginTop: 4, marginBottom: SP.md }]}>
-            Check each bag against its order number before you leave.
+        <Card style={[st.action, st.fill]}>
+          <Text style={T.h3}>
+            Collect {stopJobs.length} order{stopJobs.length === 1 ? '' : 's'} · {totalBags} bag{totalBags === 1 ? '' : 's'}
           </Text>
-          {stopJobs.map((j) => (
-            <View key={j.id}>
-              <Divider />
-              <Row label={j.orderNumber ?? j.id}
-                value={`${j.bagCount ?? 1} bag${(j.bagCount ?? 1) === 1 ? '' : 's'}`} bold />
-              <Text style={T.tiny}>to {(j.dropoff?.name ?? '').split(',')[0]}</Text>
+          {/* What should be in each bag: check it before you leave. The list is
+              the one part of this screen that scrolls, if it is long. */}
+          <FlatList
+            style={st.fill}
+            data={stopJobs}
+            keyExtractor={(j) => j.id}
+            renderItem={({ item: j }) => (
+              <View style={st.order}>
+                <Text style={T.small} numberOfLines={1}>
+                  {j.orderNumber ?? j.id} · {j.bagCount ?? 1} bag{(j.bagCount ?? 1) === 1 ? '' : 's'}
+                  {' · to '}{(j.dropoff?.name ?? '').split(',')[0]}
+                </Text>
+                {(j.items ?? []).map((it, i) => (
+                  <Text key={i} style={st.item}>{itemLine(it)}</Text>
+                ))}
+              </View>
+            )}
+          />
+          {/* The photo comes first: it confirms what is in the bags. */}
+          {photo ? (
+            <View style={st.photoRow}>
+              <Image source={{ uri: photo }} style={st.thumb} accessibilityLabel="Your photo of the order" />
+              <Text style={[T.small, { flex: 1 }]}>Photo taken</Text>
+              <Pressable onPress={snap} style={st.retake} accessibilityRole="button">
+                <Text style={st.linkText}>Retake</Text>
+              </Pressable>
             </View>
-          ))}
+          ) : (
+            <>
+              <Button title="Take a photo of the order" kind="ghost" onPress={snap}
+                style={{ marginTop: SP.sm }} />
+              <Text style={st.hint}>Photograph the items, not the receipt.</Text>
+            </>
+          )}
+          {check ? (
+            <Text style={[st.check, st[`check_${check.status}`]]} numberOfLines={2}>
+              {check.status === 'pending' ? 'Checking your photo…'
+                : check.status === 'complete' ? 'Photo matches the order.'
+                : check.status === 'missing'
+                  ? `Not seen in your photo: ${check.missing.map((m) => `${m.qty} × ${m.name}`).join(', ')}. Check before you leave.`
+                : check.status === 'different'
+                  ? `Different size or brand: ${check.different.map((d) => (d.seenAs ? `${d.name} (photo: ${d.seenAs})` : d.name)).join(', ')}. Check with the store.`
+                  : "Couldn't check the photo."}
+            </Text>
+          ) : null}
           <Button title={`I have all ${totalBags} bag${totalBags === 1 ? '' : 's'}`}
-            kind="live" onPress={collectAll} loading={busy} disabled={!inRange}
-            style={{ marginTop: SP.lg }} />
-          {!inRange && (
-            <Text style={st.hint}>Unlocks within {PICKUP_RADIUS_M} m of {current?.name}.</Text>
-          )}
-          {!inRange && metres != null && metres < 1200 && (
-            <Button title="My GPS is wrong, I am here" kind="ghost"
-              onPress={() => { toastMsg('Pickup recorded with a GPS override.'); collectAll(); }}
-              style={{ marginTop: SP.sm }} />
-          )}
+            kind="live" onPress={collectAll} loading={busy} disabled={!inRange || !photo}
+            style={{ marginTop: SP.sm }} />
+          {!photo ? (
+            <Text style={st.hint}>Take the photo first.</Text>
+          ) : !inRange ? (
+            <Text style={st.hint}>Unlocks within {PICKUP_RADIUS_M} m of the store.</Text>
+          ) : null}
+          {photo && !inRange && metres != null && metres < 1200 ? (
+            <Pressable style={st.link} accessibilityRole="button"
+              onPress={() => { toastMsg('Pickup recorded with a GPS override.'); collectAll(); }}>
+              <Text style={st.linkText}>My GPS is wrong, I am here</Text>
+            </Pressable>
+          ) : null}
         </Card>
       ) : (
-        <Card>
-          <Text style={T.h3}>Hand over and enter the code</Text>
-          <Text style={[T.small, { marginTop: 4 }]}>
-            The customer has a 4-digit code in their chat. It only works at the door.
-          </Text>
-          <Button title="I have arrived" onPress={arrive} loading={busy}
-            style={{ marginTop: SP.md }} />
-          <TextInput
-            style={st.code}
-            value={code}
-            onChangeText={(v) => setCode(v.replace(/\D/g, '').slice(0, 4))}
-            keyboardType="number-pad"
-            placeholder="0000"
-            placeholderTextColor={C.line}
-            maxLength={4}
-          />
+        <Card style={st.action}>
+          {/* The customer has the code in their chat; it only works at the door. */}
+          <Text style={T.h3} numberOfLines={1}>Enter the customer's 4-digit code</Text>
+          <View style={st.codeRow}>
+            <TextInput
+              style={st.code}
+              value={code}
+              onChangeText={(v) => setCode(v.replace(/\D/g, '').slice(0, 4))}
+              keyboardType="number-pad"
+              placeholder="0000"
+              placeholderTextColor={C.line}
+              maxLength={4}
+              accessibilityLabel="Customer's 4-digit code"
+            />
+            <Button title="I'm here" kind="ghost" onPress={arrive} loading={busy} style={st.arrived} />
+          </View>
           {err ? <Text style={st.err}>{err}</Text> : null}
           {otpAttempts > 0 && !err ? (
             <Text style={T.tiny}>{otpAttempts} wrong attempt{otpAttempts === 1 ? '' : 's'}</Text>
           ) : null}
           <Button title="Complete delivery" kind="live" onPress={submit}
             loading={busy} disabled={code.length !== 4 || !inRange}
-            style={{ marginTop: SP.md }} />
-          {!inRange && (
-            <Text style={st.hint}>
-              You must be within {radius} m of the door to complete this delivery.
-            </Text>
-          )}
+            style={{ marginTop: SP.sm }} />
+          {!inRange ? (
+            <Text style={st.hint}>Unlocks within {radius} m of the door.</Text>
+          ) : null}
         </Card>
       )}
 
-      {effectiveStops.length > 1 && (
-        <>
-          <Label style={{ marginTop: SP.xl }}>ALL STOPS</Label>
-          <Card>
-            {effectiveStops.map((s, i) => (
-              <View key={`${s.kind}-${i}`}>
-                {i > 0 ? <Divider /> : null}
-                <View style={st.row}>
-                  <View style={[st.bead, i < stopIndex && st.beadDone,
-                    i === stopIndex && st.beadNow]} />
-                  <View style={{ flex: 1 }}>
-                    <Text style={[T.body, i === stopIndex && { fontWeight: '800' },
-                      i < stopIndex && { color: C.muted }]}>
-                      {s.kind === 'PICKUP' ? 'Collect' : 'Deliver'} · {s.name}
-                    </Text>
-                    {s.kind === 'DROPOFF' ? (
-                      <Text style={T.tiny}>
-                        {(jobs.find((j) => j.id === s.jobIds[0])?.orderNumber) ?? ''}
-                      </Text>
-                    ) : null}
-                  </View>
-                  {i < stopIndex ? <Pill text="DONE" tone="wash" /> : null}
-                </View>
-              </View>
-            ))}
-          </Card>
-        </>
-      )}
-
-      <Button title="Message the office" kind="ghost"
-        onPress={() => navigation.navigate('Messages')} style={{ marginTop: SP.xl }} />
-    </ScrollView>
+      {/* On the run: a second order for this pickup can be offered here. */}
+      <OfferSheet navigation={navigation} />
+    </View>
   );
 }
 
+const STEPS = [
+  { key: STEP.TO_STORE, label: 'To store' },
+  { key: STEP.AT_STORE, label: 'At store' },
+  { key: STEP.TO_CUSTOMER, label: 'To customer' },
+  { key: STEP.AT_DOOR, label: 'At door' },
+];
+
 const st = StyleSheet.create({
-  runLabel: { ...T.label, color: 'rgba(255,255,255,0.6)' },
-  runProgress: { fontSize: 24, fontWeight: '800', color: C.white, marginTop: 2 },
-  runSub: { ...T.small, color: 'rgba(255,255,255,0.72)', marginTop: 3 },
-  address: { fontSize: 21, fontWeight: '800', color: C.ink, letterSpacing: -0.3,
-    lineHeight: 27, marginTop: 3, marginBottom: 4 },
-  row: { flexDirection: 'row', alignItems: 'center', gap: SP.sm, marginTop: SP.sm },
-  code: { borderWidth: 2, borderColor: C.line, borderRadius: R.md, fontSize: 34,
-    fontWeight: '800', letterSpacing: 14, textAlign: 'center', paddingVertical: 14,
-    marginTop: SP.md, color: C.ink, backgroundColor: C.mist },
-  err: { color: C.red, fontSize: 13.5, marginTop: SP.sm },
-  hint: { ...T.small, marginTop: SP.sm },
-  bead: { width: 11, height: 11, borderRadius: 6, backgroundColor: C.line },
-  beadDone: { backgroundColor: C.live },
-  beadNow: { backgroundColor: C.white, borderWidth: 3, borderColor: C.live, width: 14, height: 14 },
+  steps: { flexDirection: 'row', gap: SP.xs, marginBottom: SP.sm },
+  stepCell: { flex: 1 },
+  stepBar: { height: 4, borderRadius: 2, backgroundColor: C.line },
+  stepBarOn: { backgroundColor: C.live },
+  stepText: { ...T.tiny, marginTop: 3 },
+  stepTextNow: { color: C.ink, fontWeight: '800' },
+  runLine: { ...T.small, color: C.ink, fontWeight: '700', marginBottom: SP.sm },
+  toast: { backgroundColor: C.wash, borderRadius: R.sm, padding: SP.sm, marginBottom: SP.sm },
+  nextLine: { ...T.small, color: C.green, fontWeight: '700', marginBottom: SP.xs },
+  address: { ...T.h3, color: C.ink, marginTop: 2 },
+  row: { flexDirection: 'row', alignItems: 'center', gap: SP.sm, marginTop: SP.xs },
+  navigate: { paddingHorizontal: SP.md },
+  action: { marginTop: SP.sm },
+  fill: { flex: 1 },
+  photoRow: { flexDirection: 'row', alignItems: 'center', gap: SP.sm, marginTop: SP.sm },
+  check: { ...T.small, fontWeight: '700', marginTop: SP.xs },
+  check_pending: { color: C.muted, fontWeight: '600' },
+  check_complete: { color: C.green },
+  check_missing: { color: C.amber },
+  check_different: { color: C.amber },
+  check_unclear: { color: C.muted, fontWeight: '600' },
+  thumb: { width: Z.tap, height: Z.tap, borderRadius: R.sm, backgroundColor: C.wash },
+  retake: { minHeight: Z.tap, paddingHorizontal: SP.md, justifyContent: 'center' },
+  order: { marginTop: SP.xs },
+  item: { ...T.body, color: C.ink, fontWeight: '600' },
+  codeRow: { flexDirection: 'row', alignItems: 'center', gap: SP.sm, marginTop: SP.sm },
+  code: { flex: 1, height: Z.primary, borderWidth: 2, borderColor: C.line, borderRadius: R.sm,
+    fontSize: 24, fontWeight: '800', letterSpacing: 10, textAlign: 'center',
+    color: C.ink, backgroundColor: C.mist },
+  arrived: { paddingHorizontal: SP.md },
+  err: { ...T.small, color: C.red, marginTop: SP.xs },
+  hint: { ...T.small, marginTop: SP.xs },
+  link: { minHeight: Z.tap, alignItems: 'center', justifyContent: 'center' },
+  headerBtn: { minHeight: Z.tap, justifyContent: 'center', paddingHorizontal: SP.xs },
+  linkText: { ...T.body, color: C.green, fontWeight: '700' },
 });

@@ -106,6 +106,23 @@ Response:
 }
 ```
 
+### Distance limits and the extra-km fee (v1.3)
+
+Distances are store to customer **by road** (the road route; straight line × 1.4
+when the routing server can't answer). Set per zone in the back office
+**Settings** tab (src/settings.js), with an "All zones" value every zone follows
+unless given its own. Defaults:
+
+| Setting | Default | Effect |
+|---|---|---|
+| `maxDeliveryKm` | 11 km | Further is refused: `422 { "error": "out_of_range", "deliverKm", "maxDeliveryKm", "message" }` on the quote, the job and an address change |
+| `includedDeliveryKm` | 5 km | Covered by the flat fee; every km after it is added at the zone's "Per km to customer" rate |
+| `noStackBeyondKm` | 7 km | An order going further always rides alone |
+| `maxReadyToDropMin` | 30 min | No order on a shared run more than this from ready to drop-off; a run that drifts past it is split and the later order goes to another driver |
+
+The quote shows the fee in parts: `customerCharge.baseFee`, `includedKm`, `extraKm`,
+`extraKmRate`, `extraKmFee`, and `routing.roadKm`.
+
 **Add `customerCharge.deliveryFee` to the order total.** The tip is collected
 separately at checkout and passed through to the driver in full.
 
@@ -135,11 +152,42 @@ back to straight-line distance. Only `osrm` should be billed on.
   "expectedReadyAt": 1788350000000,
   "customerCharge": 40.00,
   "tip": 20.00,
+  "orderValue": 245.50,
+  "customerId": "KC-CUST-88213",
   "bagCount": 2,
+  "items": [
+    { "name": "Pizza Margherita", "qty": 3 },
+    { "name": "Coke", "qty": 1, "size": "500ml" },
+    { "name": "Sprite", "qty": 1, "size": "500ml" }
+  ],
   "deliveryMode": "HANDOFF_REQUIRED",
   "ageRestricted": false
 }
 ```
+
+`items` (optional, v1.2) is what is in the order. The driver sees it as a checklist
+at the store ("3 × Pizza Margherita, 1 × Coke 500ml") and confirms it with a
+photo, so wrong or missing items are caught before the food leaves.
+- `name`: the product as the store names it, up to 60 characters. Required.
+- `qty`: a whole number from 1 to 99. Defaults to 1.
+- `size`: optional, up to 20 characters ("500ml", "Large").
+- Up to 50 lines. Anything else is refused with 400 and the reason.
+- **Product names only.** No customer name, phone number or delivery notes:
+  drivers see this list.
+
+When `items` is sent, `itemCount` is worked out from it. Without it the driver sees
+only the bag count, as before.
+
+`orderValue` (optional, v1.4) is the basket total in Rand: what the customer paid
+for the goods, before delivery and tip. It is used for GMV reporting only, never
+shown to the driver. A number from 0 to 100000.
+
+`customerId` (optional, v1.4) is **your** id for the customer: any stable string
+up to 128 characters, the same for every order by that customer. We count monthly
+transacting users with it. We do not keep it: on arrival it is replaced by a
+keyed fingerprint (HMAC-SHA256 with a key only our server holds), which can be
+counted but not turned back into your id. Send an internal id, not a phone
+number or email address.
 
 `tip` must be the amount the customer **committed at checkout**. It is shown to
 the driver in the offer as part of an all-inclusive figure, which is what makes
@@ -262,3 +310,15 @@ at 10% national share — about twenty-five times the entire infrastructure bill
 
 - No signature verification on inbound calls from Keychat.
 - `delivery.failed` is defined but the disposition flow behind it is not built.
+
+## Change log
+
+Every change to this contract is listed here. Additions are optional and
+backwards compatible unless marked otherwise.
+
+| Version | Date | Change |
+|---|---|---|
+| v1.4 | 8 Oct 2026 | `POST /v1/keychat/jobs` accepts `orderValue` (basket total, Rand) and `customerId` (your customer id; we keep only a fingerprint), for GMV and monthly transacting users (section 2). Optional. |
+| v1.3 | 8 Oct 2026 | Delivery limits per zone: 11 km by road maximum (`422 out_of_range`), customer fee per km after 5 km with its breakdown on the quote, no stacking beyond 7 km, 30 min ready to drop-off on a shared run. |
+| v1.2 | 7 Oct 2026 | `POST /v1/keychat/jobs` accepts `items: [{ name, qty, size? }]`, what is in the order, shown to the driver at the store (section 2). Optional. |
+| v1.1 | before 7 Oct 2026 | Everything above as documented before this log: quote, job creation with `Idempotency-Key`, the ready event, webhooks, reconciliation. |

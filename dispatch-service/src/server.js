@@ -12,6 +12,17 @@
 
 import { registerPartnerAuth } from './auth.js';
 import { OpsUsers, registerOpsAuth } from './opsAuth.js';
+import { DriverTokens, registerDriverAuth } from './driverAuth.js';
+import { markStaging } from './stagingBanner.js';
+import { parseItems } from './items.js';
+import { roadKm, outOfRange, customerFee } from './limits.js';
+import { DispatchSettings, SETTING_FIELDS, SETTING_GROUPS, SETTING_DEFAULTS, ALL_ZONES } from './settings.js';
+import { PhotoStore, isJpeg, MAX_PHOTO_BYTES } from './photos.js';
+import { createPhotoChecker, checkCost, selectForCheck, PHOTO_CHECK_MODEL, MODELS, SELECTIVE } from './photoCheck.js';
+import { PHOTO_MODES } from './stores.js';
+import { StoreSettings } from './stores.js';
+import { tmpdir } from 'node:os';
+import { randomBytes } from 'node:crypto';
 import { IdempotencyStore, idempotent } from './idempotency.js';
 import { Simulator } from './simulator.js';
 import Fastify from 'fastify';
@@ -20,6 +31,11 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { Db } from './db.js';
 import { Metrics } from './metrics.js';
+import { performance } from './performance.js';
+import { OnlineTime } from './onlineTime.js';
+import { PerfSettings, COST_SETTINGS } from './perfSettings.js';
+import { SupportQueries, QUERY_TYPES, QUERY_CHANNELS } from './queries.js';
+import { CustomerRefs } from './customerRef.js';
 import { computeEarnings, costToServe } from './fees.js';
 import { RateBook, RATE_FIELDS, MRD_DEFAULT, DAY_NAMES } from './rates.js';
 import { routeJob, routingStatus, point } from './routing.js';
@@ -36,7 +52,9 @@ import { Dispatcher } from './dispatch.js';
 import { OtpService } from './otp.js';
 
 export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/dispatch.db',
-  partnerAuth = true, partnerKeys = null, opsAuth = true,
+  partnerAuth = true, partnerKeys = null, opsAuth = true, driverAuth = true, driverLegacyTokens,
+  photoDir = process.env.PHOTO_DIR, photoRetentionDays = Number(process.env.PHOTO_RETENTION_DAYS ?? 30),
+  photoChecker = null,
   staging = process.env.DISPATCH_ENV === 'staging', simSpeed = 1 } = {}) {
   // Staging (habibi-staging.quikr.co.za) is where Keychat integrates: simulated
   // drivers, dispatchNow honoured, orders released within a minute, TEST badge.
@@ -54,19 +72,100 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
   // Staff logins for /ops and every /v1/ops/* route. Registered before any
   // route so nothing in the back office is reachable without a session.
   const opsUsers = new OpsUsers(db);
-  registerOpsAuth(app, opsUsers, { enabled: opsAuth });
+  registerOpsAuth(app, opsUsers, { enabled: opsAuth, staging });
+  // Driver tokens for every /v1/driver/* route but sign-in (see driverAuth.js).
+  const driverTokens = new DriverTokens(db);
+  registerDriverAuth(app, driverTokens, {
+    enabled: driverAuth,
+    ...(driverLegacyTokens !== undefined ? { legacy: driverLegacyTokens } : {}),
+  });
+
+  // Collection photos (see photos.js): next to the database, or a throwaway
+  // folder for an in-memory test database.
+  const photos = new PhotoStore({
+    dir: photoDir ?? (dbPath === ':memory:'
+      ? join(tmpdir(), `dispatch-photos-${randomBytes(4).toString('hex')}`)
+      : join(dirname(dbPath), 'photos')),
+    retentionDays: photoRetentionDays,
+  });
+  // Per-store switches, and the AI check of the collection photo (a trial,
+  // off for every store until the office switches it on).
+  const stores = new StoreSettings(db);
+  const checker = photoChecker ?? createPhotoChecker({ log: app.log });
+  const checksRunning = new Set();
+
+  /**
+   * Is this order's photo checked, and why? The store's mode decides: off,
+   * every order, or selective (bigger orders, a new driver's first trips, a
+   * random share). Once a check exists the answer stays yes.
+   */
+  function photoSelection(j) {
+    if (j.photoCheck) return { selected: true, reason: j.photoCheck.why ?? null };
+    const mode = stores.photoMode(j.storeId);
+    const driverTrips = mode === 'selective' && j.driverId ? db.deliveredCount(j.driverId) : null;
+    return selectForCheck({ mode, job: j, driverTrips });
+  }
+
+  /** Change an order's photo check, live or finished (fn gets the current one). */
+  function patchPhotoCheck(id, fn) {
+    const job = jobs.get(id) ?? db.loadJob(id);
+    if (!job) return null;
+    const next = fn(job.photoCheck ?? {});
+    if (jobs.get(id)) jobs.update(id, { photoCheck: next });
+    else db.saveJob({ ...job, photoCheck: next });
+    return next;
+  }
+
+  /**
+   * Run the check on a photo. The main model's answer is what the driver sees;
+   * for the trial the same photo also goes to the comparison models, at the
+   * same time, and their answers are kept beside it (office only). Resolves
+   * with the main answer; the comparisons carry on in the background.
+   */
+  function runPhotoCheck(j, jpeg) {
+    const input = { jpeg, items: j.items, bagCount: j.bagCount };
+    const track = (promise) => {
+      const run = promise.catch((err) => { app.log.warn({ err: err?.message }, 'photo check crashed'); })
+        .finally(() => checksRunning.delete(run));
+      checksRunning.add(run);
+      return run;
+    };
+    for (const model of checker.compare ?? []) {
+      track(checker.check({ ...input, model }).then((r) => {
+        patchPhotoCheck(j.id, (c) => ({ ...c, compare: { ...c.compare, [model]: r } }));
+      }));
+    }
+    let main = null;
+    return track(checker.check(input).then((r) => {
+      // Keep what was set around the check: why it ran, the comparisons, the
+      // result before a re-check.
+      main = patchPhotoCheck(j.id, (c) => ({ ...r, why: c.why, compare: c.compare, previous: c.previous, rerunBy: c.rerunBy }));
+    })).then(() => main);
+  }
+  // The app uploads the photo as raw JPEG bytes, up to 3 MB.
+  app.addContentTypeParser('image/jpeg', { parseAs: 'buffer', bodyLimit: MAX_PHOTO_BYTES },
+    (req, body, done) => done(null, body));
   const idem = new IdempotencyStore(db);
   const gate = new ReadyGate({ bufferMin: Number(process.env.READY_BUFFER_MIN ?? 0), db });
   const supply = new SupplyRegistry(db);
+  const online = new OnlineTime(db);
+  const perfSettings = new PerfSettings(db);
+  const supportQueries = new SupportQueries(db);
+  const customerRefs = new CustomerRefs(db);
+  supply.onBeat = (d) => online.beat(d.id, { online: d.state !== SUPPLY.OFFLINE, zone: d.zone });
   const jobs = new JobStore(db);
   const otp = new OtpService();
   const metrics = new Metrics(db);
   const rates = new RateBook(db);
+  // Distance, batching and driver-search rules from the Settings tab.
+  const settings = new DispatchSettings(db);
   const keychat = new KeychatClient(db, { log: app.log });
   const accounts = new DriverAccounts(db);
   const messages = new Messages(db);
   const ledger = new Ledger(db);
   const CUSTOMER_DELIVERY_FEE = Number(process.env.CUSTOMER_DELIVERY_FEE ?? 40);
+  // A driver is carrying a job in these states. OFFERED is not theirs yet.
+  const ACTIVE = ['ASSIGNED', 'AT_STORE', 'IN_TRANSIT', 'AT_CUSTOMER'];
 
   // Restore state. Ready-gate history matters most: without it every store is
   // cold again after a restart and the gate falls back to a 25 minute prior.
@@ -80,6 +179,7 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
   };
   restored.rateCards = rates.hydrate(db.loadRateCards());
   restored.surgeWindows = rates.hydrateSurge(db.loadSurge());
+  restored.dispatchSettings = settings.hydrate(db.loadDispatchSettings());
   restored.accounts = accounts.hydrate(db.loadAccounts());
   restored.messages = messages.hydrate(db.loadMessages());
   restored.ledgerEntries = ledger.hydrate(db.loadLedger());
@@ -96,8 +196,9 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
   const dispatcher = new Dispatcher({
     readyGate: gate, supply, jobs,
     maxHoldMs: staging ? 60_000 : null,
-    onOffer: ({ batchId, jobs: batchJobs, driverId, expiresAt, stops, route,
-                marginal, storeCount, sameCustomer }) => {
+    settingsFor: (zone) => settings.effective(zone),
+    onOffer: ({ batchId, jobs: batchJobs, carrying = [], driverId, expiresAt, stops, route,
+                marginal, storeCount, sameCustomer, next = null }) => {
       const margin = new Map((marginal ?? []).map((m) => [m.jobId, m.marginalKm]));
       const priced = batchJobs.map((j, i) => ({
         ...publicJob(j),
@@ -123,8 +224,13 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
           kind: s.kind, name: s.name, storeId: s.storeId ?? null,
           jobIds: s.jobIds, lat: s.at.lat, lng: s.at.lng,
         })),
+        // On the run: this order joins the run the driver is already on.
+        addsToRun: carrying.length > 0,
+        // Next job: after the drop the driver is on now, not part of that run.
+        next,
         summary: {
           orders: priced.length,
+          runOrders: carrying.length + priced.length,
           stores: storeCount ?? 1,
           sameCustomer: Boolean(sameCustomer),
           km: route?.km ?? null,
@@ -134,6 +240,13 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
       });
     },
   });
+
+  // Drivers come back OFFLINE with no active job (db.loadDrivers). Anyone still
+  // holding an open job gets it back, so dispatch can't offer them a second
+  // run while the first is in their box.
+  for (const driverId of new Set(jobs.all().filter((j) => j.driverId && ACTIVE.includes(j.status)).map((j) => j.driverId))) {
+    refreshDriverActive(driverId);
+  }
 
   // Always send a human-readable label. Keychat may post bare coordinates,
   // and the driver app renders these directly.
@@ -175,6 +288,10 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
       earningsPreview: priceJob(j),
       tip: j.tip ?? 0,
       bagCount: j.bagCount, itemCount: j.itemCount, fee: j.fee,
+      // What is in the order, for the driver's checklist at the store.
+      items: j.items ?? null,
+      // Whether this store checks the collection photo against the items.
+      photoCheck: photoSelection(j).selected,
       deliveryMode: j.deliveryMode, proofPolicy: j.proofPolicy,
       distanceKm: j.distanceKm,
       distanceSource: j.distanceSource ?? 'estimated',
@@ -235,6 +352,12 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
     }
 
     const routing = await routeJob({ pickup, dropoff });
+    // How far we deliver, and the customer's fee for it (src/limits.js).
+    const rules = settings.effective(zone);
+    const km = roadKm(routing, pickup, dropoff, rules);
+    const refused = outOfRange(km, rules);
+    if (refused) return reply.code(422).send(refused);
+    const fee = customerFee(CUSTOMER_DELIVERY_FEE, km, rules, rates.forZone(zone).perKmDeliveryFee);
     const merchantPrep = b.prepMinutes != null ? Number(b.prepMinutes) : null;
 
     const prep = gate.predictPrepMinutes(storeId, merchantPrep);
@@ -264,7 +387,8 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
       earnings,
       routing,
       etaMinutes: Math.round((prep + routing.deliverMinutes + 4) * strain),
-      customerCharge: CUSTOMER_DELIVERY_FEE,
+      customerCharge: fee.deliveryFee,
+      feeBreakdown: fee,
       readyGate: {
         merchantPrepMinutes: merchantPrep,
         predictedPrepMinutes: Number(prep.toFixed(1)),
@@ -288,17 +412,41 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
     }
     b.pickup = { ...b.pickup, ...pickupAt };
     b.dropoff = { ...b.dropoff, ...dropoffAt };
+    // What is in the order (optional, v1.2). Refused if it isn't a product list.
+    const parsed = parseItems(b.items);
+    if (parsed.error) return reply.code(400).send({ error: parsed.error });
+    b.items = parsed.items;
+    // The basket total and Keychat's customer id (optional, v1.3). The id is
+    // never kept: only a keyed fingerprint of it, for counting customers.
+    if (b.orderValue != null && !(typeof b.orderValue === 'number' && b.orderValue >= 0 && b.orderValue <= 100000)) {
+      return reply.code(400).send({ error: 'orderValue must be the basket total in Rand, 0 to 100000' });
+    }
+    if (b.customerId != null && !(['string', 'number'].includes(typeof b.customerId) && String(b.customerId).length >= 1 && String(b.customerId).length <= 128)) {
+      return reply.code(400).send({ error: 'customerId must be your id for the customer, 1 to 128 characters' });
+    }
+    b.customerRef = customerRefs.ref(b.customerId);
+    delete b.customerId;
     // We route it ourselves. Keychat's ETA is for their customer; our distance
     // is what the fee is built on, and it has to be defensible in a dispute.
     const routing = await routeJob({ pickup: b.pickup, dropoff: b.dropoff });
+    // Checked again here, not only on the quote: a stale quote or a changed
+    // address must not get a delivery past the limit.
+    const rules = settings.effective(b.zone);
+    const km = roadKm(routing, b.pickup, b.dropoff, rules);
+    const refused = outOfRange(km, rules);
+    if (refused) return reply.code(422).send(refused);
+    const fee = customerFee(CUSTOMER_DELIVERY_FEE, km, rules, rates.forZone(b.zone).perKmDeliveryFee);
     // The partner does not choose our ids or tokens.
     const { id: _id, trackingToken: _t, ...input } = b;
     if (!allowDispatchNow) delete input.dispatchNow;
     const job = jobs.create({
       ...input,
+      // What Keychat charged; our own figure when they did not say.
+      customerCharge: input.customerCharge != null ? Number(input.customerCharge) : fee.deliveryFee,
       deliverKm: routing.deliverKm,
       collectKm: routing.collectKm,
     });
+    jobs.update(job.id, { roadKm: km, expectedCustomerFee: fee });
     job.distanceSource = routing.source;
     job.routing = routing;
     gate.noteOrder(job.storeId, job.createdAt);
@@ -349,7 +497,7 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
     });
     supply.upsert(account.driverId, { phone, zone: account.zone });
     return {
-      token: `tok_${account.driverId}`,
+      token: driverTokens.issue(account.driverId),
       driver: {
         id: account.driverId, phone, hubCode: account.hubCode, zone: account.zone,
         onboarding: account.onboarding, vehicleType: account.vehicleType,
@@ -413,6 +561,13 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
     return { ok: true };
   });
 
+  /** The driver's offer, if it hasn't run out. An expired one is gone for good. */
+  function liveOffer(driverId) {
+    const o = pendingOffers.get(driverId);
+    if (o && o.expiresAt <= Date.now()) { pendingOffers.delete(driverId); return null; }
+    return o ?? null;
+  }
+
   app.get('/v1/driver/:id/shift', async (req) => {
     const d = supply.get(req.params.id) ?? {};
     const pending = jobs.pendingInZone(d.zone).length;
@@ -429,7 +584,7 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
       zone: d.zone ?? null,
       supplyRatio: Number(ratio.toFixed(2)),
       roamingPremium: supply.roamingPremium(ratio),
-      offer: pendingOffers.get(req.params.id) ?? null,
+      offer: liveOffer(req.params.id),
       // The server is the source of truth for what the driver is carrying.
       // The app rehydrates from this after any reload.
       activeJob: active ? publicJob(active) : null,
@@ -442,6 +597,7 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
           }))
         : [],
       activeStage: active ? stageOf(active) : null,
+      next: nextView(req.params.id),
     };
   });
 
@@ -452,6 +608,148 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
     if (j.readyAt || j.status === 'ASSIGNED') return 'NAVIGATE_STORE';
     return 'NAVIGATE_STORE';
   }
+
+  /* ------------------------------------------ the driver's current job */
+
+  /** Every job this driver is carrying right now, oldest first. */
+  function driverRun(driverId) {
+    return jobs.all()
+      .filter((j) => j.driverId === driverId && ACTIVE.includes(j.status))
+      .sort((a, b) => a.createdAt - b.createdAt);
+  }
+
+  /**
+   * Point the driver's supply record at what they still carry. Called whenever
+   * a job leaves them, by delivery or by the office, so they are freed exactly
+   * when the box is empty and never left holding a closed job.
+   */
+  function refreshDriverActive(driverId) {
+    const d = driverId ? supply.get(driverId) : null;
+    if (!d) return;
+    // An empty box and a next job lined up: that job starts now.
+    dispatcher.promoteNext(driverId);
+    const run = driverRun(driverId);
+    supply.upsert(driverId, run.length
+      ? { activeJobId: run[0].id, activeBatchId: run[0].batchId ?? null }
+      : { activeJobId: null, activeBatchId: null,
+          state: d.state === SUPPLY.ROAMING_ACTIVE ? SUPPLY.RETURNING : d.state });
+  }
+
+  /** The job lined up after the current drop, as the app shows it. */
+  function nextView(driverId) {
+    const n = dispatcher.nextOf(driverId);
+    return n ? { ...publicJob(n), afterJobId: n.nextAfter ?? null } : null;
+  }
+
+  const stopView = (s) => ({ kind: s.kind, name: s.name, storeId: s.storeId ?? null,
+    jobIds: s.jobIds, lat: s.at.lat, lng: s.at.lng });
+
+  /**
+   * Where the driver is in the run, counted the way the app counts: a single
+   * order is [pickup, drop-off]; a run is its stop list.
+   */
+  function runPosition(run) {
+    if (run.length === 1) return { stops: [], stopIndex: run[0].collectedAt ? 1 : 0 };
+    const stops = routeStops(run).map(stopView);
+    const byId = new Map(run.map((j) => [j.id, j]));
+    const i = stops.findIndex((s) => (s.kind === 'PICKUP'
+      ? s.jobIds.some((id) => !byId.get(id)?.collectedAt)
+      : true));
+    return { stops, stopIndex: Math.max(0, i) };
+  }
+
+  /**
+   * Why a job the app still holds is no longer this driver's.
+   *   CANCELLED   the order was cancelled
+   *   CLOSED      the office closed it (failed, or marked delivered by hand)
+   *   REASSIGNED  it went back to dispatch or to another driver
+   *   CLEARED     the office cleared it from this driver ("Clear driver's job")
+   *   DELIVERED   this driver delivered it: a normal finish, nothing to explain
+   */
+  function endedFor(jobId, driverId) {
+    const job = jobs.get(jobId) ?? db.loadJob(jobId);
+    if (!job) return { jobId, reason: 'CLOSED', at: null };
+    // The last thing that happened to this job that names this driver; older
+    // jobs without notes fall back to their last status change.
+    const history = job.history ?? [];
+    const last = [...history].reverse().find((h) => h.driverId === driverId) ?? history.at(-1) ?? {};
+    const at = last.at ?? null;
+    if (last.kind === 'CLEARED') return { jobId, reason: 'CLEARED', at };
+    if (job.status === 'DELIVERED') {
+      return { jobId, reason: last.kind === 'DRIVER' && job.driverId === driverId ? 'DELIVERED' : 'CLOSED', at };
+    }
+    if (job.status === 'CANCELLED') return { jobId, reason: 'CANCELLED', at };
+    if (job.status === 'FAILED') return { jobId, reason: 'CLOSED', at };
+    return { jobId, reason: 'REASSIGNED', at };
+  }
+
+  /**
+   * The driver's photo of the order at collection, one per pickup stop: the
+   * same photo covers every order collected there. Uploaded when there is
+   * signal, so it may arrive after the order is collected or even delivered.
+   */
+  app.post('/v1/driver/collection-photo', async (req, reply) => {
+    const ids = String(req.query?.jobs ?? '').split(',').map((s) => s.trim()).filter(Boolean);
+    if (!ids.length || ids.length > 3) return reply.code(400).send({ error: 'Name the order(s) in ?jobs=' });
+    if (!isJpeg(req.body)) return reply.code(415).send({ error: 'Send the photo as a JPEG.' });
+    const list = ids.map((id) => jobs.get(id));
+    if (list.some((j) => !j)) return reply.code(404).send({ error: 'Unknown order' });
+    if (list.some((j) => j.driverId !== req.driverId)) {
+      return reply.code(403).send({ error: 'That order is not yours.' });
+    }
+    const file = photos.save(req.body);
+    const photo = { file, at: Date.now(), bytes: req.body.length, driverId: req.driverId };
+    for (const j of list) jobs.update(j.id, { collectionPhoto: photo });
+    // Stores in the trial: check the photo against each order's items, in the
+    // background so the upload answers at once. The app asks for the result.
+    const jpeg = req.body;
+    for (const j of list) {
+      const { selected, reason } = photoSelection(jobs.get(j.id));
+      if (!selected) continue;
+      jobs.update(j.id, { photoCheck: { status: 'pending', at: Date.now(), why: reason } });
+      runPhotoCheck(j, jpeg);
+    }
+    return { ok: true, jobs: ids, bytes: photo.bytes };
+  });
+
+  /** The photo check for orders this driver is carrying (or has just finished). */
+  app.get('/v1/driver/photo-check', async (req, reply) => {
+    const ids = String(req.query?.jobs ?? '').split(',').map((s) => s.trim()).filter(Boolean).slice(0, 3);
+    const out = {};
+    for (const id of ids) {
+      const j = jobs.get(id);
+      if (!j) continue;
+      if (j.driverId !== req.driverId) return reply.code(403).send({ error: 'That order is not yours.' });
+      const c = j.photoCheck;
+      // What the driver needs: the verdict and what was not seen. Not tokens.
+      out[id] = c ? { status: c.status, missing: c.missing ?? [], different: c.different ?? [], note: c.note ?? null } : null;
+    }
+    return { checks: out };
+  });
+
+  /**
+   * The app asks every 10 seconds and on every screen change: what am I
+   * carrying, and what happened to the jobs I think I have? This is what gets
+   * a driver out of a job the office cancelled, closed or took away.
+   */
+  app.get('/v1/driver/current', async (req) => {
+    const me = req.driverId;
+    const run = driverRun(me);
+    const held = String(req.query?.jobs ?? '').split(',').map((s) => s.trim()).filter(Boolean).slice(0, 10);
+    const carrying = new Set(run.map((j) => j.id));
+    // A phone that already moved on to its next job (its last drop still
+    // syncing) is holding a job that is still theirs.
+    const lined = dispatcher.nextOf(me);
+    if (lined) carrying.add(lined.id);
+    return {
+      jobs: run.map(publicJob),
+      batchId: run[0]?.batchId ?? null,
+      ...(run.length ? runPosition(run) : { stops: [], stopIndex: 0 }),
+      stage: run[0] ? stageOf(run[0]) : null,
+      next: nextView(me),
+      ended: held.filter((id) => !carrying.has(id)).map((id) => endedFor(id, me)),
+    };
+  });
 
   // Job history. A driver must be able to see what they are on and what they
   // have done -- for their own pay reconciliation as much as anything.
@@ -477,19 +775,24 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
     if (!res.ok) return reply.code(409).send({ error: res.reason });
     pendingOffers.delete(req.body.driverId);
     const acct = accounts.get(req.body.driverId);
-    emit('delivery.assigned', {
-      jobId: req.params.id,
-      externalId: res.job.externalId,
-      driverId: req.body.driverId,
-      driver: acct ? { firstName: acct.firstName || 'Your driver',
-        vehicle: acct.vehicleType } : null,
-      etaMinutes: res.job.routing?.deliverMinutes
-        ? Math.round(res.job.routing.deliverMinutes + 6) : null,
-    });
+    // Every order this accept assigned (not the ones already on the run).
+    for (const j of res.added ?? [res.job]) {
+      emit('delivery.assigned', {
+        jobId: j.id,
+        externalId: j.externalId,
+        driverId: req.body.driverId,
+        driver: acct ? { firstName: acct.firstName || 'Your driver',
+          vehicle: acct.vehicleType } : null,
+        etaMinutes: j.routing?.deliverMinutes
+          ? Math.round(j.routing.deliverMinutes + 6) : null,
+      });
+    }
     return {
       ok: true,
-      job: publicJob(res.job),
-      jobs: (res.jobs ?? [res.job]).map(publicJob),
+      job: res.job ? publicJob(res.job) : null,
+      jobs: (res.jobs ?? [res.job]).filter(Boolean).map(publicJob),
+      // A next job: lined up after the current drop. The run above is unchanged.
+      next: res.next ? publicJob(res.next) : null,
       batchId: res.batchId ?? null,
       stops: (res.stops ?? []).map((s) => ({
         kind: s.kind, name: s.name, storeId: s.storeId ?? null,
@@ -507,9 +810,24 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
   // The driver's collection scan. Separate event from the label print: print
   // time is when the food was ready, scan time is when it was collected, and
   // the gap between them is the wait we are trying to remove.
+  // A cancelled, closed or reassigned order is not the phone's to collect,
+  // approach or complete -- even if the phone hasn't heard yet. 409 tells the
+  // app (and its offline queue) to drop it rather than retry. (Which driver may
+  // act on a live job needs auth on /v1/jobs/*, which is not here yet.)
+  const isClosed = (job) => ['CANCELLED', 'FAILED', 'DELIVERED'].includes(job.status);
+  const takenAway = (job) => !ACTIVE.includes(job.status)
+    && (job.history ?? []).some((h) => h.kind === 'REASSIGNED' || h.kind === 'CLEARED');
+  const notCarriable = (job) => isClosed(job) || takenAway(job);
+  const notCarried = (job, reply) => reply.code(409).send({
+    error: ['CANCELLED', 'FAILED', 'DELIVERED'].includes(job.status)
+      ? `This order is ${job.status.toLowerCase()}.` : 'This order is no longer yours.',
+    status: job.status,
+  });
+
   app.post('/v1/jobs/:id/collect', async (req, reply) => {
     const job = jobs.get(req.params.id);
     if (!job) return reply.code(404).send({ error: 'Unknown job' });
+    if (notCarriable(job)) return notCarried(job, reply);
     // A retried scan must not send the customer the link twice.
     if (job.collectedAt) return { ok: true, alreadyCollected: true };
     job.collectedAt = Date.now();
@@ -540,6 +858,8 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
   app.post('/v1/jobs/:id/approach', async (req, reply) => {
     const job = jobs.get(req.params.id);
     if (!job) return reply.code(404).send({ error: 'Unknown job' });
+    // Never send a code to the customer of a cancelled order.
+    if (notCarriable(job)) return notCarried(job, reply);
     const code = otp.issue(job.id);
     job.codeIssuedAt = Date.now();
     jobs.setStatus(job.id, 'AT_CUSTOMER');
@@ -563,6 +883,12 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
     const { jobId, grade, position, gpsTrail, code } = req.body ?? {};
     const job = jobs.get(jobId);
     if (!job) return reply.code(404).send({ error: 'Unknown job' });
+    // A retried completion (offline queue, flaky signal) is not an error.
+    if (job.status === 'DELIVERED' && job.proofGrade !== 'D') {
+      return { accepted: true, duplicate: true, flagged: job.proofGrade === 'FLAGGED', earnings: job.earnings ?? null };
+    }
+    // Cancelled or closed while the phone was offline: it must not become delivered.
+    if (notCarriable(job)) return notCarried(job, reply);
 
     if (GRADE_ORDER[grade] < GRADE_ORDER[job.proofPolicy.minGrade]) {
       return reply.code(422).send({
@@ -590,24 +916,12 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
     if (req.body?.tip != null) job.tip = Number(req.body.tip);
     job.earnings = priceJob(job, { waitMinutes });
     job.costToServe = costToServe(job.earnings);
-    jobs.setStatus(jobId, 'DELIVERED');
+    jobs.setStatus(jobId, 'DELIVERED', {}, { driverId: job.driverId, by: 'driver', kind: 'DRIVER' });
 
-    const d = supply.get(job.driverId);
-    if (d) {
-      // A run is only finished when every drop on it is done. Freeing the
-      // driver after the first would let dispatch offer them a new job while
-      // they still have food in the box.
-      const remaining = job.batchId
-        ? jobs.all().filter((j) => j.batchId === job.batchId
-            && !['DELIVERED', 'FAILED', 'CANCELLED'].includes(j.status))
-        : [];
-      supply.upsert(job.driverId, {
-        activeJobId: remaining[0]?.id ?? null,
-        activeBatchId: remaining.length ? job.batchId : null,
-        state: remaining.length ? d.state
-          : (d.state === SUPPLY.ROAMING_ACTIVE ? SUPPLY.RETURNING : d.state),
-      });
-    }
+    // A run is only finished when every drop on it is done. Freeing the
+    // driver after the first would let dispatch offer them a new job while
+    // they still have food in the box.
+    refreshDriverActive(job.driverId);
     const payoutHeld = grade === PROOF_GRADE.B || flagged;
     db.saveEvidence({
       jobId, grade, flagged, payoutHeld,
@@ -706,6 +1020,45 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
 
   app.post('/v1/ops/rates/:zone/reset', async (req) =>
     ({ zone: req.params.zone, card: rates.resetZone(req.params.zone) }));
+
+  /* ---------------------------------------------- back office: settings */
+
+  /**
+   * Distance, batching and driver-search rules (src/settings.js). "All zones"
+   * is zone '*'; a zone's own value wins over it, and only own values are
+   * stored, so a zone follows "All zones" for everything it hasn't set.
+   */
+  const settingsZones = () => [...new Set([...settings.zones(), ...rates.zones(),
+    ...jobs.all().map((j) => j.zone).filter(Boolean)])].sort();
+  const zoneView = (zone) => ({
+    zone, label: zone === ALL_ZONES ? 'All zones' : zone,
+    values: settings.effective(zone),
+    own: settings.overrides(zone),
+    inherited: settings.inherited(zone),
+    lastChange: db.dispatchSettingsHistory(zone, 1)[0] ?? null,
+  });
+
+  app.get('/v1/ops/settings', async () => ({
+    fields: SETTING_FIELDS,
+    groups: SETTING_GROUPS,
+    defaults: SETTING_DEFAULTS,
+    zones: [zoneView(ALL_ZONES), ...settingsZones().map(zoneView)],
+  }));
+
+  app.put('/v1/ops/settings/:zone', async (req, reply) => {
+    const zone = req.params.zone;
+    const res = settings.set(zone, req.body?.settings, req.body?.actor ?? 'ops');
+    if (res.errors) return reply.code(400).send({ error: 'Some settings were not saved.', fields: res.errors });
+    return zoneView(zone);
+  });
+
+  app.post('/v1/ops/settings/:zone/reset', async (req) => {
+    settings.reset(req.params.zone, req.body?.actor ?? 'ops');
+    return zoneView(req.params.zone);
+  });
+
+  app.get('/v1/ops/settings/:zone/history', async (req) =>
+    ({ zone: req.params.zone, history: db.dispatchSettingsHistory(req.params.zone) }));
 
   app.get('/v1/ops/rates/:zone/history', async (req) =>
     ({ zone: req.params.zone, history: db.rateHistory(req.params.zone) }));
@@ -919,6 +1272,7 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
       deliveryCode: otp.peek(j.id),
       canIssueCode: !!j.driverId && !['DELIVERED','FAILED','CANCELLED'].includes(j.status),
       canClose: !['DELIVERED','FAILED','CANCELLED'].includes(j.status),
+      queries: supportQueries.forJob(j.id), queryTypes: QUERY_TYPES, queryChannels: QUERY_CHANNELS,
     };
   });
 
@@ -953,7 +1307,9 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
    * and a rate well above their peers is a fraud signal rather than bad luck.
    */
   /** Close an order by hand (back office) or from the staging simulator. */
-  function closeJob(job, { actor, reason, outcome }) {
+  function closeJob(job, { actor, reason, outcome, kind = 'OFFICE' }) {
+    // Kept on the history entry, so the driver's app can say why it ended.
+    const note = { driverId: job.driverId ?? null, by: actor, reason, kind };
 
     if (outcome === 'DELIVERED') {
       const waitMinutes = job.readyAt && job.collectedAt
@@ -962,7 +1318,7 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
       job.proofGrade = 'D';
       job.earnings = priceJob(job, { waitMinutes });
       job.costToServe = costToServe(job.earnings);
-      jobs.setStatus(job.id, 'DELIVERED');
+      jobs.setStatus(job.id, 'DELIVERED', {}, note);
       db.saveEvidence({ jobId: job.id, grade: 'D', flagged: false, payoutHeld: false,
         bundle: { override: true, actor, reason } });
       emit('delivery.delivered', {
@@ -980,20 +1336,33 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
     } else {
       job.failedAt = Date.now();
       job.failReason = reason;
-      jobs.setStatus(job.id, outcome);
+      jobs.setStatus(job.id, outcome, {}, note);
       emit('delivery.failed', { jobId: job.id, externalId: job.externalId, reason, actor });
     }
 
-    // Free the driver either way, or they are stuck holding a closed job.
-    if (job.driverId) {
-      const d = supply.get(job.driverId);
-      if (d?.activeJobId === job.id) {
-        supply.upsert(job.driverId, {
-          activeJobId: null,
-          state: d.state === SUPPLY.ROAMING_ACTIVE ? SUPPLY.RETURNING : d.state,
-        });
-      }
+    // Free the driver either way, or they are stuck holding a closed job. In a
+    // run they stay busy with the orders still in the box.
+    refreshDriverActive(job.driverId);
+  }
+
+  /**
+   * Take a job off its driver and put it back in the pool. The driver who had
+   * it is never offered it again: whatever went wrong, someone else should go.
+   */
+  function requeueJob(job, { actor, reason, kind }) {
+    const previous = job.driverId ?? null;
+    dispatcher.offers.delete(job.id);
+    if (previous) {
+      const seen = dispatcher.declinedBy.get(job.id) ?? new Map();
+      seen.set(previous, Infinity);
+      dispatcher.declinedBy.set(job.id, seen);
     }
+    jobs.setStatus(job.id, 'PENDING', { driverId: null, batchId: null },
+      { driverId: previous, by: actor, reason, kind });
+    refreshDriverActive(previous);
+    // Staging: another simulated driver comes for it.
+    sim?.onJob(job, { exclude: previous });
+    return previous;
   }
 
   app.post('/v1/ops/orders/:jobId/close', async (req, reply) => {
@@ -1032,9 +1401,16 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
     }
 
     const before = { name: job.dropoff?.name, km: job.distanceKm };
-    job.dropoff = { lat, lng, name: b.name ?? job.dropoff?.name ?? 'Delivery address' };
+    const moved = { lat, lng, name: b.name ?? job.dropoff?.name ?? 'Delivery address' };
+    const routing = await routeJob({ pickup: job.pickup, dropoff: moved });
+    // A corrected address is held to the same limit as a new order.
+    const rules = settings.effective(job.zone);
+    const km = roadKm(routing, job.pickup, moved, rules);
+    const refused = outOfRange(km, rules);
+    if (refused) return reply.code(422).send(refused);
+    job.dropoff = moved;
+    jobs.update(job.id, { roadKm: km });
 
-    const routing = await routeJob({ pickup: job.pickup, dropoff: job.dropoff });
     job.distanceKm = routing.deliverKm;
     job.distanceSource = routing.source;
     job.routing = routing;
@@ -1065,24 +1441,247 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
     };
   });
 
+  /** The driver's collection photo, for the back office (any signed-in role). */
+  app.get('/v1/ops/orders/:jobId/collection-photo', async (req, reply) => {
+    const job = jobs.get(req.params.jobId) ?? db.loadJob(req.params.jobId);
+    const bytes = job?.collectionPhoto?.file ? photos.read(job.collectionPhoto.file) : null;
+    if (!bytes) return reply.code(404).send({ error: 'No collection photo' });
+    reply.header('cache-control', 'private, no-store');
+    return reply.type('image/jpeg').send(bytes);
+  });
+
+  /** For the trial: was the photo check right about this order? */
+  app.post('/v1/ops/orders/:jobId/photo-check/review', async (req, reply) => {
+    const job = jobs.get(req.params.jobId);
+    if (!job?.photoCheck || ['pending', 'not_configured'].includes(job.photoCheck.status)) {
+      return reply.code(409).send({ error: 'This order has no photo check to review.' });
+    }
+    // Best: what was really in the photo ({ truth: complete | missing |
+    // different }), so every model's answer can be scored. "different": all
+    // there, but a different size or brand. { correct } still works.
+    const status = job.photoCheck.status;
+    let truth = req.body?.truth;
+    if (truth == null && typeof req.body?.correct === 'boolean') {
+      if (['complete', 'missing'].includes(status)) truth = req.body.correct ? status : (status === 'complete' ? 'missing' : 'complete');
+    } else if (!['complete', 'missing', 'different'].includes(truth)) {
+      return reply.code(400).send({ error: 'Say what was in the photo: { truth: "complete" | "missing" | "different" } (or { correct: true | false })' });
+    }
+    const correct = truth ? status === truth : req.body.correct;
+    // A changed answer keeps what was pressed before, for the record.
+    const was = job.photoCheck.review ? { was: job.photoCheck.review.truth ?? (job.photoCheck.review.correct ? 'right' : 'wrong') } : {};
+    const review = { ...(truth ? { truth } : {}), correct, by: req.body.actor ?? 'ops', at: Date.now(), ...was };
+    jobs.update(job.id, { photoCheck: { ...job.photoCheck, review } });
+    return { ok: true, review };
+  });
+
+  /**
+   * For the trial: run the check again on the photo already taken, with the
+   * current prompt and settings. Answers when done (a few seconds). The
+   * previous result is kept beside it, so a change can be judged on the same
+   * photo without another collection.
+   */
+  app.post('/v1/ops/orders/:jobId/photo-check/rerun', async (req, reply) => {
+    const job = jobs.get(req.params.jobId) ?? db.loadJob(req.params.jobId);
+    const jpeg = job?.collectionPhoto?.file ? photos.read(job.collectionPhoto.file) : null;
+    if (!jpeg) return reply.code(409).send({ error: 'No collection photo to check (none taken, or deleted after 30 days).' });
+    if (!job.items?.length) return reply.code(409).send({ error: 'This order has no item list to check against.' });
+    const { review, previous: _p, compare: _c, ...before } = job.photoCheck ?? {};
+    // The review is about the photo, not the answer: what was in it hasn't changed.
+    patchPhotoCheck(job.id, () => ({ status: 'pending', at: Date.now(), why: before.why ?? 'rerun',
+      rerunBy: req.body?.actor ?? 'ops', ...(job.photoCheck ? { previous: before } : {}) }));
+    let next = await runPhotoCheck(job, jpeg);
+    if (review?.truth) next = patchPhotoCheck(job.id, (c) => ({ ...c, review: { ...review, correct: c.status === review.truth } }));
+    return { ok: true, photoCheck: next };
+  });
+
+  /* ------------------------------------------------ back office: stores */
+
+  /** Photo checks in a window, as the trial report counts them. */
+  function photoCheckStats(sinceMs, storeId = null) {
+    const list = jobs.all().filter((j) => j.photoCheck?.at >= sinceMs
+      && !['pending', 'not_configured'].includes(j.photoCheck.status)
+      && (!storeId || j.storeId === storeId));
+    const by = (s) => list.filter((j) => j.photoCheck.status === s).length;
+    const reviewed = list.filter((j) => j.photoCheck.review);
+    const right = reviewed.filter((j) => j.photoCheck.review.correct).length;
+    const timed = list.filter((j) => j.photoCheck.ms != null);
+    const cost = list.reduce((a, j) => a + checkCost(j.photoCheck.usage, j.photoCheck.model), 0);
+    return {
+      checks: list.length,
+      complete: by('complete'), missing: by('missing'), different: by('different'), unclear: by('unclear'), errors: by('error'),
+      reviewed: reviewed.length, right,
+      accuracy: reviewed.length ? Number((right / reviewed.length).toFixed(3)) : null,
+      avgSeconds: timed.length ? Number((timed.reduce((a, j) => a + j.photoCheck.ms, 0) / timed.length / 1000).toFixed(1)) : null,
+      costUsd: Number(cost.toFixed(4)),
+      costPerCheckUsd: list.length ? Number((cost / list.length).toFixed(4)) : null,
+      inputTokens: list.reduce((a, j) => a + (j.photoCheck.usage?.input ?? 0), 0),
+      outputTokens: list.reduce((a, j) => a + (j.photoCheck.usage?.output ?? 0), 0),
+      models: modelStats(list),
+    };
+  }
+
+  /**
+   * The same photos, model by model: how often each was right against what
+   * the office said was really in the photo, how fast, and what it costs.
+   * "Right" needs the exact answer; "caught" only asks whether the model
+   * flagged a problem (missing or different) when there was one, and stayed
+   * quiet when there wasn't -- what matters to the driver. "missedProblem" is
+   * the costly mistake: something wrong, model said complete.
+   */
+  function modelStats(list) {
+    const answer = (j, model) => (j.photoCheck.model ?? PHOTO_CHECK_MODEL) === model ? j.photoCheck : j.photoCheck.compare?.[model];
+    const models = [...new Set(list.flatMap((j) => [j.photoCheck.model ?? PHOTO_CHECK_MODEL, ...Object.keys(j.photoCheck.compare ?? {})]))];
+    return models.map((model) => {
+      const rows = list.map((j) => ({ a: answer(j, model), truth: j.photoCheck.review?.truth })).filter((r) => r.a);
+      const n = (f) => rows.filter(f).length;
+      const judged = rows.filter((r) => r.truth);
+      const right = judged.filter((r) => r.a.status === r.truth).length;
+      const flags = (st) => ['missing', 'different'].includes(st);
+      const decided = judged.filter((r) => ['complete', 'missing', 'different'].includes(r.a.status));
+      const caught = decided.filter((r) => flags(r.a.status) === (r.truth !== 'complete')).length;
+      const timed = rows.filter((r) => r.a.ms != null);
+      const cost = rows.reduce((t, r) => t + checkCost(r.a.usage, model), 0);
+      return {
+        model, label: MODELS[model]?.label ?? model, main: model === PHOTO_CHECK_MODEL,
+        checks: rows.length,
+        complete: n((r) => r.a.status === 'complete'), missing: n((r) => r.a.status === 'missing'),
+        different: n((r) => r.a.status === 'different'),
+        unclear: n((r) => r.a.status === 'unclear'), errors: n((r) => r.a.status === 'error'),
+        judged: judged.length, right,
+        accuracy: judged.length ? Number((right / judged.length).toFixed(3)) : null,
+        caught, caughtRate: judged.length ? Number((caught / judged.length).toFixed(3)) : null,
+        missedProblem: judged.filter((r) => r.truth !== 'complete' && r.a.status === 'complete').length,
+        falseAlarms: judged.filter((r) => r.truth === 'complete' && flags(r.a.status)).length,
+        avgSeconds: timed.length ? Number((timed.reduce((t, r) => t + r.a.ms, 0) / timed.length / 1000).toFixed(1)) : null,
+        costUsd: Number(cost.toFixed(4)),
+        costPerCheckUsd: rows.length ? Number((cost / rows.length).toFixed(4)) : null,
+      };
+    });
+  }
+  const windowStart = (req, defDays) => Date.now() - Math.min(90, Math.max(1, Number(req.query?.days ?? defDays))) * 86400000;
+
+  /** Every store seen in orders lately, with its switches and trial numbers. */
+  app.get('/v1/ops/stores', async (req) => {
+    const settings = stores.all();
+    const since = windowStart(req, 30);
+    const seen = new Set([...metrics.merchants(since).map((m) => m.storeId), ...settings.keys()]);
+    for (const j of jobs.all()) if (j.storeId && j.createdAt >= since) seen.add(j.storeId);
+    return {
+      checkConfigured: checker.configured,
+      selective: SELECTIVE,
+      stores: [...seen].filter(Boolean).sort().map((storeId) => ({
+        storeId,
+        photoCheck: settings.get(storeId)?.photoCheck ?? false,
+        photoMode: settings.get(storeId)?.photoMode ?? 'off',
+        updatedBy: settings.get(storeId)?.updatedBy ?? null,
+        photoChecks: photoCheckStats(since, storeId),
+      })),
+    };
+  });
+
+  app.put('/v1/ops/stores/:storeId', async (req, reply) => {
+    const mode = req.body?.photoMode ?? req.body?.photoCheck;
+    if (typeof mode !== 'boolean' && !PHOTO_MODES.includes(mode)) {
+      return reply.code(400).send({ error: `Send { photoMode: ${PHOTO_MODES.map((m) => `"${m}"`).join(' | ')} } (or photoCheck: true | false)` });
+    }
+    const photoMode = stores.setPhotoMode(req.params.storeId, mode, req.body.actor ?? 'ops');
+    return { ok: true, storeId: req.params.storeId, photoCheck: photoMode !== 'off', photoMode };
+  });
+
+  /** The photo-check trial: accuracy, speed and cost, overall and per store. */
+  app.get('/v1/ops/photo-checks', async (req) => {
+    const since = windowStart(req, 14);
+    const storeIds = [...new Set(jobs.all().filter((j) => j.photoCheck?.at >= since).map((j) => j.storeId))].sort();
+    return {
+      configured: checker.configured,
+      compare: checker.compare ?? [],
+      overall: photoCheckStats(since),
+      stores: storeIds.map((storeId) => ({ storeId, ...photoCheckStats(since, storeId) })),
+    };
+  });
+
+  /** Delete photos past their retention, and say so on the order. */
+  function sweepPhotos() {
+    const removed = new Set(photos.sweep());
+    if (!removed.size) return 0;
+    for (const j of jobs.all()) {
+      if (j.collectionPhoto?.file && removed.has(j.collectionPhoto.file)) {
+        jobs.update(j.id, { collectionPhoto: { ...j.collectionPhoto, deletedAt: Date.now() } });
+      }
+    }
+    return removed.size;
+  }
+
   /** Put a stuck job back in the pool for another driver. */
   app.post('/v1/ops/orders/:jobId/reassign', async (req, reply) => {
     const job = jobs.get(req.params.jobId);
     if (!job) return reply.code(404).send({ error: 'Unknown order' });
-    const previous = job.driverId;
-    if (previous) {
-      const d = supply.get(previous);
-      if (d?.activeJobId === job.id) supply.upsert(previous, { activeJobId: null });
-    }
-    dispatcher.offers.delete(job.id);
-    // Do not re-offer to the driver who could not complete it.
-    if (previous) {
-      const seen = dispatcher.declinedBy.get(job.id) ?? new Set();
-      seen.add(previous);
-      dispatcher.declinedBy.set(job.id, seen);
-    }
-    jobs.setStatus(job.id, 'PENDING', { driverId: null });
+    const previous = requeueJob(job, { actor: req.body?.actor ?? 'ops',
+      reason: req.body?.reason ?? 'Reassigned by the back office', kind: 'REASSIGNED' });
     return { ok: true, status: 'PENDING', previousDriver: previous };
+  });
+
+  /* ------------------------------------------- back office: stuck drivers */
+
+  const reasonOf = (req) => String(req.body?.reason ?? '').trim();
+
+  /**
+   * Sign a driver out of the app. Every token they hold stops working, so the
+   * phone's next call (within 10 seconds) gets 401 and goes to sign-in. They
+   * go offline so no offer is sent to a phone nobody is signed in on. A job
+   * they are carrying stays theirs: clear it separately if it needs to move.
+   */
+  app.post('/v1/ops/drivers/:id/sign-out', async (req, reply) => {
+    const id = req.params.id;
+    if (!accounts.get(id)) return reply.code(404).send({ error: 'Unknown driver' });
+    const reason = reasonOf(req);
+    if (!reason) return reply.code(400).send({ error: 'Give a reason.' });
+    const revoked = driverTokens.revokeAll(id);
+    if (supply.get(id)) supply.upsert(id, { state: SUPPLY.OFFLINE });
+    for (const [jobId, offer] of [...dispatcher.offers]) {
+      if (offer.driverId === id) dispatcher.decline(jobId, id, { timedOut: true });
+    }
+    pendingOffers.delete(id);
+    dispatcher.handBackNext(id, 'Signed out by the office');
+    accounts.addNote(id, `Signed out by the office: ${reason}`, req.body?.actor ?? 'ops');
+    return { ok: true, revoked, activeJobs: driverRun(id).map((j) => j.id) };
+  });
+
+  /**
+   * Clear a driver's job: everything they are carrying. `requeue` sends the
+   * orders back to dispatch for someone else (not once the food is collected:
+   * it is in this driver's box). `close` ends them with an outcome. Either way
+   * the driver is free, and their app returns to Home within 10 seconds.
+   */
+  app.post('/v1/ops/drivers/:id/clear-job', async (req, reply) => {
+    const id = req.params.id;
+    if (!accounts.get(id)) return reply.code(404).send({ error: 'Unknown driver' });
+    const { action } = req.body ?? {};
+    const outcome = req.body?.outcome ?? 'CANCELLED';
+    const reason = reasonOf(req);
+    if (!['requeue', 'close'].includes(action)) {
+      return reply.code(400).send({ error: 'action must be requeue or close' });
+    }
+    if (action === 'close' && !['DELIVERED', 'FAILED', 'CANCELLED'].includes(outcome)) {
+      return reply.code(400).send({ error: 'outcome must be DELIVERED, FAILED or CANCELLED' });
+    }
+    if (!reason) return reply.code(400).send({ error: 'Give a reason.' });
+    const run = driverRun(id);
+    if (!run.length) return reply.code(409).send({ error: 'This driver is not carrying a job.' });
+    const actor = req.body?.actor ?? 'ops';
+    // Clearing a driver's job also releases the job lined up after it.
+    dispatcher.handBackNext(id, 'Driver\u2019s job cleared by the office');
+    if (action === 'requeue') {
+      const collected = run.filter(isCollected).map((j) => j.id);
+      if (collected.length) {
+        return reply.code(409).send({ error: 'The food is already collected. Close the order instead.', collected });
+      }
+      for (const j of run) requeueJob(j, { actor, reason, kind: 'CLEARED' });
+    } else {
+      for (const j of run) closeJob(j, { actor, reason, outcome, kind: 'CLEARED' });
+    }
+    refreshDriverActive(id);
+    return { ok: true, action, jobs: run.map((j) => j.id), ...(action === 'close' ? { outcome } : {}) };
   });
 
   /* ------------------------------------------- back office: vehicle ledger */
@@ -1167,6 +1766,41 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
        windows: rates.setSurge(req.params.zone, req.body?.windows, req.body?.actor ?? 'ops') }));
 
   app.get('/v1/ops/summary', async (req) => metrics.summary(since(req)));
+  /** The performance dashboard: core service metrics against targets, by zone, distance and week. */
+  app.get('/v1/ops/performance', async (req) => {
+    const sinceMs = since(req);
+    const zone = req.query?.zone || null;
+    // MATU always looks at the last 30 days, whatever the period shown.
+    return performance(metrics.jobsSince(Math.min(sinceMs, Date.now() - 30 * 86400000)), { sinceMs, zone, storeId: req.query?.storeId || null,
+      costs: perfSettings.get(), onlineHours: online.hours(sinceMs, zone), queries: supportQueries.since(sinceMs) });
+  });
+
+  /* ------------------------------------------------ customer support queries */
+
+  /** Log what a customer called or wrote about, against the order. */
+  app.post('/v1/ops/queries', async (req, reply) => {
+    const b = req.body ?? {};
+    const job = b.jobId ? (jobs.get(b.jobId) ?? db.loadJob(b.jobId)) : null;
+    if (b.jobId && !job) return reply.code(404).send({ error: 'Unknown order' });
+    const { query, error } = supportQueries.add({ jobId: job?.id ?? null, storeId: job?.storeId ?? null, zone: job?.zone ?? null,
+      type: b.type, channel: b.channel, refund: b.refund, note: b.note }, b.actor ?? 'ops');
+    if (error) return reply.code(400).send({ error });
+    return { ok: true, query };
+  });
+  app.get('/v1/ops/queries', async (req) => ({ queries: supportQueries.since(since(req)), types: QUERY_TYPES, channels: QUERY_CHANNELS }));
+  /** For a query logged by mistake. */
+  app.delete('/v1/ops/queries/:id', async (req, reply) => {
+    if (!supportQueries.remove(Number(req.params.id))) return reply.code(404).send({ error: 'No such query' });
+    return { ok: true };
+  });
+  /** The CM2 costs, and changing them (ops and admin). */
+  app.get('/v1/ops/performance/settings', async () => ({ ...perfSettings.get(), fields: COST_SETTINGS }));
+  app.put('/v1/ops/performance/settings', async (req, reply) => {
+    const { actor, ...patch } = req.body ?? {};
+    const err = perfSettings.update(patch, actor ?? 'ops');
+    if (err) return reply.code(400).send({ error: err });
+    return { ok: true, ...perfSettings.get() };
+  });
   app.get('/v1/ops/merchants', async (req) => ({ stores: metrics.merchants(since(req)) }));
   app.get('/v1/ops/drivers', async (req) => ({ drivers: metrics.drivers(since(req)) }));
   app.get('/v1/ops/exceptions', async (req) => ({ exceptions: metrics.exceptions(since(req)) }));
@@ -1202,7 +1836,7 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
 
   app.get('/ops', async (req, reply) => {
     reply.type('text/html');
-    return readFileSync(join(HERE, '..', 'public', 'ops.html'), 'utf8');
+    return markStaging(readFileSync(join(HERE, '..', 'public', 'ops.html'), 'utf8'), staging);
   });
 
   const HERE = dirname(fileURLToPath(import.meta.url));
@@ -1307,9 +1941,15 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
     restoredOnBoot: restored,
   }));
 
-  const sim = staging ? new Simulator({ app, engine: { supply, jobs, accounts, pendingOffers }, closeJob, speed: simSpeed, log: app.log }) : null;
+  const sim = staging ? new Simulator({ app, engine: { supply, jobs, accounts, pendingOffers, driverTokens }, closeJob, speed: simSpeed, log: app.log }) : null;
+  // A next job handed back goes to the pool; on staging a simulated driver comes for it.
+  dispatcher.onHandBack = (job) => sim?.onJob(job);
+  // An order taken off a slow run: the driver's app drops it on its next poll;
+  // staging sends another simulated driver for it.
+  dispatcher.onUnbatch = (job, driverId) => sim?.onJob(job, { exclude: driverId });
 
-  app.decorate('engine', { opsUsers, idem, sim, gate, supply, jobs, dispatcher, otp, outbound, pendingOffers, db, metrics, rates, keychat, accounts, messages, ledger });
+  app.decorate('engine', { opsUsers, driverTokens, photos, sweepPhotos, stores, checker, online, perfSettings, supportQueries,
+    photoChecksDone: () => Promise.all([...checksRunning]), settings, idem, sim, gate, supply, jobs, dispatcher, otp, outbound, pendingOffers, db, metrics, rates, keychat, accounts, messages, ledger });
   return app;
 }
 
@@ -1319,12 +1959,18 @@ if (process.argv[1]?.endsWith('server.js')) {
   app.engine.dispatcher.start();
   app.engine.keychat.start();
   if (app.engine.sim) { app.engine.sim.start(); app.log.warn('STAGING: simulated drivers are running'); }
+  // Collection photos are deleted after their retention period; check hourly.
+  app.engine.sweepPhotos();
+  setInterval(() => { try { app.engine.sweepPhotos(); } catch (err) { app.log.error(err, 'photo sweep failed'); } }, 3600 * 1000).unref();
+  // Online time is added up in memory; write it once a minute.
+  setInterval(() => { try { app.engine.online.flush(); } catch (err) { app.log.error(err, 'online time flush failed'); } }, 60_000).unref();
 
   // Close the database cleanly so WAL is checkpointed rather than left behind.
   for (const sig of ['SIGINT', 'SIGTERM']) {
     process.on(sig, () => {
       app.log.info('shutting down, closing database');
       app.engine.dispatcher.stop();
+      try { app.engine.online.flush(); } catch { /* best effort */ }
       try { app.engine.db.close(); } catch { /* already closed */ }
       process.exit(0);
     });

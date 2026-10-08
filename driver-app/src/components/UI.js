@@ -1,24 +1,40 @@
 import React from 'react';
 import { Text, View, Pressable, ActivityIndicator, StyleSheet } from 'react-native';
-import { C, T, R, SP, SHADOW } from '../theme';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { C, T, R, SP, SHADOW, Z } from '../theme';
 
-/** Big, unmissable, thumb-sized. A driver taps this with a glove on. */
-export function Button({ title, subtitle, onPress, kind = 'primary', disabled, loading, style }) {
+/**
+ * Bottom padding that clears the phone's own navigation bar. Android draws the
+ * app edge to edge, so without this the last row of a screen sits underneath
+ * the back / home / recent buttons (or the iPhone home indicator).
+ */
+export function useBottomPad(extra = SP.md) {
+  const insets = useSafeAreaInsets();
+  return { paddingBottom: extra + (insets?.bottom ?? 0) };
+}
+
+/**
+ * Thumb-sized, not oversized: 48 pt for the one primary action on a screen,
+ * 40 for everything else (ghost), and never a tap target under 44.
+ */
+export function Button({ title, subtitle, onPress, kind = 'primary', disabled, loading, style, textColor }) {
   const bg =
     disabled ? C.line :
     kind === 'primary' ? C.green :
     kind === 'live' ? C.live :
     kind === 'dark' ? C.forest :
     kind === 'danger' ? C.red : 'transparent';
-  const fg = kind === 'ghost' ? C.green : C.white;
+  const fg = textColor ?? (kind === 'ghost' ? C.green : C.white);
 
   return (
     <Pressable
       accessibilityRole="button"
       accessibilityState={{ disabled: !!disabled }}
       onPress={disabled || loading ? undefined : onPress}
+      hitSlop={kind === 'ghost' ? 2 : 0}
       style={({ pressed }) => [
         st.btn,
+        kind === 'ghost' && st.btnSecondary,
         kind !== 'ghost' && SHADOW.card,
         {
           backgroundColor: bg,
@@ -105,14 +121,16 @@ export function Label({ children, style }) {
 
 const st = StyleSheet.create({
   btn: {
-    borderRadius: R.md, paddingVertical: 18, paddingHorizontal: 20,
-    alignItems: 'center', justifyContent: 'center', minHeight: 58,
+    borderRadius: R.md, paddingVertical: 8, paddingHorizontal: 18,
+    alignItems: 'center', justifyContent: 'center', minHeight: Z.primary,
   },
-  btnText: { fontSize: 17, fontWeight: '700', letterSpacing: -0.2 },
-  btnSub: { fontSize: 12.5, marginTop: 3, opacity: 0.85 },
-  card: { borderRadius: R.lg, padding: SP.lg },
-  row: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 9 },
-  pill: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: R.pill, alignSelf: 'flex-start' },
-  pillText: { fontSize: 12.5, fontWeight: '800', letterSpacing: 0.2 },
-  divider: { height: 1, marginVertical: SP.md },
+  // Secondary is 40 pt to the eye; hitSlop keeps the tap target at 44.
+  btnSecondary: { minHeight: Z.secondary, paddingVertical: 6 },
+  btnText: { fontSize: Z.buttonText, fontWeight: '700', letterSpacing: -0.2 },
+  btnSub: { fontSize: 12, marginTop: 1, opacity: 0.85 },
+  card: { borderRadius: R.md, padding: SP.md },
+  row: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 5 },
+  pill: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: R.pill, alignSelf: 'flex-start' },
+  pillText: { fontSize: 12, fontWeight: '800', letterSpacing: 0.2 },
+  divider: { height: 1, marginVertical: SP.sm },
 });
