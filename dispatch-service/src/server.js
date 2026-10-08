@@ -679,7 +679,7 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
       if (j.driverId !== req.driverId) return reply.code(403).send({ error: 'That order is not yours.' });
       const c = j.photoCheck;
       // What the driver needs: the verdict and what was not seen. Not tokens.
-      out[id] = c ? { status: c.status, missing: c.missing ?? [], note: c.note ?? null } : null;
+      out[id] = c ? { status: c.status, missing: c.missing ?? [], different: c.different ?? [], note: c.note ?? null } : null;
     }
     return { checks: out };
   });
@@ -1366,14 +1366,15 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
     if (!job?.photoCheck || ['pending', 'not_configured'].includes(job.photoCheck.status)) {
       return reply.code(409).send({ error: 'This order has no photo check to review.' });
     }
-    // Best: what was really in the photo ({ truth: complete | missing }), so
-    // every model's answer can be scored. { correct } still works.
+    // Best: what was really in the photo ({ truth: complete | missing |
+    // different }), so every model's answer can be scored. "different": all
+    // there, but a different size or brand. { correct } still works.
     const status = job.photoCheck.status;
     let truth = req.body?.truth;
     if (truth == null && typeof req.body?.correct === 'boolean') {
       if (['complete', 'missing'].includes(status)) truth = req.body.correct ? status : (status === 'complete' ? 'missing' : 'complete');
-    } else if (!['complete', 'missing'].includes(truth)) {
-      return reply.code(400).send({ error: 'Say what was in the photo: { truth: "complete" | "missing" } (or { correct: true | false })' });
+    } else if (!['complete', 'missing', 'different'].includes(truth)) {
+      return reply.code(400).send({ error: 'Say what was in the photo: { truth: "complete" | "missing" | "different" } (or { correct: true | false })' });
     }
     const correct = truth ? status === truth : req.body.correct;
     const review = { ...(truth ? { truth } : {}), correct, by: req.body.actor ?? 'ops', at: Date.now() };
@@ -1415,7 +1416,7 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
     const cost = list.reduce((a, j) => a + checkCost(j.photoCheck.usage, j.photoCheck.model), 0);
     return {
       checks: list.length,
-      complete: by('complete'), missing: by('missing'), unclear: by('unclear'), errors: by('error'),
+      complete: by('complete'), missing: by('missing'), different: by('different'), unclear: by('unclear'), errors: by('error'),
       reviewed: reviewed.length, right,
       accuracy: reviewed.length ? Number((right / reviewed.length).toFixed(3)) : null,
       avgSeconds: timed.length ? Number((timed.reduce((a, j) => a + j.photoCheck.ms, 0) / timed.length / 1000).toFixed(1)) : null,
@@ -1430,8 +1431,10 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
   /**
    * The same photos, model by model: how often each was right against what
    * the office said was really in the photo, how fast, and what it costs.
-   * "missedMissing" is the costly mistake: something missing, model said
-   * complete.
+   * "Right" needs the exact answer; "caught" only asks whether the model
+   * flagged a problem (missing or different) when there was one, and stayed
+   * quiet when there wasn't -- what matters to the driver. "missedProblem" is
+   * the costly mistake: something wrong, model said complete.
    */
   function modelStats(list) {
     const answer = (j, model) => (j.photoCheck.model ?? PHOTO_CHECK_MODEL) === model ? j.photoCheck : j.photoCheck.compare?.[model];
@@ -1441,17 +1444,22 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
       const n = (f) => rows.filter(f).length;
       const judged = rows.filter((r) => r.truth);
       const right = judged.filter((r) => r.a.status === r.truth).length;
+      const flags = (st) => ['missing', 'different'].includes(st);
+      const decided = judged.filter((r) => ['complete', 'missing', 'different'].includes(r.a.status));
+      const caught = decided.filter((r) => flags(r.a.status) === (r.truth !== 'complete')).length;
       const timed = rows.filter((r) => r.a.ms != null);
       const cost = rows.reduce((t, r) => t + checkCost(r.a.usage, model), 0);
       return {
         model, label: MODELS[model]?.label ?? model, main: model === PHOTO_CHECK_MODEL,
         checks: rows.length,
         complete: n((r) => r.a.status === 'complete'), missing: n((r) => r.a.status === 'missing'),
+        different: n((r) => r.a.status === 'different'),
         unclear: n((r) => r.a.status === 'unclear'), errors: n((r) => r.a.status === 'error'),
         judged: judged.length, right,
         accuracy: judged.length ? Number((right / judged.length).toFixed(3)) : null,
-        missedMissing: judged.filter((r) => r.truth === 'missing' && r.a.status === 'complete').length,
-        falseAlarms: judged.filter((r) => r.truth === 'complete' && r.a.status === 'missing').length,
+        caught, caughtRate: judged.length ? Number((caught / judged.length).toFixed(3)) : null,
+        missedProblem: judged.filter((r) => r.truth !== 'complete' && r.a.status === 'complete').length,
+        falseAlarms: judged.filter((r) => r.truth === 'complete' && flags(r.a.status)).length,
         avgSeconds: timed.length ? Number((timed.reduce((t, r) => t + r.a.ms, 0) / timed.length / 1000).toFixed(1)) : null,
         costUsd: Number(cost.toFixed(4)),
         costPerCheckUsd: rows.length ? Number((cost / rows.length).toFixed(4)) : null,

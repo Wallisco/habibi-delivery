@@ -78,6 +78,19 @@ test('the verdict is worked out from the per-line counts, not taken from the mod
   assert.equal(verdictFrom(inconsistent, ITEMS).status, 'missing');
   // Hidden from view: unclear, not complete and not missing.
   assert.equal(verdictFrom(answer({ sprite: 0, spriteStatus: 'cannot_tell' }), ITEMS).status, 'unclear');
+  // There, but plainly a different size or brand: its own answer, not "missing".
+  const swapped = answer(); swapped.lines[1] = { ...swapped.lines[1], status: 'different', seen_as: 'Sprite 2L' };
+  const diff = verdictFrom(swapped, ITEMS);
+  assert.equal(diff.status, 'different');
+  assert.deepEqual(diff.different, [{ name: 'Sprite', seenAs: 'Sprite 2L' }]);
+  assert.deepEqual(diff.missing, []);
+  // Short wins over different.
+  const both = answer({ pizzas: 2 }); both.lines[1] = { ...both.lines[1], status: 'different', seen_as: 'Sprite 2L' };
+  assert.equal(verdictFrom(both, ITEMS).status, 'missing');
+  // The model's spelling of a line doesn't matter: lines take the order's names.
+  const respelled = answer({ sprite: 0 }); respelled.lines[1].name = 'Sprite (500ml)';
+  assert.deepEqual(verdictFrom(respelled, ITEMS).missing, [{ name: 'Sprite', qty: 1 }]);
+  assert.deepEqual(verdictFrom(respelled, ITEMS).seen.map((x) => x.name), ['Pizza Margherita', 'Sprite']);
   // A line the model didn't answer for: unclear.
   const partial = answer(); partial.lines.pop();
   assert.equal(verdictFrom(partial, ITEMS).status, 'unclear');
@@ -167,7 +180,7 @@ test('switched on for the store: the photo is checked in the background and the 
   release();
   await app.engine.photoChecksDone();
   const c = await checkFor(app, d);
-  assert.deepEqual(c, { status: 'missing', missing: [{ name: 'Sprite', qty: 1 }], note: 'One Sprite is not in the photo.' });
+  assert.deepEqual(c, { status: 'missing', missing: [{ name: 'Sprite', qty: 1 }], different: [], note: 'One Sprite is not in the photo.' });
   assert.equal(client.calls.length, 1);
 
   // Another driver can't read it.
@@ -306,7 +319,7 @@ test('comparison models see the same photo; the driver only ever gets the main a
   const m = Object.fromEntries(report.overall.models.map((x) => [x.model, x]));
   assert.equal(m['claude-opus-5-5'].main, true);
   assert.deepEqual([m['claude-opus-5-5'].accuracy, m['claude-sonnet-5-5'].accuracy, m['claude-haiku-4-5'].accuracy], [1, 1, 0]);
-  assert.equal(m['claude-haiku-4-5'].missedMissing, 1, 'the costly mistake is counted');
+  assert.equal(m['claude-haiku-4-5'].missedProblem, 1, 'the costly mistake is counted');
   // Same tokens, different price: $4/$20, $2/$10, $1/$5 per million.
   assert.deepEqual([m['claude-opus-5-5'].costPerCheckUsd, m['claude-sonnet-5-5'].costPerCheckUsd, m['claude-haiku-4-5'].costPerCheckUsd],
     [0.0096, 0.0048, 0.0024]);
@@ -368,4 +381,23 @@ test('a store switched on before modes existed keeps checking every order', () =
   new StoreSettings({ sql });   // a second start changes nothing
   assert.equal(stores.photoMode('ON'), 'all');
   assert.throws(() => stores.setPhotoMode('ON', 'sometimes'));
+});
+
+test('"all there, but a different size or brand": a third review answer, and "caught" credits any warning', async (t) => {
+  const swapped = answer(); swapped.lines[1] = { ...swapped.lines[1], status: 'different', seen_as: 'Sprite 2L' };
+  const short = answer({ sprite: 0 });
+  const client = perModelClient({ 'claude-opus-5-5': short, 'claude-sonnet-5-5': swapped, 'claude-haiku-4-5': answer() });
+  const app = appFor(t, client, { compare: ['claude-sonnet-5-5', 'claude-haiku-4-5'] });
+  await app.inject({ method: 'PUT', url: '/v1/ops/stores/KFC-MIL', payload: { photoMode: 'all' } });
+  const d = await driverWithOrder(app);
+  await upload(app, d);
+  await app.engine.photoChecksDone();
+  const r = await app.inject({ method: 'POST', url: `/v1/ops/orders/${d.jobId}/photo-check/review`, payload: { truth: 'different' } });
+  assert.deepEqual([r.statusCode, r.json().review.correct], [200, false], 'Opus said missing: not exact');
+
+  const m = Object.fromEntries((await app.inject({ url: '/v1/ops/photo-checks' })).json().overall.models.map((x) => [x.model, x]));
+  assert.deepEqual([m['claude-opus-5-5'].accuracy, m['claude-opus-5-5'].caughtRate], [0, 1], 'warned the driver: caught');
+  assert.deepEqual([m['claude-sonnet-5-5'].accuracy, m['claude-sonnet-5-5'].caughtRate], [1, 1]);
+  assert.deepEqual([m['claude-haiku-4-5'].caughtRate, m['claude-haiku-4-5'].missedProblem], [0, 1]);
+  assert.equal(app.engine.jobs.get(d.jobId).photoCheck.compare['claude-sonnet-5-5'].different[0].seenAs, 'Sprite 2L');
 });

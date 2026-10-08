@@ -104,6 +104,24 @@ test('photo check trial: the driver sees "Checking", then what was not seen, and
   jest.useRealTimers();
 });
 
+test('photo check trial: an item there in a different size or brand gets its own warning', async () => {
+  jest.useFakeTimers();
+  const photoCheck = jest.fn(async () => ({ checks: { J1: { status: 'different', missing: [],
+    different: [{ name: 'Rooibos tea bags', seenAs: 'Joko Rooibos 80 bags' }], note: null } } }));
+  const app = appAtStore(jest.fn(async () => 'file:///order.jpg'));
+  app.jobs = [{ ...job, photoCheck: true }];
+  app.api = { collect: jest.fn(), photoCheck };
+  const r = await renderAtStore(app);
+  await act(async () => { await button(r, 'Take a photo of the order').props.onPress(); });
+  await advance(2000);
+  const text = JSON.stringify(r.toJSON());
+  expect(text).toContain('Different size or brand: Rooibos tea bags (photo: Joko Rooibos 80 bags). Check with the store.');
+  expect(text).not.toContain('Not seen');
+  expect(collectButton(r).props.accessibilityState.disabled).toBe(false);   // never blocks
+  act(() => r.unmount());
+  jest.useRealTimers();
+});
+
 test("photo check trial: a match says so; a store that isn't in the trial never asks", async () => {
   jest.useFakeTimers();
   const photoCheck = jest.fn(async () => ({ checks: { J1: { status: 'complete', missing: [] } } }));

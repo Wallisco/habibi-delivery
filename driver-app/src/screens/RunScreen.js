@@ -97,7 +97,7 @@ export default function RunScreen({ navigation }) {
 
   // Stores in the photo-check trial: dispatch compares the photo with the
   // order and the result appears here within seconds. It only ever warns.
-  const [check, setCheck] = useState(null);   // { status, missing }
+  const [check, setCheck] = useState(null);   // { status, missing, different }
   const wantsCheck = stopJobs.some((j) => j.photoCheck);
   const checkIds = stopJobs.map((j) => j.id).join(',');
   useEffect(() => {
@@ -113,7 +113,9 @@ export default function RunScreen({ navigation }) {
         if (results.length && results.every((c) => c.status !== 'pending')) {
           clearInterval(t);
           const missing = results.flatMap((c) => c.missing ?? []);
+          const different = results.flatMap((c) => c.different ?? []);
           if (results.some((c) => c.status === 'missing')) setCheck({ status: 'missing', missing });
+          else if (results.some((c) => c.status === 'different')) setCheck({ status: 'different', different });
           else if (results.every((c) => c.status === 'complete')) setCheck({ status: 'complete' });
           else if (results.every((c) => c.status === 'not_configured')) setCheck(null);
           else setCheck({ status: 'unclear' });
@@ -330,6 +332,8 @@ export default function RunScreen({ navigation }) {
                 : check.status === 'complete' ? 'Photo matches the order.'
                 : check.status === 'missing'
                   ? `Not seen in your photo: ${check.missing.map((m) => `${m.qty} × ${m.name}`).join(', ')}. Check before you leave.`
+                : check.status === 'different'
+                  ? `Different size or brand: ${check.different.map((d) => (d.seenAs ? `${d.name} (photo: ${d.seenAs})` : d.name)).join(', ')}. Check with the store.`
                   : "Couldn't check the photo."}
             </Text>
           ) : null}
@@ -411,6 +415,7 @@ const st = StyleSheet.create({
   check_pending: { color: C.muted, fontWeight: '600' },
   check_complete: { color: C.green },
   check_missing: { color: C.amber },
+  check_different: { color: C.amber },
   check_unclear: { color: C.muted, fontWeight: '600' },
   thumb: { width: Z.tap, height: Z.tap, borderRadius: R.sm, backgroundColor: C.wash },
   retake: { minHeight: Z.tap, paddingHorizontal: SP.md, justifyContent: 'center' },

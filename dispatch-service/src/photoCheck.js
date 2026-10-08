@@ -53,7 +53,9 @@ export const CheckAnswer = z.object({
     name: z.string(),
     ordered: z.number().int(),
     seen: z.number().int(),
-    status: z.enum(['present', 'short', 'cannot_tell']),
+    status: z.enum(['present', 'short', 'different', 'cannot_tell']),
+    // What is there instead, when "different" (e.g. "Joko Rooibos 80 bags"); else "".
+    seen_as: z.string(),
   })),
   note: z.string(),
 });
@@ -65,8 +67,10 @@ Work in this order:
 2. "lines": for each line of the order, in order, give how many were ordered and how many you can see, and a status:
    - "present": you can see at least the ordered quantity.
    - "short": you can see the area where the order is laid out, and fewer than ordered are visible (including none). This is the important case: one drink or one box missing is "short".
+   - "different": the item is there, but its size, pack size, flavour or brand plainly differs from the order (e.g. 80 tea bags instead of 100, 1L instead of 2L, Pepsi instead of Coca-Cola). Count it as seen, and say what it is in "seen_as". Only when the label clearly shows the difference.
    - "cannot_tell": the item could be hidden from view -- inside a closed bag, behind something, cut off at the edge, or the photo is too blurred or dark to count.
    An item is only present if you can see it. Never assume something is in the photo because it is on the order.
+   "seen_as" is empty unless the status is "different".
 3. "note": one short sentence for the driver in plain words, e.g. "1 Sprite 500ml is not in the photo."
 
 A closed pizza box counts as one pizza; you need not know the topping. Match drinks by brand and size when the label is readable; if a drink of the right kind is there but the label can't be read, it counts as seen.
@@ -80,16 +84,25 @@ const orderText = (items, bagCount) => [
 
 /**
  * The verdict, worked out from the per-line counts rather than taken from the
- * model: anything short is missing; otherwise anything it couldn't see (or a
- * line it didn't answer for) makes it unclear; only then complete.
+ * model: anything short is missing; otherwise a different size or brand is
+ * "different"; otherwise anything it couldn't see (or a line it didn't answer
+ * for) makes it unclear; only then complete.
+ *
+ * Lines come back in the order's order; they are named with the order's own
+ * names (the model's spelling of them varies), so the office can match them.
  */
 export function verdictFrom({ lines }, items) {
-  const short = lines.filter((l) => l.status !== 'cannot_tell' && (l.status === 'short' || l.seen < l.ordered));
+  const named = lines.map((l, i) => ({ ...l, name: lines.length === items.length ? items[i].name : l.name }));
+  const short = named.filter((l) => l.status !== 'cannot_tell' && (l.status === 'short' || l.seen < l.ordered));
   const missing = short.map((l) => ({ name: l.name, qty: Math.max(1, l.ordered - Math.max(0, l.seen)) }));
-  const seen = lines.map((l) => ({ name: l.name, qty: Math.max(0, l.seen) }));
-  if (missing.length) return { status: 'missing', missing, seen };
-  if (lines.some((l) => l.status === 'cannot_tell') || lines.length < items.length) return { status: 'unclear', missing: [], seen };
-  return { status: 'complete', missing: [], seen };
+  const different = named.filter((l) => l.status === 'different' && !short.includes(l))
+    .map((l) => ({ name: l.name, seenAs: String(l.seen_as ?? '').slice(0, 80) }));
+  const seen = named.map((l) => ({ name: l.name, qty: Math.max(0, l.seen) }));
+  const base = { missing, different, seen };
+  if (missing.length) return { status: 'missing', ...base };
+  if (different.length) return { status: 'different', ...base };
+  if (named.some((l) => l.status === 'cannot_tell') || lines.length < items.length) return { status: 'unclear', ...base };
+  return { status: 'complete', ...base };
 }
 
 /** Estimated cost in US$ of one check, from its token counts and the model's list price. */
