@@ -125,6 +125,7 @@
   </header>
   <nav id="tabs"></nav>
   <div id="tab-overview"></div>
+  <div id="tab-performance" class="hidden"></div>
   <div id="tab-orders" class="hidden"></div>
   <div id="tab-drivers" class="hidden"></div>
   <div id="tab-earnings" class="hidden"></div>
@@ -240,6 +241,7 @@ document.addEventListener('click', (e) => {
   if (action === 'photoCheckSwitch') setPhotoCheck(id, state);
   if (action === 'photoCheckReview') reviewPhotoCheck(id, state);
   if (action === 'photoCheckRerun')  rerunPhotoCheck(id, act);
+  if (action === 'saveCosts')        saveCosts();
 });
 
 // Enter in the search box should search, not reload the page.
@@ -305,7 +307,7 @@ async function reassignJob(jobId) {
   await loadOrders(); openOrder(jobId);
 }
 
-const TABS = [['overview','Overview'],['orders','Orders'],['drivers','Drivers'],
+const TABS = [['overview','Overview'],['performance','Performance'],['orders','Orders'],['drivers','Drivers'],
   ['earnings','Earnings'],['messages','Messages'],['stores','Stores'],['pricing','Pricing'],['settings','Settings'],['integration','Integration']];
 let active='overview', unreadCount=0;
 
@@ -912,6 +914,107 @@ async function loadStores(){
         : empty('No checks in this period yet.')}
     </section>`;
 }
+/* ------------------------------------------------------------- performance */
+// The five core service metrics and the operational ones under them, each
+// against its target. Worked out from the orders (src/performance.js).
+let PERF_ZONE = '', PERF_STORE = '';
+async function loadPerformance(){
+  const q = new URLSearchParams({ days: days(), ...(PERF_ZONE ? { zone: PERF_ZONE } : {}), ...(PERF_STORE ? { storeId: PERF_STORE } : {}) });
+  const [d, cfg] = await Promise.all([fetch('/v1/ops/performance?' + q).then((x) => x.json()),
+    fetch('/v1/ops/performance/settings').then((x) => x.json())]);
+  const pc = (v) => v == null ? '–' : (v * 100).toFixed(1) + '%';
+  const show = (m) => m.value == null ? '–' : m.unit === 'share' ? pc(m.value) : m.unit === 'R' ? R2(m.value)
+    : m.unit === 'min' ? r(m.value) + ' min' : m.unit === 'km' ? r(m.value) + ' km' : r(m.value, Number.isInteger(m.value) ? 0 : 2);
+  const goal = (m) => m.target == null ? '' : (m.dir === 'atLeast' ? '≥ ' : '≤ ') + show({ ...m, value: m.target });
+  const cls = (st) => st === 'bad' ? 'bad' : st === 'warn' ? 'warn' : '';
+  const tag = (st) => st ? `<span class="tag ${{ good: 'g', warn: 'a', bad: 'r' }[st]}">${{ good: 'On target', warn: 'Close', bad: 'Off target' }[st]}</span>` : '<span class="tag n">No data</span>';
+  const card = (m) => m.waiting ? kpi(m.label, '–', 'Waiting for data. ' + m.waiting)
+    : kpi(m.label, show(m), m.target != null ? 'target ' + goal(m) : (m.note ?? ''), cls(m.status));
+  const opt = (list, cur, all) => `<option value="">${all}</option>` + list.map((x) => `<option ${x === cur ? 'selected' : ''}>${x}</option>`).join('');
+  const M = d.metrics;
+  const rows = [
+    ['Delivered within 30 min of order', M.within30],
+    ['Delivered within SLA (promised time)', M.withinSla],
+    ['Orders over 30 min (SLA breaches)', M.zoneBreaches],
+    ['Driver wait at store (average)', M.driverWait, M.driverWait.value != null ? 'p90 ' + r(M.driverWait.p90) + ' min · ' + pc(M.driverWait.over5) + ' over 5 min' : ''],
+    ['Order batching efficiency', M.batching, 'orders that went out in a run of 2'],
+    ['First-attempt delivery (FAD)', M.fad, 'delivered first time: not failed, reassigned or cleared'],
+    ['Longest delivery distance', M.distance, M.distance.avg != null ? 'average ' + r(M.distance.avg) + ' km' : ''],
+    ['Orders over 7 km', M.over7km],
+    ['Order to delivered (average)', M.avgMinutes],
+    ['Revenue per order', M.revenuePerOrder, d.core.margin.note],
+    ['Driver pay per order (COGS)', M.driverPayPerOrder],
+    ['Contribution margin per order (CM1)', M.cm1PerOrder, M.cm1PerOrder.priced != null ? M.cm1PerOrder.priced + ' orders priced · total ' + R2(M.cm1PerOrder.total) : ''],
+    ['Contribution margin per order (CM2)', M.cm2PerOrder, M.cm2PerOrder.parts ? 'CM1 minus payment fees ' + R2(M.cm2PerOrder.parts.paymentFees)
+      + ', refunds ' + R2(M.cm2PerOrder.parts.refunds) + ', support ' + R2(M.cm2PerOrder.parts.support) + ', AI photo check ' + R2(M.cm2PerOrder.parts.photoCheck) + ' per order'
+      + (M.cm2PerOrder.unset?.length ? ' · <b style="color:var(--amber)">not set yet: ' + M.cm2PerOrder.unset.map((k) => cfg.fields[k].label).join('; ') + '</b>' : '') : ''],
+    ['Profitable order volume', M.profitableOrders, M.profitableOrders.share != null ? pc(M.profitableOrders.share) + ' of priced orders · ' + M.profitableOrders.note : M.profitableOrders.note],
+    ['Rider drops per hour', M.dropsPerHour, PERF_STORE ? 'not split by store: drivers are online for a zone'
+      : M.dropsPerHour.hours != null ? r(M.dropsPerHour.hours) + ' driver hours online (counted from this release)' : ''],
+  ];
+  $('#tab-performance').innerHTML = `
+    <section style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+      <b>${d.volume.delivered} delivered</b><span class="hint" style="margin:0">of ${d.volume.orders} orders · last ${days()} days · about ${d.volume.perMonth ?? 0} a month</span>
+      <select id="perfZone">${opt(d.zones, PERF_ZONE, 'All zones')}</select>
+      <select id="perfStore">${opt(d.stores, PERF_STORE, 'All stores')}</select>
+    </section>
+    <div class="grid">
+      ${card({ ...d.core.speed, label: 'Speed: within 30 min' })}
+      ${card({ ...d.core.quality, label: 'Quality: perfect orders' })}
+      ${card(d.core.gmv)}
+      ${card({ ...d.core.margin, label: 'Margin per order (CM1)' })}
+      ${card(d.core.matu)}
+    </div>
+    <section><h2>Service metrics</h2>
+      <div class="hint">Each against its target. "Close" is within 3 points (or 20% for minutes and km).</div>
+      ${table(['Metric', 'Now', 'Target', '', ''], rows.map(([label, m, note]) =>
+        [label, num(show(m)), num(goal(m)), m.target != null ? tag(m.status) : '', `<span class="hint" style="margin:0">${note ?? m.note ?? ''}</span>`]))}
+    </section>
+    <section><h2>SLA breaches by zone</h2>
+      <div class="hint">Orders over 30 minutes from order to door. Target under 3% in every zone.</div>
+      ${d.byZone.length ? table(['Zone', 'Delivered', 'Within 30 min', 'Over 30 min', '', 'Within SLA', 'Avg km', 'Over 7 km', 'Avg wait', 'FAD'],
+        d.byZone.map((z) => [z.zone, num(z.delivered), num(pc(z.within30)), num(pc(z.breaches)), tag(z.breachStatus),
+          num(pc(z.withinSla)), num(r(z.avgKm)), num(pc(z.over7km)), num(z.avgWait != null ? r(z.avgWait) + ' min' : '–'), num(pc(z.fad))]))
+        : empty('No orders in this period.')}
+    </section>
+    <section><h2>SLA breaches by distance</h2>
+      <div class="hint">Store to customer. We aim to deliver within 7 km.</div>
+      ${table(['Distance', 'Delivered', 'Within 30 min', 'Over 30 min', ''],
+        d.byDistance.map((b) => [b.band, num(b.orders), num(pc(b.within30)), num(pc(b.breaches)), b.orders ? tag(b.breachStatus) : '']))}
+    </section>
+    <section><h2>Week by week</h2>
+      ${table(['Week from', 'Delivered', 'Within 30 min', 'Within SLA', 'Avg wait', 'Batched', 'FAD', 'CM1 / order'],
+        d.weeks.map((w) => [new Date(w.from).toLocaleDateString('en-ZA', { day: 'numeric', month: 'short' }), num(w.delivered),
+          num(pc(w.within30)), num(pc(w.withinSla)), num(w.avgWait != null ? r(w.avgWait) + ' min' : '–'),
+          num(pc(w.batching)), num(pc(w.fad)), num(R2(w.cm1PerOrder))]))}
+    </section>
+    <section><h2>CM2 costs</h2>
+      <div class="hint">The costs that turn CM1 into CM2, per order. Refunds and support queries come from the query log (next step).
+        The AI photo check is measured on each checked order.</div>
+      <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end">
+        ${Object.entries(cfg.fields).map(([k, f]) => `<label style="font-size:12px">${f.label}<br>
+          <input type="number" step="0.01" min="${f.min}" max="${f.max}" data-cost="${k}" value="${cfg.values[k]}" style="width:110px">
+          ${cfg.set[k] ? '' : '<span class="tag a">not set</span>'}</label>`).join('')}
+        <button class="go sm" data-act="saveCosts">Save costs</button><span id="costMsg" class="hint" style="margin:0"></span>
+      </div>
+    </section>
+    <section><h2>Coming next</h2>
+      <div class="hint">These need data the system does not collect yet.</div>
+      ${table(['Metric', 'Needs'], d.waiting.map((w) => [w.metric, w.why]))}
+    </section>`;
+}
+async function saveCosts(){
+  const patch = {};
+  document.querySelectorAll('[data-cost]').forEach((el) => { patch[el.dataset.cost] = Number(el.value); });
+  const res = await fetch('/v1/ops/performance/settings', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(patch) });
+  if (!res.ok) { $('#costMsg').textContent = (await res.json()).error ?? 'Could not save.'; return; }
+  loadPerformance();
+}
+document.addEventListener('change', (e) => {
+  if (e.target.id === 'perfZone') { PERF_ZONE = e.target.value; loadPerformance(); }
+  if (e.target.id === 'perfStore') { PERF_STORE = e.target.value; loadPerformance(); }
+});
+
 async function setPhotoCheck(storeId, mode){
   const res = await fetch('/v1/ops/stores/' + encodeURIComponent(storeId), { method: 'PUT',
     headers: { 'content-type': 'application/json' }, body: JSON.stringify({ photoMode: mode }) });
@@ -1201,7 +1304,7 @@ document.addEventListener('click', (e) => {
 $('#signout').onclick = async () => { await fetch('/v1/ops/logout', { method: 'POST' }); location.href = '/ops/login'; };
 
 const LOADERS={overview:loadOverview,orders:loadOrders,drivers:loadDrivers,earnings:loadEarnings,
-  messages:loadMessages,stores:loadStores,pricing:loadPricing,settings:loadSettings,integration:loadIntegration,staff:loadStaff};
+  messages:loadMessages,stores:loadStores,performance:loadPerformance,pricing:loadPricing,settings:loadSettings,integration:loadIntegration,staff:loadStaff};
 $('#refresh').onclick=()=>LOADERS[active]?.();
 $('#days').onchange=()=>LOADERS[active]?.();
 fetch('/v1/ops/me').then((r)=>r.json()).then((d)=>{

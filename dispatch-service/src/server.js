@@ -31,6 +31,9 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { Db } from './db.js';
 import { Metrics } from './metrics.js';
+import { performance } from './performance.js';
+import { OnlineTime } from './onlineTime.js';
+import { PerfSettings, COST_SETTINGS } from './perfSettings.js';
 import { computeEarnings, costToServe } from './fees.js';
 import { RateBook, RATE_FIELDS, MRD_DEFAULT, DAY_NAMES } from './rates.js';
 import { routeJob, routingStatus, point } from './routing.js';
@@ -143,6 +146,9 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
   const idem = new IdempotencyStore(db);
   const gate = new ReadyGate({ bufferMin: Number(process.env.READY_BUFFER_MIN ?? 0), db });
   const supply = new SupplyRegistry(db);
+  const online = new OnlineTime(db);
+  const perfSettings = new PerfSettings(db);
+  supply.onBeat = (d) => online.beat(d.id, { online: d.state !== SUPPLY.OFFLINE, zone: d.zone });
   const jobs = new JobStore(db);
   const otp = new OtpService();
   const metrics = new Metrics(db);
@@ -1745,6 +1751,21 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
        windows: rates.setSurge(req.params.zone, req.body?.windows, req.body?.actor ?? 'ops') }));
 
   app.get('/v1/ops/summary', async (req) => metrics.summary(since(req)));
+  /** The performance dashboard: core service metrics against targets, by zone, distance and week. */
+  app.get('/v1/ops/performance', async (req) => {
+    const sinceMs = since(req);
+    const zone = req.query?.zone || null;
+    return performance(metrics.jobsSince(sinceMs), { sinceMs, zone, storeId: req.query?.storeId || null,
+      costs: perfSettings.get(), onlineHours: online.hours(sinceMs, zone) });
+  });
+  /** The CM2 costs, and changing them (ops and admin). */
+  app.get('/v1/ops/performance/settings', async () => ({ ...perfSettings.get(), fields: COST_SETTINGS }));
+  app.put('/v1/ops/performance/settings', async (req, reply) => {
+    const { actor, ...patch } = req.body ?? {};
+    const err = perfSettings.update(patch, actor ?? 'ops');
+    if (err) return reply.code(400).send({ error: err });
+    return { ok: true, ...perfSettings.get() };
+  });
   app.get('/v1/ops/merchants', async (req) => ({ stores: metrics.merchants(since(req)) }));
   app.get('/v1/ops/drivers', async (req) => ({ drivers: metrics.drivers(since(req)) }));
   app.get('/v1/ops/exceptions', async (req) => ({ exceptions: metrics.exceptions(since(req)) }));
@@ -1892,7 +1913,7 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
   // staging sends another simulated driver for it.
   dispatcher.onUnbatch = (job, driverId) => sim?.onJob(job, { exclude: driverId });
 
-  app.decorate('engine', { opsUsers, driverTokens, photos, sweepPhotos, stores, checker,
+  app.decorate('engine', { opsUsers, driverTokens, photos, sweepPhotos, stores, checker, online, perfSettings,
     photoChecksDone: () => Promise.all([...checksRunning]), settings, idem, sim, gate, supply, jobs, dispatcher, otp, outbound, pendingOffers, db, metrics, rates, keychat, accounts, messages, ledger });
   return app;
 }
@@ -1906,12 +1927,15 @@ if (process.argv[1]?.endsWith('server.js')) {
   // Collection photos are deleted after their retention period; check hourly.
   app.engine.sweepPhotos();
   setInterval(() => { try { app.engine.sweepPhotos(); } catch (err) { app.log.error(err, 'photo sweep failed'); } }, 3600 * 1000).unref();
+  // Online time is added up in memory; write it once a minute.
+  setInterval(() => { try { app.engine.online.flush(); } catch (err) { app.log.error(err, 'online time flush failed'); } }, 60_000).unref();
 
   // Close the database cleanly so WAL is checkpointed rather than left behind.
   for (const sig of ['SIGINT', 'SIGTERM']) {
     process.on(sig, () => {
       app.log.info('shutting down, closing database');
       app.engine.dispatcher.stop();
+      try { app.engine.online.flush(); } catch { /* best effort */ }
       try { app.engine.db.close(); } catch { /* already closed */ }
       process.exit(0);
     });
