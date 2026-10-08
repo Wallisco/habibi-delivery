@@ -15,6 +15,8 @@ import { OpsUsers, registerOpsAuth } from './opsAuth.js';
 import { DriverTokens, registerDriverAuth } from './driverAuth.js';
 import { markStaging } from './stagingBanner.js';
 import { parseItems } from './items.js';
+import { roadKm, outOfRange, customerFee } from './limits.js';
+import { DispatchSettings, SETTING_FIELDS, SETTING_GROUPS, SETTING_DEFAULTS, ALL_ZONES } from './settings.js';
 import { PhotoStore, isJpeg, MAX_PHOTO_BYTES } from './photos.js';
 import { createPhotoChecker, checkCost, selectForCheck, PHOTO_CHECK_MODEL, MODELS, SELECTIVE } from './photoCheck.js';
 import { PHOTO_MODES } from './stores.js';
@@ -155,6 +157,8 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
   const otp = new OtpService();
   const metrics = new Metrics(db);
   const rates = new RateBook(db);
+  // Distance, batching and driver-search rules from the Settings tab.
+  const settings = new DispatchSettings(db);
   const keychat = new KeychatClient(db, { log: app.log });
   const accounts = new DriverAccounts(db);
   const messages = new Messages(db);
@@ -175,6 +179,7 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
   };
   restored.rateCards = rates.hydrate(db.loadRateCards());
   restored.surgeWindows = rates.hydrateSurge(db.loadSurge());
+  restored.dispatchSettings = settings.hydrate(db.loadDispatchSettings());
   restored.accounts = accounts.hydrate(db.loadAccounts());
   restored.messages = messages.hydrate(db.loadMessages());
   restored.ledgerEntries = ledger.hydrate(db.loadLedger());
@@ -191,6 +196,7 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
   const dispatcher = new Dispatcher({
     readyGate: gate, supply, jobs,
     maxHoldMs: staging ? 60_000 : null,
+    settingsFor: (zone) => settings.effective(zone),
     onOffer: ({ batchId, jobs: batchJobs, carrying = [], driverId, expiresAt, stops, route,
                 marginal, storeCount, sameCustomer, next = null }) => {
       const margin = new Map((marginal ?? []).map((m) => [m.jobId, m.marginalKm]));
@@ -346,6 +352,12 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
     }
 
     const routing = await routeJob({ pickup, dropoff });
+    // How far we deliver, and the customer's fee for it (src/limits.js).
+    const rules = settings.effective(zone);
+    const km = roadKm(routing, pickup, dropoff, rules);
+    const refused = outOfRange(km, rules);
+    if (refused) return reply.code(422).send(refused);
+    const fee = customerFee(CUSTOMER_DELIVERY_FEE, km, rules, rates.forZone(zone).perKmDeliveryFee);
     const merchantPrep = b.prepMinutes != null ? Number(b.prepMinutes) : null;
 
     const prep = gate.predictPrepMinutes(storeId, merchantPrep);
@@ -375,7 +387,8 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
       earnings,
       routing,
       etaMinutes: Math.round((prep + routing.deliverMinutes + 4) * strain),
-      customerCharge: CUSTOMER_DELIVERY_FEE,
+      customerCharge: fee.deliveryFee,
+      feeBreakdown: fee,
       readyGate: {
         merchantPrepMinutes: merchantPrep,
         predictedPrepMinutes: Number(prep.toFixed(1)),
@@ -416,14 +429,24 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
     // We route it ourselves. Keychat's ETA is for their customer; our distance
     // is what the fee is built on, and it has to be defensible in a dispute.
     const routing = await routeJob({ pickup: b.pickup, dropoff: b.dropoff });
+    // Checked again here, not only on the quote: a stale quote or a changed
+    // address must not get a delivery past the limit.
+    const rules = settings.effective(b.zone);
+    const km = roadKm(routing, b.pickup, b.dropoff, rules);
+    const refused = outOfRange(km, rules);
+    if (refused) return reply.code(422).send(refused);
+    const fee = customerFee(CUSTOMER_DELIVERY_FEE, km, rules, rates.forZone(b.zone).perKmDeliveryFee);
     // The partner does not choose our ids or tokens.
     const { id: _id, trackingToken: _t, ...input } = b;
     if (!allowDispatchNow) delete input.dispatchNow;
     const job = jobs.create({
       ...input,
+      // What Keychat charged; our own figure when they did not say.
+      customerCharge: input.customerCharge != null ? Number(input.customerCharge) : fee.deliveryFee,
       deliverKm: routing.deliverKm,
       collectKm: routing.collectKm,
     });
+    jobs.update(job.id, { roadKm: km, expectedCustomerFee: fee });
     job.distanceSource = routing.source;
     job.routing = routing;
     gate.noteOrder(job.storeId, job.createdAt);
@@ -998,6 +1021,45 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
   app.post('/v1/ops/rates/:zone/reset', async (req) =>
     ({ zone: req.params.zone, card: rates.resetZone(req.params.zone) }));
 
+  /* ---------------------------------------------- back office: settings */
+
+  /**
+   * Distance, batching and driver-search rules (src/settings.js). "All zones"
+   * is zone '*'; a zone's own value wins over it, and only own values are
+   * stored, so a zone follows "All zones" for everything it hasn't set.
+   */
+  const settingsZones = () => [...new Set([...settings.zones(), ...rates.zones(),
+    ...jobs.all().map((j) => j.zone).filter(Boolean)])].sort();
+  const zoneView = (zone) => ({
+    zone, label: zone === ALL_ZONES ? 'All zones' : zone,
+    values: settings.effective(zone),
+    own: settings.overrides(zone),
+    inherited: settings.inherited(zone),
+    lastChange: db.dispatchSettingsHistory(zone, 1)[0] ?? null,
+  });
+
+  app.get('/v1/ops/settings', async () => ({
+    fields: SETTING_FIELDS,
+    groups: SETTING_GROUPS,
+    defaults: SETTING_DEFAULTS,
+    zones: [zoneView(ALL_ZONES), ...settingsZones().map(zoneView)],
+  }));
+
+  app.put('/v1/ops/settings/:zone', async (req, reply) => {
+    const zone = req.params.zone;
+    const res = settings.set(zone, req.body?.settings, req.body?.actor ?? 'ops');
+    if (res.errors) return reply.code(400).send({ error: 'Some settings were not saved.', fields: res.errors });
+    return zoneView(zone);
+  });
+
+  app.post('/v1/ops/settings/:zone/reset', async (req) => {
+    settings.reset(req.params.zone, req.body?.actor ?? 'ops');
+    return zoneView(req.params.zone);
+  });
+
+  app.get('/v1/ops/settings/:zone/history', async (req) =>
+    ({ zone: req.params.zone, history: db.dispatchSettingsHistory(req.params.zone) }));
+
   app.get('/v1/ops/rates/:zone/history', async (req) =>
     ({ zone: req.params.zone, history: db.rateHistory(req.params.zone) }));
 
@@ -1339,9 +1401,16 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
     }
 
     const before = { name: job.dropoff?.name, km: job.distanceKm };
-    job.dropoff = { lat, lng, name: b.name ?? job.dropoff?.name ?? 'Delivery address' };
+    const moved = { lat, lng, name: b.name ?? job.dropoff?.name ?? 'Delivery address' };
+    const routing = await routeJob({ pickup: job.pickup, dropoff: moved });
+    // A corrected address is held to the same limit as a new order.
+    const rules = settings.effective(job.zone);
+    const km = roadKm(routing, job.pickup, moved, rules);
+    const refused = outOfRange(km, rules);
+    if (refused) return reply.code(422).send(refused);
+    job.dropoff = moved;
+    jobs.update(job.id, { roadKm: km });
 
-    const routing = await routeJob({ pickup: job.pickup, dropoff: job.dropoff });
     job.distanceKm = routing.deliverKm;
     job.distanceSource = routing.source;
     job.routing = routing;
@@ -1875,9 +1944,12 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
   const sim = staging ? new Simulator({ app, engine: { supply, jobs, accounts, pendingOffers, driverTokens }, closeJob, speed: simSpeed, log: app.log }) : null;
   // A next job handed back goes to the pool; on staging a simulated driver comes for it.
   dispatcher.onHandBack = (job) => sim?.onJob(job);
+  // An order taken off a slow run: the driver's app drops it on its next poll;
+  // staging sends another simulated driver for it.
+  dispatcher.onUnbatch = (job, driverId) => sim?.onJob(job, { exclude: driverId });
 
   app.decorate('engine', { opsUsers, driverTokens, photos, sweepPhotos, stores, checker, online, perfSettings, supportQueries,
-    photoChecksDone: () => Promise.all([...checksRunning]), idem, sim, gate, supply, jobs, dispatcher, otp, outbound, pendingOffers, db, metrics, rates, keychat, accounts, messages, ledger });
+    photoChecksDone: () => Promise.all([...checksRunning]), settings, idem, sim, gate, supply, jobs, dispatcher, otp, outbound, pendingOffers, db, metrics, rates, keychat, accounts, messages, ledger });
   return app;
 }
 

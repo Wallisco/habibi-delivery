@@ -106,6 +106,23 @@ Response:
 }
 ```
 
+### Distance limits and the extra-km fee (v1.3)
+
+Distances are store to customer **by road** (the road route; straight line × 1.4
+when the routing server can't answer). Set per zone in the back office
+**Settings** tab (src/settings.js), with an "All zones" value every zone follows
+unless given its own. Defaults:
+
+| Setting | Default | Effect |
+|---|---|---|
+| `maxDeliveryKm` | 11 km | Further is refused: `422 { "error": "out_of_range", "deliverKm", "maxDeliveryKm", "message" }` on the quote, the job and an address change |
+| `includedDeliveryKm` | 5 km | Covered by the flat fee; every km after it is added at the zone's "Per km to customer" rate |
+| `noStackBeyondKm` | 7 km | An order going further always rides alone |
+| `maxReadyToDropMin` | 30 min | No order on a shared run more than this from ready to drop-off; a run that drifts past it is split and the later order goes to another driver |
+
+The quote shows the fee in parts: `customerCharge.baseFee`, `includedKm`, `extraKm`,
+`extraKmRate`, `extraKmFee`, and `routing.roadKm`.
+
 **Add `customerCharge.deliveryFee` to the order total.** The tip is collected
 separately at checkout and passed through to the driver in full.
 
@@ -161,11 +178,11 @@ photo, so wrong or missing items are caught before the food leaves.
 When `items` is sent, `itemCount` is worked out from it. Without it the driver sees
 only the bag count, as before.
 
-`orderValue` (optional, v1.3) is the basket total in Rand: what the customer paid
+`orderValue` (optional, v1.4) is the basket total in Rand: what the customer paid
 for the goods, before delivery and tip. It is used for GMV reporting only, never
 shown to the driver. A number from 0 to 100000.
 
-`customerId` (optional, v1.3) is **your** id for the customer: any stable string
+`customerId` (optional, v1.4) is **your** id for the customer: any stable string
 up to 128 characters, the same for every order by that customer. We count monthly
 transacting users with it. We do not keep it: on arrival it is replaced by a
 keyed fingerprint (HMAC-SHA256 with a key only our server holds), which can be
@@ -301,6 +318,7 @@ backwards compatible unless marked otherwise.
 
 | Version | Date | Change |
 |---|---|---|
-| v1.3 | 8 Oct 2026 | `POST /v1/keychat/jobs` accepts `orderValue` (basket total, Rand) and `customerId` (your customer id; we keep only a fingerprint), for GMV and monthly transacting users (section 2). Optional. |
+| v1.4 | 8 Oct 2026 | `POST /v1/keychat/jobs` accepts `orderValue` (basket total, Rand) and `customerId` (your customer id; we keep only a fingerprint), for GMV and monthly transacting users (section 2). Optional. |
+| v1.3 | 8 Oct 2026 | Delivery limits per zone: 11 km by road maximum (`422 out_of_range`), customer fee per km after 5 km with its breakdown on the quote, no stacking beyond 7 km, 30 min ready to drop-off on a shared run. |
 | v1.2 | 7 Oct 2026 | `POST /v1/keychat/jobs` accepts `items: [{ name, qty, size? }]`, what is in the order, shown to the driver at the store (section 2). Optional. |
 | v1.1 | before 7 Oct 2026 | Everything above as documented before this log: quote, job creation with `Idempotency-Key`, the ready event, webhooks, reconciliation. |

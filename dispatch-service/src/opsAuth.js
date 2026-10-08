@@ -98,7 +98,9 @@ export function allowed(role, method, path) {
   if (role === 'viewer') return false;
   // The CM2 cost assumptions are a finance number as much as an ops one.
   if (p === '/v1/ops/performance/settings') return role === 'ops' || role === 'finance';
-  const money = p.startsWith('/v1/ops/rates') || p.startsWith('/v1/ops/surge') || p.startsWith('/v1/ops/ledger');
+  // Settings change what customers pay (the extra-km fee), so they sit with rates.
+  const money = p.startsWith('/v1/ops/rates') || p.startsWith('/v1/ops/surge') || p.startsWith('/v1/ops/ledger')
+    || p.startsWith('/v1/ops/settings');
   return money ? role === 'finance' : role === 'ops';
 }
 
