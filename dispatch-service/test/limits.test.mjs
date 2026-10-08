@@ -1,13 +1,14 @@
-// Delivery limits (src/limits.js): 11 km by road at most, the customer pays per
-// km after 5 km, no stacking beyond 7 km, and no order on a run more than
-// 30 min from ready to drop-off. Without OSRM, road = straight line x 1.4.
+// Delivery limits (src/limits.js) and the Settings tab (src/settings.js):
+// 11 km by road at most, the customer pays per km after 5 km, no stacking
+// beyond 7 km, and no order on a run more than 30 min from ready to drop-off.
+// Without OSRM, road = straight line x 1.4. All of it set per zone.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { build } from '../src/server.js';
 import { SUPPLY } from '../src/supply.js';
 import { canJoin } from '../src/batching.js';
-import { customerFee, roadKm, outOfRange, LIMIT_DEFAULTS } from '../src/limits.js';
-import { MRD_DEFAULT } from '../src/rates.js';
+import { customerFee, roadKm, outOfRange } from '../src/limits.js';
+import { SETTING_DEFAULTS } from '../src/settings.js';
 
 const STORE = { lat: -33.8312, lng: 18.6512, name: 'KFC Milnerton' };
 // `km` kilometres north of the store, as the crow flies.
@@ -54,16 +55,15 @@ test('road km: the road route when we have it, else straight line x 1.4', () => 
 });
 
 test('11 km by road is the limit; 7.9 km as the crow flies is inside it', () => {
-  assert.equal(outOfRange(11, MRD_DEFAULT), null);
-  assert.equal(outOfRange(11.01, MRD_DEFAULT).error, 'out_of_range');
-  assert.equal(roadKm(null, STORE, north(7.85)) <= LIMIT_DEFAULTS.maxDeliveryKm, true);
+  assert.equal(outOfRange(11), null);
+  assert.equal(outOfRange(11.01).error, 'out_of_range');
+  assert.equal(roadKm(null, STORE, north(7.85)) <= SETTING_DEFAULTS.maxDeliveryKm, true);
 });
 
 test('the customer fee: flat up to 5 km, then the per-km-to-customer rate', () => {
-  const card = { ...MRD_DEFAULT };
-  assert.deepEqual(customerFee(40, 4.2, card),
+  assert.deepEqual(customerFee(40, 4.2, null, 1.229),
     { deliveryFee: 40, baseFee: 40, roadKm: 4.2, includedKm: 5, extraKm: 0, extraKmRate: 1.229, extraKmFee: 0 });
-  const f = customerFee(40, 8.4, card);
+  const f = customerFee(40, 8.4, null, 1.229);
   assert.equal(f.extraKm, 3.4);
   assert.equal(f.extraKmFee, 4.18);
   assert.equal(f.deliveryFee, 44.18);
@@ -102,13 +102,91 @@ test('past 11 km by road: quote and job are refused with out_of_range', async (t
   assert.equal(app.engine.jobs.all().length, 0, 'no job created');
 });
 
-test('the limits are per zone, set on the rate card', async (t) => {
+const setSettings = (app, zone, values) => app.inject({ method: 'PUT',
+  url: `/v1/ops/settings/${encodeURIComponent(zone)}`, payload: { settings: values } });
+
+test('Settings: a zone\'s own limit wins; other zones keep the default', async (t) => {
   const app = appFor(t);
-  await app.inject({ method: 'PUT', url: '/v1/ops/rates/Tygervalley', payload: { card: { maxDeliveryKm: 15, includedDeliveryKm: 6 } } });
+  assert.equal((await setSettings(app, 'Tygervalley', { maxDeliveryKm: 15, includedDeliveryKm: 6 })).statusCode, 200);
   const q = (await quote(app, north(8), 'Tygervalley')).json();
   assert.equal(q.customerCharge.includedKm, 6);
   assert.equal(q.customerCharge.extraKm, 5.2);
   assert.equal((await quote(app, north(8), 'Milnerton')).statusCode, 422, 'other zones keep 11 km');
+});
+
+test('Settings: "All zones" reaches every zone without its own value', async (t) => {
+  const app = appFor(t);
+  await setSettings(app, 'Tygervalley', { maxDeliveryKm: 9 });
+  assert.equal((await setSettings(app, '*', { maxDeliveryKm: 14, roadFactor: 1.5 })).statusCode, 200);
+  assert.equal((await quote(app, north(8), 'Milnerton')).json().routing.roadKm, 12, '8 km x 1.5');
+  assert.equal((await quote(app, north(6.5), 'Tygervalley')).statusCode, 422, 'Tygervalley keeps its own 9 km');
+  // Clearing a zone's own value returns it to "All zones".
+  await setSettings(app, 'Tygervalley', { maxDeliveryKm: null });
+  assert.equal((await quote(app, north(6.5), 'Tygervalley')).statusCode, 200);
+});
+
+test('Settings: bad values are refused, field by field, and nothing changes', async (t) => {
+  const app = appFor(t);
+  const res = await setSettings(app, 'Milnerton', { maxDeliveryKm: 0, stackMaxOrders: 2.5, nope: 1 });
+  assert.equal(res.statusCode, 400);
+  assert.deepEqual(Object.keys(res.json().fields).sort(), ['maxDeliveryKm', 'nope', 'stackMaxOrders']);
+  const cross = await setSettings(app, 'Milnerton', { maxDeliveryKm: 6, noStackBeyondKm: 7 });
+  assert.equal(cross.statusCode, 400);
+  assert.match(cross.json().fields.noStackBeyondKm, /furthest we deliver/);
+  assert.equal(app.engine.settings.effective('Milnerton').maxDeliveryKm, 11);
+});
+
+test('Settings: the page lists every rule, and every change is kept', async (t) => {
+  const app = appFor(t);
+  await setSettings(app, 'Milnerton', { offerSeconds: 60 });
+  await setSettings(app, 'Milnerton', { offerSeconds: 30 });
+  const page = (await app.inject({ url: '/v1/ops/settings' })).json();
+  assert.ok(page.fields.length >= 15);
+  assert.deepEqual(page.groups.map((g) => g.key), ['distance', 'batching', 'drivers']);
+  const mil = page.zones.find((z) => z.zone === 'Milnerton');
+  assert.deepEqual(mil.own, { offerSeconds: 30 });
+  assert.equal(mil.values.maxDeliveryKm, 11);
+  const hist = (await app.inject({ url: '/v1/ops/settings/Milnerton/history' })).json().history;
+  assert.deepEqual(hist.map((h) => h.values.offerSeconds), [30, 60]);
+});
+
+test('Settings survive a restart', async (t) => {
+  const { mkdtempSync } = await import('node:fs');
+  const { join } = await import('node:path');
+  const { tmpdir } = await import('node:os');
+  const dbPath = join(mkdtempSync(join(tmpdir(), 'settings-')), 'd.db');
+  const a = build({ dbPath, partnerAuth: false, opsAuth: false });
+  await setSettings(a, 'Milnerton', { stackMaxOrders: 1 });
+  await a.close();
+  const b = build({ dbPath, partnerAuth: false, opsAuth: false });
+  t.after(() => b.close());
+  assert.equal(b.engine.settings.effective('Milnerton').stackMaxOrders, 1);
+});
+
+test('Settings: batching off (1 order per run) stops stacking in that zone', async (t) => {
+  const app = appFor(t);
+  await driver(app, '0821111111');
+  await setSettings(app, 'Milnerton', { stackMaxOrders: 1 });
+  await order(app, north(2), 0);
+  await order(app, north(2, 300), 1);
+  assert.deepEqual(app.engine.dispatcher.formBatches().map((b) => b.length), [1, 1]);
+  assert.match(app.engine.dispatcher.explainBatching()[0].reason, /batching is switched off/);
+});
+
+test('Settings: offer time and driver search follow the zone', async (t) => {
+  const app = appFor(t);
+  const d = await driver(app, '0821111111');
+  await setSettings(app, 'Milnerton', { offerSeconds: 30, searchStartKm: 1, searchMaxKm: 1, searchGrowMPerMin: 0 });
+  await order(app, north(2), 0);
+  // The only driver is 2 km away: outside a 1 km search.
+  await app.inject({ method: 'POST', url: `/v1/driver/${d.id}/position`, payload: north(2), headers: d.headers });
+  assert.equal(app.engine.dispatcher.tick(), 0);
+  await setSettings(app, 'Milnerton', { searchMaxKm: 3, searchStartKm: 3 });
+  const before = Date.now();
+  assert.equal(app.engine.dispatcher.tick(), 1);
+  const offer = app.engine.pendingOffers.get(d.id);
+  const secs = (offer.expiresAt - before) / 1000;
+  assert.ok(secs > 28 && secs <= 31, `offer lasts ${secs} s`);
 });
 
 test('a job keeps our fee when Keychat sends none, and records its road km', async (t) => {
@@ -200,4 +278,15 @@ test('nothing is unbatched once both orders are collected', async (t) => {
   await app.inject({ method: 'POST', url: `/v1/driver/${d.id}/position`, payload: north(15), headers: d.headers });
   assert.deepEqual(app.engine.dispatcher.reviewRuns(), []);
   assert.equal(app.engine.jobs.get(second).driverId, d.id);
+});
+
+test('Settings: only finance and admin can change them; anyone signed in can read them', async () => {
+  const { allowed } = await import('../src/opsAuth.js');
+  for (const role of ['viewer', 'ops', 'finance', 'admin']) {
+    assert.equal(allowed(role, 'GET', '/v1/ops/settings'), true, role);
+  }
+  assert.equal(allowed('ops', 'PUT', '/v1/ops/settings/Milnerton'), false);
+  assert.equal(allowed('viewer', 'PUT', '/v1/ops/settings/Milnerton'), false);
+  assert.equal(allowed('finance', 'PUT', '/v1/ops/settings/Milnerton'), true);
+  assert.equal(allowed('admin', 'POST', '/v1/ops/settings/*/reset'), true);
 });

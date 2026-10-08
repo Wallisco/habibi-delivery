@@ -96,7 +96,9 @@ export function allowed(role, method, path) {
   if (/^\/v1\/ops\/rates\/[^/]+\/preview$/.test(p)) return true;
   if (role === 'admin') return true;
   if (role === 'viewer') return false;
-  const money = p.startsWith('/v1/ops/rates') || p.startsWith('/v1/ops/surge') || p.startsWith('/v1/ops/ledger');
+  // Settings change what customers pay (the extra-km fee), so they sit with rates.
+  const money = p.startsWith('/v1/ops/rates') || p.startsWith('/v1/ops/surge') || p.startsWith('/v1/ops/ledger')
+    || p.startsWith('/v1/ops/settings');
   return money ? role === 'finance' : role === 'ops';
 }
 

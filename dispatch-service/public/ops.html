@@ -131,6 +131,7 @@
   <div id="tab-messages" class="hidden"></div>
   <div id="tab-stores" class="hidden"></div>
   <div id="tab-pricing" class="hidden"></div>
+  <div id="tab-settings" class="hidden"></div>
   <div id="tab-integration" class="hidden"></div>
   <div id="tab-staff" class="hidden"></div>
 </div>
@@ -220,6 +221,10 @@ document.addEventListener('click', (e) => {
   if (action === 'saveRates')  saveRates(zone);
   if (action === 'resetRates') resetRates(zone);
   if (action === 'saveSurge')  saveSurge(Number(zi));
+  if (action === 'settingsZone')  { SETTINGS_ZONE = SETTINGS.zones[Number(zi)].zone; SETTINGS_ERR = {}; SETTINGS_DRAFT = null; renderSettings(); }
+  if (action === 'saveSettings')  saveSettings();
+  if (action === 'clearSetting')  clearSetting(key);
+  if (action === 'resetSettings') resetSettings();
   if (action === 'openDriver') openDriver(id);
   if (action === 'openOrder')  openOrder(id);
   if (action === 'issueCode')  issueCode(id);
@@ -301,7 +306,7 @@ async function reassignJob(jobId) {
 }
 
 const TABS = [['overview','Overview'],['orders','Orders'],['drivers','Drivers'],
-  ['earnings','Earnings'],['messages','Messages'],['stores','Stores'],['pricing','Pricing'],['integration','Integration']];
+  ['earnings','Earnings'],['messages','Messages'],['stores','Stores'],['pricing','Pricing'],['settings','Settings'],['integration','Integration']];
 let active='overview', unreadCount=0;
 
 function renderTabs(){
@@ -999,6 +1004,99 @@ async function saveSurge(zi){
     headers:{'content-type':'application/json'},body:JSON.stringify({windows})}); loadPricing();
 }
 
+/* ---------------------------------------------------------------- settings */
+/*
+ * Distance, batching and driver-search rules. "All zones" sets the value every
+ * zone follows; a zone can set its own, and clearing it follows "All zones"
+ * again. Only finance and admin can save (the extra-km fee is money).
+ */
+let SETTINGS=null, SETTINGS_ZONE='*', SETTINGS_ERR={}, SETTINGS_DRAFT=null;
+// Zone names arrive HTML-escaped (see the fetch wrapper); URLs need the real name.
+const unesc = (v) => { const t=document.createElement('textarea'); t.innerHTML=v; return t.value; };
+const settingsUrl = (suffix='') => '/v1/ops/settings/'+encodeURIComponent(unesc(SETTINGS_ZONE))+suffix;
+const canEditSettings = () => ME && ['finance','admin'].includes(ME.role);
+async function loadSettings(){
+  SETTINGS = await (await fetch('/v1/ops/settings')).json();
+  if (!SETTINGS.zones.some((z)=>z.zone===SETTINGS_ZONE)) SETTINGS_ZONE='*';
+  SETTINGS_ERR={}; SETTINGS_DRAFT=null; renderSettings();
+}
+function settingsCrowKm(){
+  const g=(k)=>{ const i=document.querySelector(`[data-setting="${k}"]`); const z=SETTINGS.zones.find((x)=>x.zone===SETTINGS_ZONE);
+    return i && i.value!=='' ? Number(i.value) : z.values[k]; };
+  const max=g('maxDeliveryKm'), f=g('roadFactor');
+  return `${max} km by road is about ${(max/f).toFixed(1)} km as the crow flies (road = straight line × ${f}).`;
+}
+function renderSettings(){
+  const z = SETTINGS.zones.find((x)=>x.zone===SETTINGS_ZONE);
+  const edit = canEditSettings();
+  const isAll = z.zone==='*';
+  const row = (f) => {
+    const own = Object.prototype.hasOwnProperty.call(z.own, f.key);
+    const from = isAll ? 'default' : 'All zones';
+    const err = SETTINGS_ERR[f.key];
+    return `<tr>
+      <td style="width:42%"><strong>${f.label}</strong>
+        <div style="color:var(--muted);font-size:11.5px;margin-top:2px">${f.help}</div></td>
+      <td style="width:150px"><input data-setting="${f.key}" type="number" step="${f.step}" min="${f.min}" max="${f.max}"
+          value="${SETTINGS_DRAFT ? (SETTINGS_DRAFT[f.key] ?? '') : (own ? z.own[f.key] : '')}" placeholder="${z.inherited[f.key]}" ${edit?'':'disabled'}
+          style="width:100%;text-align:right${err?';border-color:var(--red)':''}">
+        ${err?`<div style="color:var(--red);font-size:11px;margin-top:3px">${err}</div>`:''}</td>
+      <td style="color:var(--muted);font-size:12px">${f.unit}</td>
+      <td style="font-size:12px">${own
+        ? `<span class="tag g">set here</span>${edit?` <button class="sm" data-act="clearSetting" data-key="${f.key}" title="Follow ${from} again">Use ${from} (${z.inherited[f.key]})</button>`:''}`
+        : `<span style="color:var(--muted)">from ${from}: ${z.inherited[f.key]}</span>`}</td></tr>`;
+  };
+  $('#tab-settings').innerHTML = `
+    <section><h2>Dispatch settings</h2>
+      <div class="hint">How far we deliver, when orders share a driver, and how we find drivers.
+        Set a value for <strong>All zones</strong>, or give a zone its own. A blank field follows the value shown beside it.
+        Changes apply to the next quote and the next dispatch round (within seconds); every change is kept.
+        ${edit?'':'<br><strong>Only finance and admin can change these.</strong>'}</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin:12px 0">
+        ${SETTINGS.zones.map((x,xi)=>`<button class="sm ${x.zone===SETTINGS_ZONE?'go':''}" data-act="settingsZone" data-zi="${xi}">${x.label}${
+          Object.keys(x.own).length && x.zone!=='*' ? ` · ${Object.keys(x.own).length} own` : ''}</button>`).join('')}
+      </div>
+      ${z.lastChange?`<div class="hint" style="margin-bottom:10px">Last changed by ${z.lastChange.actor} on ${new Date(z.lastChange.at).toLocaleString('en-ZA')}</div>`:''}
+      ${SETTINGS.groups.map((g)=>`<div style="border:1px solid var(--line);border-radius:12px;padding:14px;margin-bottom:12px">
+        <div style="font-weight:800;margin-bottom:8px">${g.label}</div>
+        ${g.key==='distance'?`<div class="hint" id="crowNote" style="margin-bottom:8px">${settingsCrowKm()}</div>`:''}
+        <table><tbody>${SETTINGS.fields.filter((f)=>f.group===g.key).map(row).join('')}</tbody></table></div>`).join('')}
+      ${edit?`<div style="display:flex;gap:8px">
+        <button class="go" data-act="saveSettings">Save ${z.label}</button>
+        ${Object.keys(z.own).length?`<button data-act="resetSettings">${isAll?'Back to defaults':'Clear everything set for '+z.label}</button>`:''}
+        <span id="settingsMsg" style="align-self:center;color:var(--muted)"></span></div>`:''}
+    </section>`;
+  document.querySelectorAll('[data-setting="maxDeliveryKm"],[data-setting="roadFactor"]').forEach((i)=>
+    i.addEventListener('input',()=>{ const n=$('#crowNote'); if(n) n.textContent=settingsCrowKm(); }));
+}
+async function putSettings(values){
+  const res = await fetch(settingsUrl(),{method:'PUT',
+    headers:{'content-type':'application/json'},body:JSON.stringify({settings:values})});
+  const body = await res.json();
+  if (!res.ok) {
+    // Keep what was typed, so a refused save can be corrected rather than retyped.
+    SETTINGS_DRAFT = {}; document.querySelectorAll('[data-setting]').forEach((i)=>{ SETTINGS_DRAFT[i.dataset.setting]=i.value; });
+    SETTINGS_ERR = body.fields ?? {}; renderSettings();
+    const m=$('#settingsMsg'); if (m) m.textContent = body.error ?? 'Not saved.'; return false; }
+  await loadSettings(); const m=$('#settingsMsg'); if (m) m.textContent='Saved.'; return true;
+}
+function saveSettings(){
+  const z = SETTINGS.zones.find((x)=>x.zone===SETTINGS_ZONE);
+  const values = {};
+  document.querySelectorAll('[data-setting]').forEach((i)=>{
+    const k=i.dataset.setting, own=Object.prototype.hasOwnProperty.call(z.own,k);
+    if (i.value!=='') values[k]=Number(i.value);
+    else if (own) values[k]=null;   // emptied: follow the inherited value again
+  });
+  putSettings(values);
+}
+function clearSetting(key){ putSettings({[key]:null}); }
+async function resetSettings(){
+  const z = SETTINGS.zones.find((x)=>x.zone===SETTINGS_ZONE);
+  if (!confirm(`Clear every value set for ${z.label}?`)) return;
+  await post(settingsUrl('/reset'),{}); loadSettings();
+}
+
 /* -------------------------------------------------------------- integration */
 let EVENT_TYPE = 'ALL';
 
@@ -1103,7 +1201,7 @@ document.addEventListener('click', (e) => {
 $('#signout').onclick = async () => { await fetch('/v1/ops/logout', { method: 'POST' }); location.href = '/ops/login'; };
 
 const LOADERS={overview:loadOverview,orders:loadOrders,drivers:loadDrivers,earnings:loadEarnings,
-  messages:loadMessages,stores:loadStores,pricing:loadPricing,integration:loadIntegration,staff:loadStaff};
+  messages:loadMessages,stores:loadStores,pricing:loadPricing,settings:loadSettings,integration:loadIntegration,staff:loadStaff};
 $('#refresh').onclick=()=>LOADERS[active]?.();
 $('#days').onchange=()=>LOADERS[active]?.();
 fetch('/v1/ops/me').then((r)=>r.json()).then((d)=>{

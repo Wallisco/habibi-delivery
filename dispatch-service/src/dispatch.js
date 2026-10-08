@@ -7,7 +7,7 @@
  */
 
 import { SUPPLY, metresBetween, travelMinutes } from './supply.js';
-import { limitsOf } from './limits.js';
+import { settingOf } from './settings.js';
 import { canJoin, routeStops, routeMinutes, marginalDistances, storeCount,
   isSameCustomer, MAX_BATCH, planRun, planStamp, readyAt } from './batching.js';
 import { warmLegsInBackground, TABLE_MAX_POINTS, legMinutes } from './routing.js';
@@ -52,9 +52,9 @@ export const W = {
 
 export class Dispatcher {
   constructor({ readyGate, supply, jobs, onOffer, now = () => Date.now(), maxHoldMs = null,
-    limitsFor = null }) {
-    // zone -> rate card, for the distance and time limits (src/limits.js).
-    this.limitsFor = limitsFor;
+    settingsFor = null }) {
+    // zone -> dispatch settings from the back office (src/settings.js).
+    this.settingsFor = settingsFor;
     // Staging only: release every order within this long, so an integration
     // test never waits on a 25-minute prep prior.
     this.maxHoldMs = maxHoldMs;
@@ -78,6 +78,9 @@ export class Dispatcher {
     this.expired = new Map();
     this.timer = null;
   }
+
+  /** One dispatch setting for a zone (back office Settings tab). */
+  setting(zone, key) { return settingOf(this.settingsFor, zone, key); }
 
   start() { if (!this.timer) this.timer = setInterval(() => this.tick(), TICK_MS); }
   stop() { clearInterval(this.timer); this.timer = null; }
@@ -111,7 +114,9 @@ export class Dispatcher {
 
   searchRadius(job, nowMs = this.now()) {
     const ageMin = (nowMs - job.createdAt) / 60000;
-    return Math.min(MAX_RADIUS_M, BASE_RADIUS_M + ageMin * RADIUS_GROWTH_PER_MIN);
+    const z = job.zone;
+    return Math.min(this.setting(z, 'searchMaxKm') * 1000,
+      this.setting(z, 'searchStartKm') * 1000 + ageMin * this.setting(z, 'searchGrowMPerMin'));
   }
 
   /* ---------------------------------------------------------- hard filtering */
@@ -185,7 +190,7 @@ export class Dispatcher {
     const arriveAt = freeAt + legMinutes(cur.dropoff, job.pickup).minutes * 60000;
     const ready = readyAt(job, this.gate);
     if (arriveAt > ready) return null;
-    if (ready - arriveAt > CHAIN.maxWaitMin * 60000) return null;
+    if (ready - arriveAt > this.setting(job.zone, 'nextJobMaxWaitMin') * 60000) return null;
     return { after: cur.id, freeAt, arriveAt, readyAt: ready,
       waitMin: Number(((ready - arriveAt) / 60000).toFixed(1)) };
   }
@@ -203,7 +208,7 @@ export class Dispatcher {
     if (!pool.length) return 0;
     // Any waiting order it could stack with, due yet or not, rules it out.
     const single = pool.filter((j) => !pool.some((o) => o !== j
-      && canJoin([j], o, this.gate, nowMs, this.limitsFor).ok));
+      && canJoin([j], o, this.gate, nowMs, this.settingsFor).ok));
     const drivers = [...this.supply.drivers.values()].filter((d) => d.activeJobId && d.position
       && !offered.has(d.id) && d.state !== SUPPLY.OFFLINE);
     let n = 0;
@@ -285,10 +290,11 @@ export class Dispatcher {
     const run = this.runOf(driver.id);
     if (!run.length || run.some((j) => j.collectedAt)) return null;
     const add = Array.isArray(jobOrBatch) ? jobOrBatch : [jobOrBatch];
-    if (run.length + add.length > MAX_BATCH) return null;
+    const most = Math.min(...[...run, ...add].map((j) => this.setting(j.zone, 'stackMaxOrders')));
+    if (run.length + add.length > most) return null;
     let batch = run, last = null;
     for (const j of add) {
-      last = canJoin(batch, j, this.gate, this.now(), this.limitsFor);
+      last = canJoin(batch, j, this.gate, this.now(), this.settingsFor);
       if (!last.ok) return null;
       batch = [...batch, j];
     }
@@ -346,8 +352,8 @@ export class Dispatcher {
       used.add(seed.id);
 
       for (const other of pool) {
-        if (used.has(other.id) || batch.length >= MAX_BATCH) continue;
-        const res = canJoin(batch, other, this.gate, nowMs, this.limitsFor);
+        if (used.has(other.id)) continue;
+        const res = canJoin(batch, other, this.gate, nowMs, this.settingsFor);
         if (res.ok) { batch.push(other); used.add(other.id); }
       }
       batches.push(batch);
@@ -365,7 +371,7 @@ export class Dispatcher {
     const out = [];
     for (let i = 0; i < pool.length; i++) {
       for (let k = i + 1; k < pool.length; k++) {
-        const res = canJoin([pool[i]], pool[k], this.gate, nowMs, this.limitsFor);
+        const res = canJoin([pool[i]], pool[k], this.gate, nowMs, this.settingsFor);
         out.push({
           a: pool[i].orderNumber ?? pool[i].id,
           b: pool[k].orderNumber ?? pool[k].id,
@@ -471,8 +477,7 @@ export class Dispatcher {
       if (run.length < 2) continue;
       const open = run.filter((j) => !j.collectedAt);
       if (!open.length) continue;
-      const limit = Math.min(...run.map((j) =>
-        limitsOf(this.limitsFor ? this.limitsFor(j.zone) : {}).maxReadyToDropMin));
+      const limit = Math.min(...run.map((j) => this.setting(j.zone, 'maxReadyToDropMin')));
       const plan = planRun(run, {
         readyAt: (j) => j.readyAt ?? readyAt(j, this.gate), now: nowMs, from: d.position,
         maxReadyToDropMin: limit });
@@ -523,7 +528,8 @@ export class Dispatcher {
    * customer, so the batch is accepted or declined as one.
    */
   offerBatch(batch, driver, nowMs = this.now(), { chain = null } = {}) {
-    const expiresAt = nowMs + OFFER_TIMEOUT_MS + (batch.length - 1) * 5000;
+    const offerMs = this.setting(batch[0]?.zone, 'offerSeconds') * 1000;
+    const expiresAt = nowMs + offerMs + (batch.length - 1) * 5000;
     const batchId = `RUN-${nowMs.toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
 
     // On the run: the driver sees the whole trip they would end up doing, in

@@ -32,28 +32,20 @@
 
 import { metresBetween } from './supply.js';
 import { legMinutes } from './routing.js';
-import { limitsOf, jobRoadKm } from './limits.js';
-
-/** A number from the environment, or the default. */
-const setting = (name, d) => {
-  const n = Number(process.env[name]);
-  return Number.isFinite(n) && n > 0 ? n : d;
-};
-
-export const MAX_BATCH = 2;
+import { jobRoadKm } from './limits.js';
+import { SETTING_DEFAULTS } from './settings.js';
 
 /**
- * Distance and time limits per zone live in src/limits.js: no order beyond
- * 7 km by road on a run, and no order on a run more than 30 min from ready to
- * drop-off.
- *
- * The stacking rules from the brief: pickups within 100 m of each other,
- * drop-offs within 1 km, and no order more than 5 minutes later than it would
- * have been on its own. Each can be changed per server with an environment
- * variable until the back office's Pricing module sets them per zone.
+ * The rules below are the defaults. Each can be changed per zone in the back
+ * office Settings tab (src/settings.js); `canJoin` takes the zone's values
+ * through `settingsFor`. Where two orders on a run are in different zones,
+ * the stricter value applies.
  */
-export const PICKUP_CLUSTER_M = setting('STACK_PICKUP_M', 100);
-export const DROPOFF_CLUSTER_M = setting('STACK_DROPOFF_M', 1000);
+export const MAX_BATCH = SETTING_DEFAULTS.stackMaxOrders;
+
+/** The stacking rules from the brief: pickups within 100 m, drop-offs within 1 km. */
+export const PICKUP_CLUSTER_M = SETTING_DEFAULTS.stackPickupM;
+export const DROPOFF_CLUSTER_M = SETTING_DEFAULTS.stackDropoffM;
 
 /**
  * How much later any one order may arrive because it shares a run, compared
@@ -61,10 +53,26 @@ export const DROPOFF_CLUSTER_M = setting('STACK_DROPOFF_M', 1000);
  * efficiency eating quality. It applies to every order on the run, the new one
  * included, not to the run's total.
  */
-export const MAX_ADDED_LATENESS_MIN = setting('STACK_MAX_EXTRA_MIN', 5);
+export const MAX_ADDED_LATENESS_MIN = SETTING_DEFAULTS.stackMaxExtraMin;
 
 /** A second order must be ready within this of the first order's ready time. */
-export const READY_WINDOW_MIN = 5;
+export const READY_WINDOW_MIN = SETTING_DEFAULTS.stackReadyWindowMin;
+
+/** The rules for a set of orders: each zone's values, the stricter where they differ. */
+export function runRules(orders, settingsFor = null) {
+  const all = orders.map((j) => ({ ...SETTING_DEFAULTS, ...(settingsFor ? settingsFor(j.zone) : {}) }));
+  const min = (k) => Math.min(...all.map((x) => x[k]));
+  return {
+    maxOrders: min('stackMaxOrders'),
+    pickupM: min('stackPickupM'),
+    dropoffM: min('stackDropoffM'),
+    readyWindowMin: min('stackReadyWindowMin'),
+    maxExtraMin: min('stackMaxExtraMin'),
+    maxReadyToDropMin: min('maxReadyToDropMin'),
+    noStackBeyondKm: (i) => all[i].noStackBeyondKm,
+    settings: (i) => all[i],
+  };
+}
 
 /** When an order's food is predicted to be ready, in ms. */
 export function readyAt(job, gate) {
@@ -87,30 +95,30 @@ function clustered(points, limit) {
  * Can `candidate` join `batch`?
  * Returns { ok, reason } so a dispatcher log says why a batch was refused.
  */
-export function canJoin(batch, candidate, gate, now = Date.now(), limitsFor = null) {
-  if (batch.length >= MAX_BATCH) {
-    return { ok: false, reason: `batch already at ${MAX_BATCH}` };
-  }
+export function canJoin(batch, candidate, gate, now = Date.now(), settingsFor = null) {
   const all = [...batch, candidate];
+  const r = runRules(all, settingsFor);
+  if (batch.length >= r.maxOrders) {
+    return { ok: false, reason: r.maxOrders <= 1 ? 'batching is switched off' : `batch already at ${r.maxOrders}` };
+  }
 
-  // Long deliveries ride alone (src/limits.js): past the zone's limit, by road.
-  const lim = (j) => limitsOf(limitsFor ? limitsFor(j.zone) : {});
-  for (const j of all) {
-    const km = jobRoadKm(j), max = lim(j).noStackBeyondKm;
+  // Long deliveries ride alone: past the zone's limit, by road.
+  for (const [i, j] of all.entries()) {
+    const km = jobRoadKm(j, r.settings(i)), max = r.noStackBeyondKm(i);
     if (km > max) {
       return { ok: false, reason: `order ${j.id} is ${km.toFixed(1)} km by road (no stacking beyond ${max} km)` };
     }
   }
-  const maxReadyToDropMin = Math.min(...all.map((j) => lim(j).maxReadyToDropMin));
+  const maxReadyToDropMin = r.maxReadyToDropMin;
 
   const pickups = all.map((j) => pt(j.pickup));
-  if (!clustered(pickups, PICKUP_CLUSTER_M)) {
-    return { ok: false, reason: `pickups more than ${PICKUP_CLUSTER_M} m apart` };
+  if (!clustered(pickups, r.pickupM)) {
+    return { ok: false, reason: `pickups more than ${r.pickupM} m apart` };
   }
 
   const dropoffs = all.map((j) => pt(j.dropoff));
-  if (!clustered(dropoffs, DROPOFF_CLUSTER_M)) {
-    return { ok: false, reason: `drop-offs more than ${DROPOFF_CLUSTER_M} m apart` };
+  if (!clustered(dropoffs, r.dropoffM)) {
+    return { ok: false, reason: `drop-offs more than ${r.dropoffM} m apart` };
   }
 
   // Ready-time compatibility, measured from the first order. Adding a slow
@@ -118,22 +126,22 @@ export function canJoin(batch, candidate, gate, now = Date.now(), limitsFor = nu
   // the driver waits for the second.
   const anchor = readyAt(all[0], gate);
   const gapMin = Math.max(...all.slice(1).map((j) => Math.abs(readyAt(j, gate) - anchor))) / 60000;
-  if (gapMin > READY_WINDOW_MIN) {
-    return { ok: false, reason: `ready times ${gapMin.toFixed(0)} min apart (window ${READY_WINDOW_MIN} min from the first order)` };
+  if (gapMin > r.readyWindowMin) {
+    return { ok: false, reason: `ready times ${gapMin.toFixed(0)} min apart (window ${r.readyWindowMin} min from the first order)` };
   }
 
   // No order may arrive more than MAX_ADDED_LATENESS_MIN later than it would
   // alone, on the best route for the whole run.
   // And no order on the run more than maxReadyToDropMin from ready to door.
   const plan = planRun(all, { readyAt: (j) => readyAt(j, gate), now,
-    maxExtraMin: MAX_ADDED_LATENESS_MIN, maxReadyToDropMin });
+    maxExtraMin: r.maxExtraMin, maxReadyToDropMin });
   if (!plan.feasible) {
     const slow = plan.perOrder.find((o) => o.readyToDropMin > maxReadyToDropMin);
     if (slow) {
       return { ok: false, reason: `order ${slow.jobId} would take ${slow.readyToDropMin.toFixed(1)} min from ready to drop-off (limit ${maxReadyToDropMin} min)` };
     }
     const worst = plan.perOrder.reduce((a, b) => (b.extraMin > a.extraMin ? b : a));
-    return { ok: false, reason: `order ${worst.jobId} would arrive ${worst.extraMin.toFixed(1)} min later than alone (limit ${MAX_ADDED_LATENESS_MIN} min)` };
+    return { ok: false, reason: `order ${worst.jobId} would arrive ${worst.extraMin.toFixed(1)} min later than alone (limit ${r.maxExtraMin} min)` };
   }
   const added = Math.max(0, ...plan.perOrder.map((o) => o.extraMin));
   return { ok: true, addedMinutes: Number(added.toFixed(1)), readyGapMin: Number(gapMin.toFixed(1)),

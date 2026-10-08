@@ -109,7 +109,9 @@ Response:
 ### Distance limits and the extra-km fee (v1.2)
 
 Distances are store to customer **by road** (the road route; straight line × 1.4
-when the routing server can't answer). Per zone, on the rate card:
+when the routing server can't answer). Set per zone in the back office
+**Settings** tab (src/settings.js), with an "All zones" value every zone follows
+unless given its own. Defaults:
 
 | Setting | Default | Effect |
 |---|---|---|
