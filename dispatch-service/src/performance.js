@@ -14,6 +14,7 @@
 
 import { checkCost } from './photoCheck.js';
 import { COST_SETTINGS } from './perfSettings.js';
+import { QUERY_TYPES, isQuality } from './queries.js';
 
 const MIN = 60000;
 const round = (v, d = 1) => (v == null || !Number.isFinite(v) ? null : Number(v.toFixed(d)));
@@ -112,6 +113,12 @@ function core(list, costs = DEFAULT_COSTS, queries = new Map()) {
   }
   const extra = Object.values(parts).reduce((a, b) => a + b, 0);
 
+  // Quality, from the query log: a perfect order is on time (by the promise)
+  // with no missing, wrong or damaged item reported.
+  const qualityHit = (j) => (queries.get(j.id) ?? []).some((q) => isQuality(q.type));
+  const onTime = (j) => j.promiseAt && j.completedAt <= j.promiseAt;
+  const queryCount = done.reduce((a, j) => a + (queries.get(j.id)?.length ?? 0), 0);
+
   return {
     orders: list.length, delivered: done.length, failed: list.filter((j) => j.status === 'FAILED').length,
     within30: share(within30, mins.length),
@@ -132,6 +139,9 @@ function core(list, costs = DEFAULT_COSTS, queries = new Map()) {
     cm2Total: round(rev - pay - extra, 2),
     costParts: Object.fromEntries(Object.entries(parts).map(([k, v]) => [k, priced.length ? round(v / priced.length, 2) : null])),
     profitable, profitableShare: share(profitable, priced.length),
+    qaErrorRate: share(done.filter(qualityHit).length, done.length),
+    por: share(done.filter((j) => onTime(j) && !qualityHit(j)).length, done.length),
+    queriesPer100: done.length ? round((queryCount / done.length) * 100, 1) : null,
     priced: priced.length,
   };
 }
@@ -154,6 +164,9 @@ export function performance(jobs, { sinceMs, now = Date.now(), zone = null, stor
   const byJob = new Map();
   for (const q of queries) if (q.jobId) byJob.set(q.jobId, [...(byJob.get(q.jobId) ?? []), q]);
   const c = core(inScope, cv, byJob);
+  const scopedIds = new Set(inScope.map((j) => j.id));
+  // Queries about these orders; with no store or zone filter, also those not tied to an order.
+  const qs = queries.filter((q) => (q.jobId ? scopedIds.has(q.jobId) : !zone && !storeId));
   const days = Math.max(1, (now - sinceMs) / 86400000);
 
   const byZone = [...new Set(inScope.map((j) => j.zone ?? '(no zone)'))].sort().map((z) => {
@@ -172,7 +185,8 @@ export function performance(jobs, { sinceMs, now = Date.now(), zone = null, stor
     const start = Math.max(sinceMs, end - 7 * 86400000);
     const k = core(inScope.filter((j) => j.createdAt >= start && j.createdAt < end));
     weeks.unshift({ from: start, to: end, delivered: k.delivered, within30: k.within30, withinSla: k.withinSla,
-      avgWait: k.avgWait, batching: k.batching, fad: k.fad, cm1PerOrder: k.cm1PerOrder });
+      avgWait: k.avgWait, batching: k.batching, fad: k.fad, cm1PerOrder: k.cm1PerOrder,
+      por: k.por, qaErrorRate: k.qaErrorRate, queriesPer100: k.queriesPer100 });
   }
 
   return {
@@ -183,7 +197,8 @@ export function performance(jobs, { sinceMs, now = Date.now(), zone = null, stor
       perMonth: round((c.delivered / days) * 30, 0) },
     core: {
       speed: metric(c.within30, 'within30', { label: '% delivered within 30 min of order' }),
-      quality: { value: null, label: 'Perfect order rate', waiting: 'Needs the query log (missing / damaged items): step 3.' },
+      quality: { value: c.por, unit: 'share', label: 'Perfect order rate',
+        note: 'on time, no missing, wrong or damaged item reported' },
       gmv: { value: null, label: 'GMV run rate', waiting: 'Needs the basket total from Keychat: step 4.' },
       margin: { value: c.cm1PerOrder, label: 'Contribution margin per order (CM1)', unit: 'R',
         note: `R${PLATFORM_FEE} + delivery fee, minus driver pay` },
@@ -211,10 +226,70 @@ export function performance(jobs, { sinceMs, now = Date.now(), zone = null, stor
       profitableOrders: { value: round((c.profitable / days) * 30, 0), unit: 'num', share: c.profitableShare,
         note: 'orders a month with CM2 above zero' },
     },
+    qa: qaSection(inScope, qs, byJob, cv, c),
     waiting: [
-      { metric: 'QA error rate, support queries, perfect order rate', why: 'Needs the query log: step 3.' },
       { metric: 'GMV run rate, MATU', why: 'Needs the basket total and a customer id from Keychat: step 4.' },
     ],
     byZone, byDistance, weeks,
   };
 }
+
+/**
+ * QA: the query log, and whether the AI photo check pays for itself.
+ *
+ * Checked and unchecked orders are compared on what quality problems cost
+ * after delivery (refunds plus support time for missing, wrong or damaged
+ * items). The check pays off when that cost falls by more than the check
+ * costs. Selective stores check bigger orders and new drivers, so the two
+ * groups are not identical: read the gap with that in mind.
+ */
+function qaSection(list, qs, byJob, costs, c) {
+  const done = list.filter((j) => j.status === 'DELIVERED' && j.completedAt);
+  const byType = Object.entries(QUERY_TYPES).map(([type, t]) => {
+    const of = qs.filter((q) => q.type === type);
+    return { type, label: t.label, quality: t.quality, count: of.length,
+      per100: done.length ? round((of.filter((q) => q.jobId).length / done.length) * 100, 1) : null,
+      refunds: round(of.reduce((a, q) => a + (q.refund ?? 0), 0), 2) };
+  });
+  const quality = qs.filter((q) => isQuality(q.type));
+  const costOf = (q) => (q.refund ?? 0) + costs.supportCostPerQuery;
+  const costPerQualityQuery = quality.length ? quality.reduce((a, q) => a + costOf(q), 0) / quality.length : null;
+
+  const ran = (j) => j.photoCheck?.usage || ['complete', 'missing', 'different', 'unclear'].includes(j.photoCheck?.status);
+  const group = (orders) => {
+    const qq = orders.flatMap((j) => (byJob.get(j.id) ?? []).filter((q) => isQuality(q.type)));
+    const checkCost = orders.reduce((a, j) => a + (j.photoCheck?.usage ? checkCost$(j) * costs.usdZar : 0), 0);
+    return {
+      orders: orders.length,
+      qualityPer100: orders.length ? round((qq.length / orders.length) * 100, 1) : null,
+      qualityCostPerOrder: orders.length ? round(qq.reduce((a, q) => a + costOf(q), 0) / orders.length, 2) : null,
+      checkCostPerOrder: orders.length ? round(checkCost / orders.length, 2) : null,
+      caughtAtStore: orders.filter((j) => ['missing', 'different'].includes(j.photoCheck?.status)).length,
+    };
+  };
+  const checked = group(done.filter(ran));
+  const unchecked = group(done.filter((j) => !ran(j)));
+  const enough = checked.orders >= 20 && unchecked.orders >= 20;
+  const saving = checked.orders && unchecked.orders
+    ? round(unchecked.qualityCostPerOrder - checked.qualityCostPerOrder - checked.checkCostPerOrder, 2) : null;
+  return {
+    queries: qs.length, qualityQueries: quality.length,
+    calls: qs.filter((q) => q.channel === 'call').length,
+    refunds: round(qs.reduce((a, q) => a + (q.refund ?? 0), 0), 2),
+    qaErrorRate: { value: c.qaErrorRate, unit: 'share', note: 'delivered orders with a missing, wrong or damaged item reported' },
+    queriesPer100: { value: c.queriesPer100, unit: 'num', note: 'support queries per 100 delivered orders' },
+    por: { value: c.por, unit: 'share', note: 'on time, no missing, wrong or damaged item reported' },
+    byType,
+    photoCheck: {
+      checked, unchecked, enough,
+      costPerQualityQuery: round(costPerQualityQuery, 2),
+      // Quality queries the check must prevent, per 100 orders, to cover its own cost.
+      breakEvenPer100: costPerQualityQuery && checked.checkCostPerOrder != null
+        ? round((checked.checkCostPerOrder / costPerQualityQuery) * 100, 2) : null,
+      savingPerCheckedOrder: saving,
+      paysOff: saving == null ? null : saving > 0,
+    },
+    recent: qs.slice(0, 50),
+  };
+}
+const checkCost$ = (j) => checkCost(j.photoCheck.usage, j.photoCheck.model);

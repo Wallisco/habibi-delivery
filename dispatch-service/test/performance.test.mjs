@@ -81,7 +81,8 @@ test('weeks, newest last; metrics without data say what they wait for', () => {
   assert.equal(p.core.gmv.value, null);
   assert.match(p.core.gmv.waiting, /Keychat/);
   assert.match(p.core.matu.waiting, /customer id/);
-  assert.ok(p.waiting.some((w) => /query log/.test(w.why)));
+  assert.ok(p.waiting.some((w) => /Keychat/.test(w.why)));
+  assert.equal(p.core.quality.value, 1, 'on time, nothing reported: perfect');
 });
 
 test('good / warn / bad: shares within 3 points are nearly there, minutes within 20%', () => {
@@ -177,4 +178,90 @@ test('a driver going online and sending positions is counted on the dashboard', 
   online.flush();
   const p = (await app.inject({ url: '/v1/ops/performance?days=1' })).json();
   assert.equal(p.metrics.dropsPerHour.hours, 0.5);
+});
+
+/* ------------------------------------- step 3: query log, QA and payoff */
+
+import { SupportQueries } from '../src/queries.js';
+import { allowed } from '../src/opsAuth.js';
+
+test('the query log: types and channels checked, refunds kept, a mistake can be removed', () => {
+  const sq = new SupportQueries({ sql: new DatabaseSync(':memory:') });
+  assert.match(sq.add({ type: 'cold food', channel: 'call' }).error, /type must be/);
+  assert.match(sq.add({ type: 'late', channel: 'pigeon' }).error, /channel must be/);
+  assert.match(sq.add({ type: 'late', channel: 'call', refund: -5 }).error, /refund/);
+  const { query } = sq.add({ jobId: 'J1', type: 'missing_item', channel: 'call', refund: 25, note: 'No Sprite' }, 'Ayesha');
+  assert.deepEqual([query.type, query.refund, query.by], ['missing_item', 25, 'Ayesha']);
+  assert.equal(sq.forJob('J1').length, 1);
+  assert.equal(sq.since(0).length, 1);
+  assert.equal(sq.remove(query.id), true);
+  assert.equal(sq.forJob('J1').length, 0);
+});
+
+test('QA error rate, queries per 100 and the perfect order rate', () => {
+  const a = order({ mins: 20 }), b = order({ mins: 20 }), late = order({ mins: 50 }), d = order({ mins: 20 });
+  const queries = [
+    { jobId: a.id, type: 'missing_item', channel: 'call', refund: 30 },
+    { jobId: b.id, type: 'driver_conduct', channel: 'message', refund: 0 },   // not a quality problem
+    { jobId: null, type: 'other', channel: 'call', refund: 0 },              // about no order
+  ];
+  const p = performance([a, b, late, d], { sinceMs: since, now: NOW, queries });
+  assert.equal(p.qa.qaErrorRate.value, 0.25, '1 of 4 delivered orders had a quality problem');
+  assert.equal(p.qa.queriesPer100.value, 50, '2 queries on orders, per 100 delivered');
+  assert.equal(p.qa.por.value, 0.5, 'not the one with a missing item, not the late one');
+  assert.equal(p.core.quality.value, 0.5);
+  assert.deepEqual([p.qa.queries, p.qa.qualityQueries, p.qa.calls, p.qa.refunds], [3, 1, 2, 30]);
+  assert.equal(p.qa.byType.find((t) => t.type === 'missing_item').per100, 25);
+  // A store filter leaves out the query that isn't about an order.
+  assert.equal(performance([a, b, late, d], { sinceMs: since, now: NOW, queries, storeId: 'KFC-MIL' }).qa.queries, 2);
+});
+
+test('does the photo check pay off: quality cost of checked against unchecked orders, minus what the check costs', () => {
+  const costs = { values: { supportCostPerQuery: 10, usdZar: 20 }, set: {} };
+  const usage = { input: 1800, output: 120 };                  // US$0.0096 = R0.192 at R20
+  const checked = Array.from({ length: 20 }, () => Object.assign(order(), { photoCheck: { model: 'claude-opus-5-5', usage, status: 'complete' } }));
+  checked[0].photoCheck.status = 'missing';                    // caught at the store
+  const unchecked = Array.from({ length: 20 }, () => order());
+  const queries = [
+    { jobId: checked[1].id, type: 'damaged', channel: 'call', refund: 20 },                  // R30 with support
+    ...unchecked.slice(0, 4).map((j) => ({ jobId: j.id, type: 'missing_item', channel: 'call', refund: 20 })),  // 4 × R30
+  ];
+  const pc = performance([...checked, ...unchecked], { sinceMs: since, now: NOW, costs, queries }).qa.photoCheck;
+  assert.deepEqual([pc.checked.qualityPer100, pc.unchecked.qualityPer100], [5, 20]);
+  assert.deepEqual([pc.checked.qualityCostPerOrder, pc.unchecked.qualityCostPerOrder], [1.5, 6]);
+  assert.equal(pc.checked.checkCostPerOrder, 0.19);
+  assert.equal(pc.checked.caughtAtStore, 1);
+  assert.equal(pc.savingPerCheckedOrder, 4.31, 'R6 - R1.50 - R0.19');
+  assert.equal(pc.paysOff, true);
+  assert.equal(pc.costPerQualityQuery, 30);
+  assert.equal(pc.breakEvenPer100, 0.63, 'R0.19 / R30, per 100 orders');
+  assert.equal(pc.enough, true);
+});
+
+test('the office logs a query on an order; it shows on the order and on the dashboard', async (t) => {
+  const app = build({ dbPath: ':memory:', partnerAuth: false, opsAuth: false });
+  t.after(() => app.close());
+  const jobId = (await app.inject({ method: 'POST', url: '/v1/keychat/jobs', payload: { storeId: 'KFC-MIL', zone: 'Milnerton',
+    pickup: { lat: -33.83, lng: 18.65 }, dropoff: { lat: -33.82, lng: 18.65 }, dispatchNow: true } })).json().jobId;
+  assert.equal((await app.inject({ method: 'POST', url: '/v1/ops/queries', payload: { jobId: 'NOPE', type: 'late', channel: 'call' } })).statusCode, 404);
+  assert.equal((await app.inject({ method: 'POST', url: '/v1/ops/queries', payload: { jobId, type: 'x', channel: 'call' } })).statusCode, 400);
+  const res = await app.inject({ method: 'POST', url: '/v1/ops/queries', payload: { jobId, type: 'missing_item', channel: 'call', refund: 15 } });
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.json().query.storeId, 'KFC-MIL', 'the store and zone come from the order');
+  const detail = (await app.inject({ url: `/v1/ops/orders/${jobId}` })).json();
+  assert.equal(detail.queries.length, 1);
+  assert.ok(detail.queryTypes.missing_item);
+  const p = (await app.inject({ url: '/v1/ops/performance?days=1' })).json();
+  assert.equal(p.qa.qualityQueries, 1);
+  assert.equal((await app.inject({ method: 'DELETE', url: `/v1/ops/queries/${res.json().query.id}` })).statusCode, 200);
+  assert.equal((await app.inject({ url: `/v1/ops/orders/${jobId}` })).json().queries.length, 0);
+});
+
+test('who may do what: ops log queries; viewers only look; finance may set the CM2 costs', () => {
+  assert.equal(allowed('ops', 'POST', '/v1/ops/queries'), true);
+  assert.equal(allowed('viewer', 'POST', '/v1/ops/queries'), false);
+  assert.equal(allowed('viewer', 'GET', '/v1/ops/performance'), true);
+  assert.equal(allowed('finance', 'PUT', '/v1/ops/performance/settings'), true);
+  assert.equal(allowed('ops', 'PUT', '/v1/ops/performance/settings'), true);
+  assert.equal(allowed('viewer', 'PUT', '/v1/ops/performance/settings'), false);
 });

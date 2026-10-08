@@ -32,6 +32,7 @@ import { Metrics } from './metrics.js';
 import { performance } from './performance.js';
 import { OnlineTime } from './onlineTime.js';
 import { PerfSettings, COST_SETTINGS } from './perfSettings.js';
+import { SupportQueries, QUERY_TYPES, QUERY_CHANNELS } from './queries.js';
 import { computeEarnings, costToServe } from './fees.js';
 import { RateBook, RATE_FIELDS, MRD_DEFAULT, DAY_NAMES } from './rates.js';
 import { routeJob, routingStatus, point } from './routing.js';
@@ -146,6 +147,7 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
   const supply = new SupplyRegistry(db);
   const online = new OnlineTime(db);
   const perfSettings = new PerfSettings(db);
+  const supportQueries = new SupportQueries(db);
   supply.onBeat = (d) => online.beat(d.id, { online: d.state !== SUPPLY.OFFLINE, zone: d.zone });
   const jobs = new JobStore(db);
   const otp = new OtpService();
@@ -1196,6 +1198,7 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
       deliveryCode: otp.peek(j.id),
       canIssueCode: !!j.driverId && !['DELIVERED','FAILED','CANCELLED'].includes(j.status),
       canClose: !['DELIVERED','FAILED','CANCELLED'].includes(j.status),
+      queries: supportQueries.forJob(j.id), queryTypes: QUERY_TYPES, queryChannels: QUERY_CHANNELS,
     };
   });
 
@@ -1687,7 +1690,26 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
     const sinceMs = since(req);
     const zone = req.query?.zone || null;
     return performance(metrics.jobsSince(sinceMs), { sinceMs, zone, storeId: req.query?.storeId || null,
-      costs: perfSettings.get(), onlineHours: online.hours(sinceMs, zone) });
+      costs: perfSettings.get(), onlineHours: online.hours(sinceMs, zone), queries: supportQueries.since(sinceMs) });
+  });
+
+  /* ------------------------------------------------ customer support queries */
+
+  /** Log what a customer called or wrote about, against the order. */
+  app.post('/v1/ops/queries', async (req, reply) => {
+    const b = req.body ?? {};
+    const job = b.jobId ? (jobs.get(b.jobId) ?? db.loadJob(b.jobId)) : null;
+    if (b.jobId && !job) return reply.code(404).send({ error: 'Unknown order' });
+    const { query, error } = supportQueries.add({ jobId: job?.id ?? null, storeId: job?.storeId ?? null, zone: job?.zone ?? null,
+      type: b.type, channel: b.channel, refund: b.refund, note: b.note }, b.actor ?? 'ops');
+    if (error) return reply.code(400).send({ error });
+    return { ok: true, query };
+  });
+  app.get('/v1/ops/queries', async (req) => ({ queries: supportQueries.since(since(req)), types: QUERY_TYPES, channels: QUERY_CHANNELS }));
+  /** For a query logged by mistake. */
+  app.delete('/v1/ops/queries/:id', async (req, reply) => {
+    if (!supportQueries.remove(Number(req.params.id))) return reply.code(404).send({ error: 'No such query' });
+    return { ok: true };
   });
   /** The CM2 costs, and changing them (ops and admin). */
   app.get('/v1/ops/performance/settings', async () => ({ ...perfSettings.get(), fields: COST_SETTINGS }));
@@ -1841,7 +1863,7 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
   // A next job handed back goes to the pool; on staging a simulated driver comes for it.
   dispatcher.onHandBack = (job) => sim?.onJob(job);
 
-  app.decorate('engine', { opsUsers, driverTokens, photos, sweepPhotos, stores, checker, online, perfSettings,
+  app.decorate('engine', { opsUsers, driverTokens, photos, sweepPhotos, stores, checker, online, perfSettings, supportQueries,
     photoChecksDone: () => Promise.all([...checksRunning]), idem, sim, gate, supply, jobs, dispatcher, otp, outbound, pendingOffers, db, metrics, rates, keychat, accounts, messages, ledger });
   return app;
 }

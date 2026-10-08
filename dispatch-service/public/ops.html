@@ -237,6 +237,8 @@ document.addEventListener('click', (e) => {
   if (action === 'photoCheckReview') reviewPhotoCheck(id, state);
   if (action === 'photoCheckRerun')  rerunPhotoCheck(id, act);
   if (action === 'saveCosts')        saveCosts();
+  if (action === 'logQuery')         logQuery(id);
+  if (action === 'deleteQuery')      deleteQuery(id, zone);
 });
 
 // Enter in the search box should search, not reload the page.
@@ -523,6 +525,22 @@ async function openOrder(jobId){
                 + '</div>';
             })() : ''}
           </div>` : ''}
+      </div>
+      <div style="margin-bottom:12px;font-size:13px">
+        <div style="font-size:10.5px;font-weight:800;color:var(--muted)">CUSTOMER QUERIES</div>
+        ${(d.queries ?? []).length ? (d.queries.map((q) => `<div style="display:flex;gap:8px;align-items:center;margin:3px 0">
+            <span class="tag ${d.queryTypes[q.type]?.quality ? 'r' : 'n'}">${d.queryTypes[q.type]?.label ?? q.type}</span>
+            <span>${d.queryChannels[q.channel] ?? q.channel}${q.refund ? ' · refund ' + R2(q.refund) : ''}${q.note ? ' · ' + q.note : ''}</span>
+            <span class="hint" style="margin:0">${time(q.at)} · ${q.by ?? ''}</span>
+            <button class="sm" data-act="deleteQuery" data-id="${q.id}" data-zone="${o.id}">Remove</button></div>`).join('')) : '<div class="hint" style="margin:2px 0">None logged.</div>'}
+        <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:4px">
+          <select id="qType">${Object.entries(d.queryTypes ?? {}).map(([k, t]) => `<option value="${k}">${t.label}</option>`).join('')}</select>
+          <select id="qChannel">${Object.entries(d.queryChannels ?? {}).map(([k, l]) => `<option value="${k}">${l}</option>`).join('')}</select>
+          <input id="qRefund" type="number" min="0" step="0.01" placeholder="Refund R" style="width:95px">
+          <input id="qNote" placeholder="What the customer said" style="flex:1;min-width:160px">
+          <button class="sm go" data-act="logQuery" data-id="${o.id}">Log query</button>
+          <span id="qMsg" class="hint" style="margin:0"></span>
+        </div>
       </div>
       ${!o.collectedAt && !['DELIVERED','FAILED','CANCELLED'].includes(o.status) ? `
         <div class="hint" style="margin-bottom:12px">The customer tracking link is released when the driver collects the order.</div>` : ''}
@@ -965,6 +983,35 @@ async function loadPerformance(){
       ${table(['Metric', 'Now', 'Target', '', ''], rows.map(([label, m, note]) =>
         [label, num(show(m)), num(goal(m)), m.target != null ? tag(m.status) : '', `<span class="hint" style="margin:0">${note ?? m.note ?? ''}</span>`]))}
     </section>
+    ${(() => {
+      const qa = d.qa, pcq = qa.photoCheck, ch = pcq.checked, un = pcq.unchecked;
+      return `<section><h2>QA and customer support</h2>
+      <div class="hint">From the queries logged on each order (open an order: Customer queries). ${qa.queries} queries
+        (${qa.calls} calls) · ${qa.qualityQueries} about missing, wrong or damaged items · refunds ${R2(qa.refunds)}.</div>
+      <div class="grid">
+        ${kpi('QA error rate', pc(qa.qaErrorRate.value), qa.qaErrorRate.note)}
+        ${kpi('Support queries', qa.queriesPer100.value == null ? '–' : r(qa.queriesPer100.value) + ' / 100', qa.queriesPer100.note)}
+        ${kpi('Perfect order rate', pc(qa.por.value), qa.por.note)}
+      </div>
+      ${table(['Query type', 'Count', 'Per 100 orders', 'Refunds', ''], qa.byType.map((t) =>
+        [t.label, num(t.count), num(t.per100 == null ? '–' : r(t.per100)), num(R2(t.refunds)), t.quality ? '<span class="tag r">quality</span>' : '']))}
+      </section>
+      <section><h2>Does the AI photo check pay off?</h2>
+      <div class="hint">Orders whose photo was checked against orders that weren't: what quality problems cost after delivery
+        (refunds plus support time for missing, wrong or damaged items), and what the check costs. Selective stores check bigger orders
+        and new drivers, so the groups differ: ${pcq.enough ? 'compare with that in mind.' : '<b>fewer than 20 orders in a group: too early to judge.</b>'}</div>
+      ${table(['', 'Orders', 'Quality queries / 100', 'Quality cost / order', 'Check cost / order', 'Caught at the store'], [
+        ['Photo checked', num(ch.orders), num(ch.qualityPer100 ?? '–'), num(R2(ch.qualityCostPerOrder)), num(R2(ch.checkCostPerOrder)), num(ch.caughtAtStore)],
+        ['Not checked', num(un.orders), num(un.qualityPer100 ?? '–'), num(R2(un.qualityCostPerOrder)), num('–'), num('–')]])}
+      <div class="hint" style="margin-top:10px">
+        ${pcq.savingPerCheckedOrder == null ? 'Needs checked and unchecked orders in this period.'
+          : `Net per checked order: <b style="color:var(${pcq.paysOff ? '--green' : '--red'})">${R2(pcq.savingPerCheckedOrder)}</b>
+             (${pcq.paysOff ? 'the check saves more than it costs' : 'the check costs more than it saves'}).`}
+        ${pcq.breakEvenPer100 != null ? ` Break-even: the check pays for itself if it prevents ${r(pcq.breakEvenPer100, 2)} quality
+          queries per 100 orders (a quality query costs ${R2(pcq.costPerQualityQuery)} on average).` : ''}
+      </div>
+      </section>`;
+    })()}
     <section><h2>SLA breaches by zone</h2>
       <div class="hint">Orders over 30 minutes from order to door. Target under 3% in every zone.</div>
       ${d.byZone.length ? table(['Zone', 'Delivered', 'Within 30 min', 'Over 30 min', '', 'Within SLA', 'Avg km', 'Over 7 km', 'Avg wait', 'FAD'],
@@ -978,9 +1025,9 @@ async function loadPerformance(){
         d.byDistance.map((b) => [b.band, num(b.orders), num(pc(b.within30)), num(pc(b.breaches)), b.orders ? tag(b.breachStatus) : '']))}
     </section>
     <section><h2>Week by week</h2>
-      ${table(['Week from', 'Delivered', 'Within 30 min', 'Within SLA', 'Avg wait', 'Batched', 'FAD', 'CM1 / order'],
+      ${table(['Week from', 'Delivered', 'Within 30 min', 'Within SLA', 'Perfect orders', 'QA errors', 'Avg wait', 'Batched', 'FAD', 'CM1 / order'],
         d.weeks.map((w) => [new Date(w.from).toLocaleDateString('en-ZA', { day: 'numeric', month: 'short' }), num(w.delivered),
-          num(pc(w.within30)), num(pc(w.withinSla)), num(w.avgWait != null ? r(w.avgWait) + ' min' : '–'),
+          num(pc(w.within30)), num(pc(w.withinSla)), num(pc(w.por)), num(pc(w.qaErrorRate)), num(w.avgWait != null ? r(w.avgWait) + ' min' : '–'),
           num(pc(w.batching)), num(pc(w.fad)), num(R2(w.cm1PerOrder))]))}
     </section>
     <section><h2>CM2 costs</h2>
@@ -997,6 +1044,18 @@ async function loadPerformance(){
       <div class="hint">These need data the system does not collect yet.</div>
       ${table(['Metric', 'Needs'], d.waiting.map((w) => [w.metric, w.why]))}
     </section>`;
+}
+async function logQuery(jobId){
+  const res = await post('/v1/ops/queries', { jobId, type: $('#qType').value, channel: $('#qChannel').value,
+    refund: Number($('#qRefund').value || 0), note: $('#qNote').value });
+  if (!res.ok) { $('#qMsg').textContent = (await res.json()).error ?? 'Could not log the query.'; return; }
+  openOrder(jobId);
+}
+async function deleteQuery(id, jobId){
+  if (!confirm('Remove this query? Only for one logged by mistake.')) return;
+  const res = await fetch('/v1/ops/queries/' + id, { method: 'DELETE' });
+  if (!res.ok) { alert((await res.json()).error ?? 'Could not remove it.'); return; }
+  openOrder(jobId);
 }
 async function saveCosts(){
   const patch = {};

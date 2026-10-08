@@ -96,6 +96,8 @@ export function allowed(role, method, path) {
   if (/^\/v1\/ops\/rates\/[^/]+\/preview$/.test(p)) return true;
   if (role === 'admin') return true;
   if (role === 'viewer') return false;
+  // The CM2 cost assumptions are a finance number as much as an ops one.
+  if (p === '/v1/ops/performance/settings') return role === 'ops' || role === 'finance';
   const money = p.startsWith('/v1/ops/rates') || p.startsWith('/v1/ops/surge') || p.startsWith('/v1/ops/ledger');
   return money ? role === 'finance' : role === 'ops';
 }
