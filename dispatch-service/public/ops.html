@@ -937,7 +937,7 @@ async function loadPerformance(){
     fetch('/v1/ops/performance/settings').then((x) => x.json())]);
   const pc = (v) => v == null ? '–' : (v * 100).toFixed(1) + '%';
   const show = (m) => m.value == null ? '–' : m.unit === 'share' ? pc(m.value) : m.unit === 'R' ? R2(m.value)
-    : m.unit === 'min' ? r(m.value) + ' min' : m.unit === 'km' ? r(m.value) + ' km' : r(m.value, Number.isInteger(m.value) ? 0 : 2);
+    : m.unit === 'R' && Math.abs(m.value) >= 1000 ? R(m.value) : m.unit === 'min' ? r(m.value) + ' min' : m.unit === 'km' ? r(m.value) + ' km' : r(m.value, Number.isInteger(m.value) ? 0 : 2);
   const goal = (m) => m.target == null ? '' : (m.dir === 'atLeast' ? '≥ ' : '≤ ') + show({ ...m, value: m.target });
   const cls = (st) => st === 'bad' ? 'bad' : st === 'warn' ? 'warn' : '';
   const tag = (st) => st ? `<span class="tag ${{ good: 'g', warn: 'a', bad: 'r' }[st]}">${{ good: 'On target', warn: 'Close', bad: 'Off target' }[st]}</span>` : '<span class="tag n">No data</span>';
@@ -1040,10 +1040,10 @@ async function loadPerformance(){
         <button class="go sm" data-act="saveCosts">Save costs</button><span id="costMsg" class="hint" style="margin:0"></span>
       </div>
     </section>
-    <section><h2>Coming next</h2>
+    ${d.waiting.length ? `<section><h2>Coming next</h2>
       <div class="hint">These need data the system does not collect yet.</div>
       ${table(['Metric', 'Needs'], d.waiting.map((w) => [w.metric, w.why]))}
-    </section>`;
+    </section>` : ''}`;
 }
 async function logQuery(jobId){
   const res = await post('/v1/ops/queries', { jobId, type: $('#qType').value, channel: $('#qChannel').value,

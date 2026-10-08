@@ -135,6 +135,8 @@ function core(list, costs = DEFAULT_COSTS, queries = new Map()) {
     driverPayPerOrder: priced.length ? round(pay / priced.length, 2) : null,
     cm1PerOrder: priced.length ? round((rev - pay) / priced.length, 2) : null,
     cm1Total: round(rev - pay, 2),
+    gmv: round(done.reduce((a, j) => a + (j.orderValue ?? 0), 0), 2),
+    gmvOrders: done.filter((j) => j.orderValue != null).length,
     cm2PerOrder: priced.length ? round((rev - pay - extra) / priced.length, 2) : null,
     cm2Total: round(rev - pay - extra, 2),
     costParts: Object.fromEntries(Object.entries(parts).map(([k, v]) => [k, priced.length ? round(v / priced.length, 2) : null])),
@@ -164,10 +166,17 @@ export function performance(jobs, { sinceMs, now = Date.now(), zone = null, stor
   const byJob = new Map();
   for (const q of queries) if (q.jobId) byJob.set(q.jobId, [...(byJob.get(q.jobId) ?? []), q]);
   const c = core(inScope, cv, byJob);
+  // Monthly transacting users: distinct customers with a delivered order in
+  // the last 30 days (whatever the period shown), in the same zone or store.
+  const month = jobs.filter((j) => j.status === 'DELIVERED' && j.completedAt >= now - 30 * 86400000
+    && (!zone || j.zone === zone) && (!storeId || j.storeId === storeId));
+  const withRef = month.filter((j) => j.customerRef);
+  const matu = new Set(withRef.map((j) => j.customerRef)).size;
   const scopedIds = new Set(inScope.map((j) => j.id));
   // Queries about these orders; with no store or zone filter, also those not tied to an order.
   const qs = queries.filter((q) => (q.jobId ? scopedIds.has(q.jobId) : !zone && !storeId));
   const days = Math.max(1, (now - sinceMs) / 86400000);
+  const gmvRun = c.gmvOrders ? (c.gmv / days) * 30 : null;
 
   const byZone = [...new Set(inScope.map((j) => j.zone ?? '(no zone)'))].sort().map((z) => {
     const k = core(inScope.filter((j) => (j.zone ?? '(no zone)') === z));
@@ -199,10 +208,18 @@ export function performance(jobs, { sinceMs, now = Date.now(), zone = null, stor
       speed: metric(c.within30, 'within30', { label: '% delivered within 30 min of order' }),
       quality: { value: c.por, unit: 'share', label: 'Perfect order rate',
         note: 'on time, no missing, wrong or damaged item reported' },
-      gmv: { value: null, label: 'GMV run rate', waiting: 'Needs the basket total from Keychat: step 4.' },
+      gmv: c.gmvOrders
+        ? { value: round(gmvRun, 0), unit: 'R', label: 'GMV run rate (a month)', annual: round(gmvRun * 12, 0),
+          avgBasket: round(c.gmv / c.gmvOrders, 2), coverage: share(c.gmvOrders, c.delivered),
+          note: `R${Math.round(gmvRun * 12).toLocaleString('en-ZA')} a year · ${Math.round((c.gmvOrders / c.delivered) * 100)}% of orders carry the basket total` }
+        : { value: null, label: 'GMV run rate', waiting: 'No orders with the basket total yet: Keychat sends orderValue (contract v1.3).' },
       margin: { value: c.cm1PerOrder, label: 'Contribution margin per order (CM1)', unit: 'R',
         note: `R${PLATFORM_FEE} + delivery fee, minus driver pay` },
-      matu: { value: null, label: 'Monthly transacting users', waiting: 'Needs a customer id from Keychat: step 4.' },
+      matu: withRef.length
+        ? { value: matu, unit: 'num', label: 'Monthly transacting users', coverage: share(withRef.length, month.length),
+          note: `last 30 days · ${Math.round((withRef.length / month.length) * 100)}% of orders carry a customer id`
+            + (matu ? ` · ${round(withRef.length / matu, 1)} orders each` : '') }
+        : { value: null, label: 'Monthly transacting users', waiting: 'No orders with a customer id yet: Keychat sends customerId (contract v1.3).' },
     },
     metrics: {
       within30: metric(c.within30, 'within30'),
@@ -228,7 +245,6 @@ export function performance(jobs, { sinceMs, now = Date.now(), zone = null, stor
     },
     qa: qaSection(inScope, qs, byJob, cv, c),
     waiting: [
-      { metric: 'GMV run rate, MATU', why: 'Needs the basket total and a customer id from Keychat: step 4.' },
     ],
     byZone, byDistance, weeks,
   };

@@ -119,6 +119,10 @@ export class JobStore {
       // What Keychat charged the customer for delivery, so reconciliation is
       // arithmetic rather than a negotiation.
       customerCharge: input.customerCharge != null ? Number(input.customerCharge) : null,
+      // The basket total (for GMV) and a fingerprint of Keychat's customer id
+      // (for monthly transacting users; customerRef.js). Both optional, v1.3.
+      orderValue: input.orderValue != null ? Number(input.orderValue) : null,
+      customerRef: input.customerRef ?? null,
       quoteId: input.quoteId ?? null,
       fee: input.fee ?? 35,
       requiredCapabilities: input.requiredCapabilities ?? [],

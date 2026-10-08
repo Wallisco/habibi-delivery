@@ -79,9 +79,9 @@ test('weeks, newest last; metrics without data say what they wait for', () => {
   assert.equal(p.weeks.length, 2);
   assert.deepEqual(p.weeks.map((w) => w.delivered), [1, 1]);
   assert.equal(p.core.gmv.value, null);
-  assert.match(p.core.gmv.waiting, /Keychat/);
-  assert.match(p.core.matu.waiting, /customer id/);
-  assert.ok(p.waiting.some((w) => /Keychat/.test(w.why)));
+  assert.match(p.core.gmv.waiting, /orderValue/);
+  assert.match(p.core.matu.waiting, /customerId/);
+  assert.ok(p.core.gmv.waiting && p.core.matu.waiting, 'no basket totals or customer ids in these orders');
   assert.equal(p.core.quality.value, 1, 'on time, nothing reported: perfect');
 });
 
@@ -264,4 +264,56 @@ test('who may do what: ops log queries; viewers only look; finance may set the C
   assert.equal(allowed('finance', 'PUT', '/v1/ops/performance/settings'), true);
   assert.equal(allowed('ops', 'PUT', '/v1/ops/performance/settings'), true);
   assert.equal(allowed('viewer', 'PUT', '/v1/ops/performance/settings'), false);
+});
+
+/* --------------------------------------------- step 4: GMV and MATU */
+
+import { CustomerRefs } from '../src/customerRef.js';
+
+test('GMV run rate: delivered basket totals, a month and a year at this rate', () => {
+  const p = performance([Object.assign(order(), { orderValue: 200 }), Object.assign(order(), { orderValue: 300 }), order()],
+    { sinceMs: since, now: NOW });
+  assert.equal(p.core.gmv.value, Math.round((500 / 7) * 30));
+  assert.equal(p.core.gmv.annual, Math.round((500 / 7) * 30 * 12));
+  assert.equal(p.core.gmv.avgBasket, 250);
+  assert.equal(p.core.gmv.coverage, 0.667, 'one order came without a basket total');
+  assert.match(performance([order()], { sinceMs: since, now: NOW }).core.gmv.waiting, /orderValue/);
+});
+
+test('MATU: distinct customers with a delivered order in the last 30 days, whatever the period shown', () => {
+  const o = (ref, ageDays) => Object.assign(order({ ageMin: ageDays * 1440 }), { customerRef: ref });
+  const jobs = [o('c_a', 1), o('c_a', 2), o('c_b', 20), o('c_c', 40), order()];
+  const p = performance(jobs, { sinceMs: since, now: NOW });     // a 7-day view
+  assert.equal(p.core.matu.value, 2, 'a and b; c ordered 40 days ago');
+  assert.equal(p.core.matu.coverage, 0.75);
+  assert.match(performance([order()], { sinceMs: since, now: NOW }).core.matu.waiting, /customerId/);
+});
+
+test('customer ids are kept only as a keyed fingerprint, stable per server', () => {
+  const sql = new DatabaseSync(':memory:');
+  const a = new CustomerRefs({ sql });
+  assert.equal(a.ref('KC-CUST-1'), a.ref('KC-CUST-1'));
+  assert.notEqual(a.ref('KC-CUST-1'), a.ref('KC-CUST-2'));
+  assert.equal(new CustomerRefs({ sql }).ref('KC-CUST-1'), a.ref('KC-CUST-1'), 'same key after a restart');
+  assert.notEqual(new CustomerRefs({ sql: new DatabaseSync(':memory:') }).ref('KC-CUST-1'), a.ref('KC-CUST-1'), 'another server, another key');
+  assert.ok(!a.ref('0821234567').includes('0821234567'));
+  assert.equal(a.ref(null), null);
+});
+
+test('Keychat sends orderValue and customerId; the raw id is never stored', async (t) => {
+  const app = build({ dbPath: ':memory:', partnerAuth: false, opsAuth: false });
+  t.after(() => app.close());
+  const base = { storeId: 'KFC-MIL', zone: 'Milnerton', pickup: { lat: -33.83, lng: 18.65 }, dropoff: { lat: -33.82, lng: 18.65 } };
+  const post = (extra) => app.inject({ method: 'POST', url: '/v1/keychat/jobs', payload: { ...base, ...extra } });
+  assert.equal((await post({ orderValue: -1 })).statusCode, 400);
+  assert.equal((await post({ orderValue: '245' })).statusCode, 400);
+  assert.equal((await post({ customerId: '' })).statusCode, 400);
+  const res = await post({ orderValue: 245.5, customerId: 'KC-CUST-88213' });
+  assert.equal(res.statusCode, 201);
+  const job = app.engine.jobs.get(res.json().jobId);
+  assert.equal(job.orderValue, 245.5);
+  assert.match(job.customerRef, /^c_[0-9a-f]{32}$/);
+  assert.ok(!JSON.stringify(job).includes('KC-CUST-88213'), 'the raw id is not kept');
+  const stored = app.engine.db.loadJob(job.id);
+  assert.ok(!JSON.stringify(stored).includes('KC-CUST-88213'));
 });

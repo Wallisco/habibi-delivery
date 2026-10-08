@@ -33,6 +33,7 @@ import { performance } from './performance.js';
 import { OnlineTime } from './onlineTime.js';
 import { PerfSettings, COST_SETTINGS } from './perfSettings.js';
 import { SupportQueries, QUERY_TYPES, QUERY_CHANNELS } from './queries.js';
+import { CustomerRefs } from './customerRef.js';
 import { computeEarnings, costToServe } from './fees.js';
 import { RateBook, RATE_FIELDS, MRD_DEFAULT, DAY_NAMES } from './rates.js';
 import { routeJob, routingStatus, point } from './routing.js';
@@ -148,6 +149,7 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
   const online = new OnlineTime(db);
   const perfSettings = new PerfSettings(db);
   const supportQueries = new SupportQueries(db);
+  const customerRefs = new CustomerRefs(db);
   supply.onBeat = (d) => online.beat(d.id, { online: d.state !== SUPPLY.OFFLINE, zone: d.zone });
   const jobs = new JobStore(db);
   const otp = new OtpService();
@@ -401,6 +403,16 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
     const parsed = parseItems(b.items);
     if (parsed.error) return reply.code(400).send({ error: parsed.error });
     b.items = parsed.items;
+    // The basket total and Keychat's customer id (optional, v1.3). The id is
+    // never kept: only a keyed fingerprint of it, for counting customers.
+    if (b.orderValue != null && !(typeof b.orderValue === 'number' && b.orderValue >= 0 && b.orderValue <= 100000)) {
+      return reply.code(400).send({ error: 'orderValue must be the basket total in Rand, 0 to 100000' });
+    }
+    if (b.customerId != null && !(['string', 'number'].includes(typeof b.customerId) && String(b.customerId).length >= 1 && String(b.customerId).length <= 128)) {
+      return reply.code(400).send({ error: 'customerId must be your id for the customer, 1 to 128 characters' });
+    }
+    b.customerRef = customerRefs.ref(b.customerId);
+    delete b.customerId;
     // We route it ourselves. Keychat's ETA is for their customer; our distance
     // is what the fee is built on, and it has to be defensible in a dispute.
     const routing = await routeJob({ pickup: b.pickup, dropoff: b.dropoff });
@@ -1689,7 +1701,8 @@ export function build({ logger = false, dbPath = process.env.DB_PATH ?? './data/
   app.get('/v1/ops/performance', async (req) => {
     const sinceMs = since(req);
     const zone = req.query?.zone || null;
-    return performance(metrics.jobsSince(sinceMs), { sinceMs, zone, storeId: req.query?.storeId || null,
+    // MATU always looks at the last 30 days, whatever the period shown.
+    return performance(metrics.jobsSince(Math.min(sinceMs, Date.now() - 30 * 86400000)), { sinceMs, zone, storeId: req.query?.storeId || null,
       costs: perfSettings.get(), onlineHours: online.hours(sinceMs, zone), queries: supportQueries.since(sinceMs) });
   });
 
