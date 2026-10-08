@@ -1,5 +1,7 @@
 # Keychat integration contract
 
+> **Partner-facing contract:** [`docs/keychat-openapi.yaml`](docs/keychat-openapi.yaml) (OpenAPI 3.1, v1.2). That spec is the one document Keychat integrates against; it includes the integration rules, every endpoint and webhook, testing and go-live. Change it in the same commit as any change to the Keychat routes. This file keeps internal notes.
+
 Two systems, one order. Keychat owns the customer and the transaction record.
 We own routing, dispatch, the fleet and delivery execution.
 

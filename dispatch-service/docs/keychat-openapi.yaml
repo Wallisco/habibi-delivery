@@ -1,0 +1,1658 @@
+openapi: 3.1.0
+info:
+  title: FEEST × Keychat Integration API
+  version: 1.2.0
+  summary: Orders in from Keychat, delivery events back out to Keychat.
+  description: 'The one document Keychat needs to integrate with FEEST dispatch. Everything is here: the rules, every endpoint, every webhook, how to test and the go-live checklist.
+
+
+    Keychat owns the customer and the transaction. FEEST dispatch (operated by Quikr) owns routing, pricing, drivers and delivery. You call us three times per order; we call you back with webhooks.
+
+
+    ## What''s new in v1.2
+
+
+    | Change | What you do | Where it is live |
+
+    |---|---|---|
+
+    | **Delivery limit: 11 km by road** | Handle `422 out_of_range` on quote and job: tell the customer the store doesn''t deliver there | Next release |
+
+    | **Extra-km fee after 5 km by road** | Add `customerCharge.deliveryFee` as before; it now includes the extra km. The quote shows the breakdown | Next release |
+
+    | `items` on job creation | Send what is in the order. The driver checks it at the store | Staging first, then the next release |
+
+    | `Idempotency-Key` on job creation | Send your order id as the key; on a timeout, retry with the same key and body | Staging and production |
+
+    | `/ready` safe to repeat | Nothing. A repeat returns `"duplicate": true` | Staging and production |
+
+    | `latitude`/`longitude` fixed | Nothing. Impossible coordinates (including 0,0) now return `400` | Staging and production |
+
+    | Road routing | Bill only on `routing.source: "osrm"` | Staging and production |
+
+
+    Dispatch timing also changes in the next release: a driver has **45 seconds** to accept (was 25) and a run carries **at most 2 orders** (was 3). No API change. Fields production doesn''t know yet are ignored, so you can build all of v1.2 now.
+
+
+    ## Who holds what
+
+
+    | | Keychat | FEEST dispatch |
+
+    |---|---|---|
+
+    | Customer, menu, checkout, payment | Yes | |
+
+    | Shows the customer their delivery code | Yes | |
+
+    | Generates and verifies the delivery code | | Yes |
+
+    | Routing, distance, delivery price | | Yes |
+
+    | When to send a driver (ready gate) | | Yes |
+
+    | Drivers: onboarding, vetting, pay | | Yes |
+
+
+    The code is verified against the driver''s live position, which only we hold: you display it, we adjudicate. You never receive a driver record beyond first name and vehicle.
+
+
+    ## Order lifecycle
+
+
+    | Order state | What happens | Webhook to you |
+
+    |---|---|---|
+
+    | `PENDING` | You create the job after payment; the ready gate holds it until the food is nearly up. Your POS calls `/ready` when the label prints | `delivery.accepted`, then `delivery.merchant_ready` |
+
+    | `OFFERED` | Offered to a driver (45 s to accept) | none |
+
+    | `ASSIGNED` | Driver on the way to the store | `delivery.assigned` |
+
+    | `AT_STORE` | Driver at the store | none |
+
+    | `IN_TRANSIT` | Driver collected the order | `delivery.collected` + **tracking link** |
+
+    | `AT_CUSTOMER` | Driver at the door | `delivery.code_issued` + **code** |
+
+    | `DELIVERED` | Customer read out the code | `delivery.delivered` + **charge** |
+
+    | `FAILED` / `CANCELLED` | Our office closed it, any time before delivery | `delivery.failed` |
+
+
+    Also: `delivery.address_changed` when our office corrects the drop-off, and a second `delivery.code_issued` when a code is reissued. In a two-order run each order sends its own events.
+
+
+    ## Environments and authentication
+
+
+    | | Staging | Production |
+
+    |---|---|---|
+
+    | Base URL | `https://habibi-staging.quikr.co.za` | `https://habibi-api.quikr.co.za` |
+
+    | API key | `hbk_test_…` | `hbk_live_…` (issued at go-live) |
+
+    | Drivers | Simulated: every order is delivered in about 2–3 minutes | Real |
+
+    | `dispatchNow` | Honoured | Ignored |
+
+
+    Send `x-api-key` on every `/v1/keychat/*` request; a missing or wrong key returns `401`. Your API key and webhook secret come by one-time secure link, never by email.
+
+
+    **Conventions:** timestamps are Unix epoch **milliseconds** · money is **ZAR**, two decimals, excluding VAT · coordinates accept `lat`/`lng` or `latitude`/`longitude` · errors are `{ "error": "…" }` with a plain-language message.
+
+
+    ## Distance limits and the delivery fee
+
+
+    Distance is store to customer **by road**: the road route, or the straight line × 1.4 when the routing server can''t answer (11 km by road ≈ 7.9 km as the crow flies).
+
+
+    - Up to **5 km**: the flat delivery fee.
+
+    - **5 to 11 km**: the flat fee plus every extra km at the zone''s per-km rate.
+
+    - Over **11 km**: refused with `422 out_of_range` on the quote, the job, and any address change.
+
+
+    These limits are set per zone in our back office, so read `maxDeliveryKm` from the refusal rather than hard-coding 11.
+
+
+    Two orders share a driver only when both go **7 km or less** and neither would reach its customer more than **30 minutes** after the food is ready. If a shared run falls behind before the second order is collected, we move that order to another driver and you receive a second `delivery.assigned` for it. Always show the latest one.
+
+
+    ## Retries: Idempotency-Key
+
+
+    Send your order id as `Idempotency-Key` on every `POST /v1/keychat/jobs`. On a timeout, retry with the **same key and the same body**.
+
+
+    | Retry | Result |
+
+    |---|---|
+
+    | Same key, same body | The first response, replayed (`idempotent-replayed: true`). Same `jobId` |
+
+    | Same key, different body | `422`. Use a new key for a new order |
+
+    | Same key, first call still running | `409` with `retry-after: 1` |
+
+    | No header | A new job every time |
+
+
+    Keys are kept 48 hours, per API key. Only successful creates are stored, so a `400` can be fixed and resent under the same key.
+
+
+    ## Customer tracking link
+
+
+    Released **only** on `delivery.collected`; send it to the customer then, never earlier. The link returns `404` until collection. It holds a random 128-bit token (not the `jobId`), shows the driver''s first name, vehicle and live position while the order is in flight, shows status only once it finishes, and returns `410 Gone` 60 minutes after that.
+
+
+    ## Webhooks
+
+
+    Every event is `POST`ed to the one HTTPS URL you give us, as `{ "type", "at", "data" }` with headers `x-event-id` and `x-dispatch-signature`. The **Webhooks** section at the bottom lists each event with its payload.
+
+
+    - **Acknowledge** with any `2xx` within 5 seconds.
+
+    - **Check** `x-dispatch-signature` equals your webhook secret (a shared secret, not an HMAC).
+
+    - **Dedupe** on `x-event-id`: delivery is at-least-once.
+
+    - **Order** by `at`: retries can arrive out of order.
+
+    - **Retries:** about every 4 seconds, up to 5 attempts, then flagged to our operations team.
+
+
+    `delivery.delivered` is the billable event. A missed one is an order nobody bills, so make that receiver reliable above all.
+
+
+    ## Testing on staging
+
+
+    Every staging order runs the full lifecycle on its own in 2–3 minutes. Put a test word anywhere in `externalId`:
+
+
+    - `SIMFAIL`: collected, then closed as failed (`delivery.failed`, `actor: "simulator"`).
+
+    - `SIMSLOW`: every step three times slower, to watch the tracking page.
+
+
+    Send `dispatchNow: true` to skip the ready gate.
+
+
+    **Pass these before go-live:**
+
+    1. Quote, create a job with `Idempotency-Key`, retry it and get the same `jobId`.
+
+    2. Same key with a changed body returns `422`.
+
+    3. A job with a bad `items` line returns `400` naming the line; fix and resend under the same key.
+
+    4. Quote a drop-off about 8.5 km away in a straight line and get `422 out_of_range`.
+
+    5. `/ready` twice; the second says `"duplicate": true`.
+
+    6. All webhooks of a normal run received and deduped; tracking link sent only on `delivery.collected`.
+
+    7. A `SIMFAIL` order triggers your refund flow from `delivery.failed`.
+
+    8. One day of test orders reconciles against `GET /v1/keychat/statement`.
+
+
+    ## Go-live checklist
+
+
+    **Keychat:** staging tests pass · `Idempotency-Key` on every create · `items` sent, product names only · `out_of_range` handled with a clear customer message · `/ready` wired to the POS label print · webhook receiver on HTTPS, checking the signature, deduping, answering within 5 s · tracking link only on collection; latest code and driver always shown; codes never logged · production webhook URL and a technical contact sent to us.
+
+
+    **FEEST:** live key and webhook secret issued by secure link · production webhook configured and a test event acknowledged · next release live on production and confirmed · one end-to-end order with a real driver, reconciled on the statement.
+
+
+    ## Known gaps
+
+
+    - **No cancel endpoint.** Cancellation goes through our operations team; you receive `delivery.failed`.
+
+    - **Webhook signature is a shared secret**, not an HMAC.
+
+    - **Webhook retries are flat** (about every 4 s, 5 attempts), not exponential.
+
+    - **Distances fall back to straight line** when the routing server is down; don''t bill on `estimated`.
+
+
+    ## Change log
+
+
+    | Version | Date | Change |
+
+    |---|---|---|
+
+    | 1.2 | 8 Oct 2026 | Delivery limit 11 km by road (`422 out_of_range`); extra-km fee after 5 km with its breakdown on the quote; shared runs limited to 7 km and 30 min from ready to drop-off. One document replaces the PDF guide, HTML reference and separate spec |
+
+    | 1.2 | 7 Oct 2026 | `items` on job creation; 45 s offers and at most 2 orders per run (timing only) |
+
+    | 1.2 | 6 Oct 2026 | `Idempotency-Key`; repeat `/ready` returns `duplicate`; coordinate fix; road routing; staging with simulated drivers |
+
+    | 1.1 | Sep 2026 | API keys; random-token tracking link released only on `delivery.collected` |
+
+
+    **Contact:** Wahlied Cole, Director, Quikr (Pty) Ltd.'
+  contact:
+    name: Wahlied Cole, Director, Quikr (Pty) Ltd
+servers:
+- url: https://habibi-staging.quikr.co.za
+  description: 'Staging: test key, simulated drivers. Integrate here.'
+- url: https://habibi-api.quikr.co.za
+  description: 'Production: live key issued at go-live.'
+tags:
+- name: Orders
+  description: 'The three calls you make for every order: quote, create, ready.'
+- name: Reconciliation
+  description: Billing and debugging.
+- name: Tracking
+  description: The public data behind the customer tracking page.
+security:
+- apiKey: []
+paths:
+  /v1/keychat/quote:
+    post:
+      tags:
+      - Orders
+      operationId: createQuote
+      summary: '1. Quote: price a delivery before the customer pays'
+      description: 'Call while the customer builds the basket in WhatsApp. Synchronous and fast; nothing is reserved; valid for `expiresInSeconds`.
+
+
+        **Add `customerCharge.deliveryFee` to the order total.** It is the flat fee, plus every km past `includedKm` at `extraKmRate`. The tip is collected separately and passed to the driver in full.
+
+
+        `driverCost` and `margin` are itemised so reconciliation is arithmetic. Bill only when `routing.source` is `osrm`. `timing.driverDispatchAtMinutes` is when we plan to send a driver.
+
+
+        Past the zone''s delivery limit (default 11 km by road) the quote is refused with `422 out_of_range`.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/QuoteRequest'
+            example:
+              storeId: MILNERTON-GALLERIA
+              zone: Milnerton
+              pickup: &id001
+                lat: -33.8703
+                lng: 18.5089
+                name: Milnerton Galleria
+              dropoff: &id002
+                lat: -33.9246
+                lng: 18.5089
+                name: 14 Wellington St, Milnerton
+              prepMinutes: 18
+              bagCount: 1
+              tip: 0
+      responses:
+        '200':
+          description: Quote
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Quote'
+              example:
+                quoteId: Q-m4x2k1-a9f3
+                expiresInSeconds: 180
+                currency: ZAR
+                customerCharge:
+                  deliveryFee: 44.18
+                  baseFee: 40
+                  includedKm: 5
+                  extraKm: 3.4
+                  extraKmRate: 1.229
+                  extraKmFee: 4.18
+                  tipIsSeparate: true
+                  note: Tip is collected by Keychat at checkout and passed through in full to the driver.
+                driverCost:
+                  lines:
+                  - code: COLLECTION_BASE
+                    label: Collection base fee
+                    detail: Paid on every collection
+                    amount: 6.5
+                  - code: COLLECTION_KM
+                    label: Per km to collection
+                    detail: 0.9 km at R0.767/km
+                    amount: 0.69
+                  - code: DELIVERY_BASE
+                    label: Delivery base fee
+                    detail: Paid on every completed delivery
+                    amount: 21
+                  - code: DELIVERY_KM
+                    label: Per km to customer
+                    detail: 8.4 km at R1.229/km
+                    amount: 10.32
+                  - code: FUEL
+                    label: Fuel surcharge
+                    detail: Per order
+                    amount: 1.47
+                  total: 39.98
+                margin: 4.2
+                routing:
+                  collectKm: 0.9
+                  deliverKm: 8.4
+                  roadKm: 8.4
+                  drivingMinutes: 22.9
+                  source: osrm
+                timing:
+                  etaMinutes: 45
+                  merchantPrepMinutes: 18
+                  ourPrepEstimateMinutes: 18
+                  prepSource: merchant
+                  driverDispatchAtMinutes: 15.5
+        '400':
+          description: Missing field or impossible coordinates
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error: pickup and dropoff need valid coordinates (lat/lng or latitude/longitude)
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          description: Past the delivery limit for this zone
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OutOfRange'
+              example:
+                error: out_of_range
+                message: The drop-off is 11.2 km from the store by road; we deliver up to 11 km.
+                deliverKm: 11.2
+                maxDeliveryKm: 11
+  /v1/keychat/jobs:
+    post:
+      tags:
+      - Orders
+      operationId: createJob
+      summary: '2. Create the delivery: after payment'
+      description: 'Call as soon as payment succeeds, with an `Idempotency-Key` (see **Retries** above).
+
+
+        The job waits in `PENDING` until the ready gate releases it, `dispatchAtMinutes` from now. Store `jobId`; webhooks also echo your `externalId`. Sends `delivery.accepted` (no tracking link yet).
+
+
+        **`items`** (new in v1.2): what is in the order, shown to the driver as a checklist at the store and checked against a collection photo. Product names only: drivers read this list. Without `items` the driver sees only the bag count.
+
+
+        The distance limit is checked again here, so a stale quote or changed address past the limit gets `422 out_of_range` and no job.'
+      parameters:
+      - name: Idempotency-Key
+        in: header
+        required: false
+        schema:
+          type: string
+          minLength: 1
+          maxLength: 200
+        example: KC-1001
+        description: Your order id. Retry a timed-out create with the same key and body.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/JobRequest'
+            example:
+              externalId: KC-1001
+              quoteId: Q-m4x2k1-a9f3
+              storeId: MILNERTON-GALLERIA
+              zone: Milnerton
+              pickup: *id001
+              dropoff: *id002
+              prepMinutes: 18
+              expectedReadyAt: 1788350000000
+              customerCharge: 44.18
+              tip: 20
+              bagCount: 2
+              items:
+              - name: Pizza Margherita
+                qty: 3
+              - name: Coke
+                qty: 1
+                size: 500ml
+              - name: Sprite
+                qty: 1
+                size: 500ml
+              deliveryMode: HANDOFF_REQUIRED
+              ageRestricted: false
+      responses:
+        '201':
+          description: 'Job created. A replayed retry carries the header `idempotent-replayed: true`.'
+          headers:
+            idempotent-replayed:
+              schema:
+                type: string
+                enum:
+                - 'true'
+              description: Present only on a replay.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobCreated'
+              example:
+                jobId: JOB-a1b2c3d4
+                status: PENDING
+                routing:
+                  collectKm: 0.9
+                  deliverKm: 8.4
+                  source: osrm
+                dispatchAtMinutes: 15.5
+        '400':
+          description: Missing field, impossible coordinates, a bad `items` line or a bad Idempotency-Key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error: items[2].qty must be a whole number from 1 to 99
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: Same Idempotency-Key while the first call is still running
+          headers:
+            retry-after:
+              schema:
+                type: integer
+              example: 1
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error: A request with this Idempotency-Key is still being processed. Retry in a moment.
+        '422':
+          description: 'Either past the delivery limit (`error: "out_of_range"`, see the schema) or the Idempotency-Key was already used with a different body. Tell them apart by `error`.'
+          content:
+            application/json:
+              schema:
+                oneOf:
+                - $ref: '#/components/schemas/OutOfRange'
+                - $ref: '#/components/schemas/Error'
+              examples:
+                outOfRange:
+                  summary: Past the delivery limit
+                  value:
+                    error: out_of_range
+                    message: The drop-off is 11.2 km from the store by road; we deliver up to 11 km.
+                    deliverKm: 11.2
+                    maxDeliveryKm: 11
+                keyReused:
+                  summary: Idempotency-Key reused with a different body
+                  value:
+                    error: This Idempotency-Key was already used with a different request body. Use a new key for a new order.
+  /v1/keychat/jobs/{jobId}/ready:
+    post:
+      tags:
+      - Orders
+      operationId: markReady
+      summary: '3. Ready: the POS printed the label'
+      description: 'No body. Fire it when the POS prints the bag label or marks the order ready, every time, even if a driver is already waiting. This is the most valuable call in the integration: it trains the ready gate, so drivers and food wait less.
+
+
+        Safe to repeat: a second call returns `duplicate: true`, is not counted twice and sends no second webhook. Sends `delivery.merchant_ready`.'
+      parameters:
+      - $ref: '#/components/parameters/JobId'
+      responses:
+        '200':
+          description: Recorded
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - ok
+                - prepMinutes
+                properties:
+                  ok:
+                    type: boolean
+                    const: true
+                  duplicate:
+                    type: boolean
+                    description: Present and true on a repeat call.
+                  prepMinutes:
+                    type: number
+                    description: Minutes from job creation to the first ready signal.
+              examples:
+                first:
+                  summary: First call
+                  value:
+                    ok: true
+                    prepMinutes: 14.2
+                repeat:
+                  summary: Repeat call
+                  value:
+                    ok: true
+                    duplicate: true
+                    prepMinutes: 14.2
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Unknown job
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error: Unknown job
+  /v1/keychat/statement:
+    get:
+      tags:
+      - Reconciliation
+      operationId: getStatement
+      summary: Statement of delivered orders
+      description: Every delivered order in the last `days` days, with every fee line, so a dispute lands on one row. Use it for month-end reconciliation.
+      parameters:
+      - name: days
+        in: query
+        schema:
+          type: integer
+          default: 7
+          minimum: 1
+      responses:
+        '200':
+          description: Statement
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Statement'
+              example:
+                period:
+                  from: 1789989875753
+                  to: 1790076275753
+                orders: 1
+                totals:
+                  customerCharges: 44.18
+                  driverCost: 39.98
+                  tipsPassedThrough: 20
+                  margin: 4.2
+                rows:
+                - jobId: JOB-a1b2c3d4
+                  externalId: KC-1001
+                  completedAt: 1790076075428
+                  storeId: MILNERTON-GALLERIA
+                  zone: Milnerton
+                  deliverKm: 8.4
+                  distanceSource: osrm
+                  customerCharge: 44.18
+                  driverCost: 39.98
+                  tipPassedThrough: 20
+                  margin: 4.2
+                  lines: &id004
+                  - code: COLLECTION_BASE
+                    label: Collection base fee
+                    detail: Paid on every collection
+                    amount: 6.5
+                    fundedBy: platform
+                  - code: COLLECTION_KM
+                    label: Per km to collection
+                    detail: 0.9 km at R0.767/km
+                    amount: 0.69
+                    fundedBy: platform
+                  - code: DELIVERY_BASE
+                    label: Delivery base fee
+                    detail: Paid on every completed delivery
+                    amount: 21
+                    fundedBy: platform
+                  - code: DELIVERY_KM
+                    label: Per km to customer
+                    detail: 8.4 km at R1.229/km
+                    amount: 10.32
+                    fundedBy: platform
+                  - code: FUEL
+                    label: Fuel surcharge
+                    detail: Per order
+                    amount: 1.47
+                    fundedBy: platform
+                  - code: TIP
+                    label: Customer tip
+                    detail: Every cent of every tip is yours
+                    amount: 20
+                    fundedBy: customer
+                  proofGrade: A
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /v1/keychat/events:
+    get:
+      tags:
+      - Reconciliation
+      operationId: listRecentEvents
+      summary: Last 100 events we sent you
+      description: For debugging your webhook receiver. Resets when our service restarts, so never reconcile from it.
+      responses:
+        '200':
+          description: Recent events
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  events:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        type:
+                          $ref: '#/components/schemas/EventType'
+                        at: &id006
+                          $ref: '#/components/schemas/EpochMs'
+                        payload:
+                          type: object
+                          description: The `data` of the webhook.
+              example:
+                events:
+                - type: delivery.accepted
+                  at: 1790076059606
+                  payload:
+                    jobId: JOB-a1b2c3d4
+                    externalId: KC-1001
+                    quoteId: Q-m4x2k1-a9f3
+                    etaMinutes: 45
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /v1/track/{token}:
+    get:
+      tags:
+      - Tracking
+      operationId: getTracking
+      summary: Customer tracking data (public, no key)
+      description: 'Backs the page at `trackingUrl`. The token is 128 random bits, separate from `jobId`; the `jobId` does not open tracking. `404` until the order is collected (the same answer as a bad token). Once finished: status and timeline only, no locations or driver. `410` 60 minutes after it finishes. Staging responses carry `test: true`.'
+      security: []
+      parameters:
+      - name: token
+        in: path
+        required: true
+        schema:
+          type: string
+          pattern: ^[A-Za-z0-9_-]{22}$
+        description: The token at the end of `trackingUrl`.
+        example: 4o7gAEU0fXKMVDDpXKwfcw
+      responses:
+        '200':
+          description: Tracking snapshot
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Tracking'
+              example:
+                status: IN_TRANSIT
+                label: Collected, on the way
+                pickup:
+                  name: Milnerton Galleria
+                dropoff:
+                  name: 14 Wellington St, Milnerton
+                driver:
+                  firstName: Sipho
+                  vehicle: Motorbike
+                driverPosition:
+                  lat: -33.8901
+                  lng: 18.5102
+                  secondsAgo: 4
+                pickupPosition: null
+                dropoffPosition:
+                  lat: -33.9246
+                  lng: 18.5089
+                etaMinutes: 9
+                timeline:
+                - code: PENDING
+                  label: Waiting for the kitchen
+                  at: 1790076275740
+                  meta: merchant estimated 18 min
+                - code: ASSIGNED
+                  label: Driver on the way to collect
+                  at: 1790076999000
+                  meta: null
+                - code: IN_TRANSIT
+                  label: Collected, on the way
+                  at: 1790077400000
+                  meta: waited 1.5 min at the store
+        '404':
+          description: Not collected yet, or not a valid token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error: Not found
+        '410':
+          description: The order finished more than 60 minutes ago
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error: This tracking link has expired
+webhooks:
+  delivery.accepted:
+    post:
+      summary: Job created
+      description: '**When:** on a successful job create. **Use:** confirm to the customer that delivery is booked, with the first ETA. No tracking link yet.'
+      parameters: &id003
+      - name: x-event-id
+        in: header
+        required: true
+        schema:
+          type: string
+        example: EVT-mucl2fh2-4ev3
+        description: Unique per event. Dedupe on this.
+      - name: x-dispatch-signature
+        in: header
+        required: true
+        schema:
+          type: string
+        description: Your webhook secret. Compare in constant time.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+              - $ref: '#/components/schemas/EventEnvelope'
+              - properties:
+                  type:
+                    const: delivery.accepted
+                  data:
+                    $ref: '#/components/schemas/AcceptedData'
+            example:
+              type: delivery.accepted
+              at: 1790076059606
+              data:
+                jobId: JOB-a1b2c3d4
+                externalId: KC-1001
+                quoteId: Q-m4x2k1-a9f3
+                etaMinutes: 45
+      responses:
+        '200':
+          description: Any 2xx within 5 s acknowledges. Anything else is retried.
+  delivery.merchant_ready:
+    post:
+      summary: Store marked the order ready
+      description: '**When:** on your first `/ready` call. **Use:** optional "your food is ready" message. Carries only `jobId`.'
+      parameters: *id003
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+              - $ref: '#/components/schemas/EventEnvelope'
+              - properties:
+                  type:
+                    const: delivery.merchant_ready
+                  data:
+                    type: object
+                    required:
+                    - jobId
+                    properties:
+                      jobId:
+                        type: string
+            example:
+              type: delivery.merchant_ready
+              at: 1790076061118
+              data:
+                jobId: JOB-a1b2c3d4
+      responses:
+        '200':
+          description: Any 2xx within 5 s acknowledges. Anything else is retried.
+  delivery.assigned:
+    post:
+      summary: A driver accepted
+      description: '**When:** a driver accepts. Sent for every order on a two-order run, and again if the order moves to another driver (reassigned by our office, or taken off a run that fell behind). **Use:** optional "driver on the way to the store"; always show the latest driver. Never show `driverId`. No tracking link yet.'
+      parameters: *id003
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+              - $ref: '#/components/schemas/EventEnvelope'
+              - properties:
+                  type:
+                    const: delivery.assigned
+                  data:
+                    $ref: '#/components/schemas/AssignedData'
+            example:
+              type: delivery.assigned
+              at: 1790076060412
+              data:
+                jobId: JOB-a1b2c3d4
+                externalId: KC-1001
+                driverId: '100000'
+                driver:
+                  firstName: Sipho
+                  vehicle: Motorbike
+                etaMinutes: 29
+      responses:
+        '200':
+          description: Any 2xx within 5 s acknowledges. Anything else is retried.
+  delivery.collected:
+    post:
+      summary: 'Collected: send the tracking link'
+      description: '**When:** the driver collects at the store. Sent once per order. **Use:** send `trackingUrl` to the customer now, with the driver''s first name and ETA. This is the only event that releases the link.'
+      parameters: *id003
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+              - $ref: '#/components/schemas/EventEnvelope'
+              - properties:
+                  type:
+                    const: delivery.collected
+                  data:
+                    $ref: '#/components/schemas/CollectedData'
+            example:
+              type: delivery.collected
+              at: 1790076064916
+              data:
+                jobId: JOB-a1b2c3d4
+                externalId: KC-1001
+                trackingUrl: https://habibi-api.quikr.co.za/track/4o7gAEU0fXKMVDDpXKwfcw
+                driver:
+                  firstName: Sipho
+                  vehicle: Motorbike
+                etaMinutes: 23
+      responses:
+        '200':
+          description: Any 2xx within 5 s acknowledges. Anything else is retried.
+  delivery.code_issued:
+    post:
+      summary: 'Delivery code: show it to the customer'
+      description: '**When:** the driver arrives at the door; our office issues or reissues a code (`issuedBy` present); or an address change moved the drop-off. **Use:** show `code` to the customer at once and always show the latest one. The driver never receives it. It is a secret: never log it in plain text.'
+      parameters: *id003
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+              - $ref: '#/components/schemas/EventEnvelope'
+              - properties:
+                  type:
+                    const: delivery.code_issued
+                  data:
+                    $ref: '#/components/schemas/CodeIssuedData'
+            example:
+              type: delivery.code_issued
+              at: 1790076073925
+              data:
+                jobId: JOB-a1b2c3d4
+                externalId: KC-1001
+                code: '2738'
+                trackingUrl: https://habibi-api.quikr.co.za/track/4o7gAEU0fXKMVDDpXKwfcw
+      responses:
+        '200':
+          description: Any 2xx within 5 s acknowledges. Anything else is retried.
+  delivery.address_changed:
+    post:
+      summary: Drop-off corrected by our office
+      description: '**When:** our office corrects the address on a live order (within the delivery limit). The order is re-routed and re-priced; if a code was already issued, a new `delivery.code_issued` follows. **Use:** update the order and confirm with the customer.'
+      parameters: *id003
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+              - $ref: '#/components/schemas/EventEnvelope'
+              - properties:
+                  type:
+                    const: delivery.address_changed
+                  data:
+                    $ref: '#/components/schemas/AddressChangedData'
+            example:
+              type: delivery.address_changed
+              at: 1790076061129
+              data:
+                jobId: JOB-a1b2c3d4
+                externalId: KC-1001
+                dropoff:
+                  lat: -33.9201
+                  lng: 18.511
+                  name: 16 Wellington St, Milnerton
+                deliverKm: 7.9
+      responses:
+        '200':
+          description: Any 2xx within 5 s acknowledges. Anything else is retried.
+  delivery.delivered:
+    post:
+      summary: 'Delivered: close the order and bill'
+      description: '**When:** the customer read out the code (or GPS proof, grade B), or our office closed it as delivered (grade `D`). **Use:** close the order and record `charge`. This is the billable event. `flagged: true` means the proof failed a later check: the delivery stands, the driver''s payout is held for review.'
+      parameters: *id003
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+              - $ref: '#/components/schemas/EventEnvelope'
+              - properties:
+                  type:
+                    const: delivery.delivered
+                  data:
+                    $ref: '#/components/schemas/DeliveredData'
+            example:
+              type: delivery.delivered
+              at: 1790076075431
+              data:
+                jobId: JOB-a1b2c3d4
+                externalId: KC-1001
+                grade: A
+                flagged: false
+                completedAt: 1790076075428
+                charge:
+                  customerCharge: 44.18
+                  driverCost: 39.98
+                  tipPassedThrough: 20
+                  margin: 4.2
+                  lines: *id004
+      responses:
+        '200':
+          description: Any 2xx within 5 s acknowledges. Anything else is retried.
+  delivery.failed:
+    post:
+      summary: Not delivered
+      description: '**When:** our office closes the order as failed or cancelled. Terminal; no `charge`. **Use:** tell the customer and start your refund flow.'
+      parameters: *id003
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+              - $ref: '#/components/schemas/EventEnvelope'
+              - properties:
+                  type:
+                    const: delivery.failed
+                  data:
+                    $ref: '#/components/schemas/FailedData'
+            example:
+              type: delivery.failed
+              at: 1790076129945
+              data:
+                jobId: JOB-c8717114
+                externalId: KC-1002
+                reason: Customer unreachable
+                actor: ops
+      responses:
+        '200':
+          description: Any 2xx within 5 s acknowledges. Anything else is retried.
+components:
+  securitySchemes:
+    apiKey:
+      type: apiKey
+      in: header
+      name: x-api-key
+      description: '`hbk_test_…` on staging, `hbk_live_…` on production. Send on every `/v1/keychat/*` request.'
+  parameters:
+    JobId:
+      name: jobId
+      in: path
+      required: true
+      schema:
+        type: string
+      example: JOB-a1b2c3d4
+  responses:
+    Unauthorized:
+      description: Missing or invalid API key
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error: Missing or invalid API key
+  schemas:
+    EpochMs:
+      type: integer
+      description: Unix epoch milliseconds
+      example: 1789641600000
+    Money:
+      type: number
+      description: ZAR, two decimals, excluding VAT
+      example: 44.18
+    Location:
+      type: object
+      description: '`lat`/`lng` or `latitude`/`longitude`. Missing or impossible coordinates (including 0,0) are refused with `400`.'
+      properties:
+        lat:
+          type: number
+          example: -33.8703
+        lng:
+          type: number
+          example: 18.5089
+        latitude:
+          type: number
+        longitude:
+          type: number
+        name:
+          type: string
+          example: Milnerton Galleria
+    Error:
+      type: object
+      required:
+      - error
+      properties:
+        error:
+          type: string
+          description: What went wrong, in plain words.
+    OutOfRange:
+      type: object
+      required:
+      - error
+      - deliverKm
+      - maxDeliveryKm
+      properties:
+        error:
+          type: string
+          const: out_of_range
+        message:
+          type: string
+          description: Ready to adapt for the customer.
+        deliverKm:
+          type: number
+          description: Store to customer, km by road.
+        maxDeliveryKm:
+          type: number
+          description: This zone's limit (default 11). Read it; don't hard-code it.
+    DeliveryMode:
+      type: string
+      enum:
+      - HANDOFF_REQUIRED
+      - LEAVE_AT_DOOR
+      - LEAVE_WITH_CONCIERGE
+      default: HANDOFF_REQUIRED
+      description: Chosen by the customer. A driver can never choose leave-at-door.
+    OrderStatus:
+      type: string
+      enum:
+      - PENDING
+      - OFFERED
+      - ASSIGNED
+      - AT_STORE
+      - IN_TRANSIT
+      - AT_CUSTOMER
+      - DELIVERED
+      - FAILED
+      - CANCELLED
+    ProofGrade:
+      type: string
+      enum:
+      - A
+      - B
+      - C
+      - D
+      - FLAGGED
+      description: 'A, B, C: proof from the driver (C is the minimum; age-restricted orders need B). D: closed by our office. FLAGGED: the proof failed a later check.'
+    EventType:
+      type: string
+      enum:
+      - delivery.accepted
+      - delivery.merchant_ready
+      - delivery.assigned
+      - delivery.collected
+      - delivery.code_issued
+      - delivery.address_changed
+      - delivery.delivered
+      - delivery.failed
+    FeeLine:
+      type: object
+      required:
+      - code
+      - label
+      - amount
+      properties:
+        code:
+          type: string
+          enum:
+          - COLLECTION_BASE
+          - COLLECTION_KM
+          - DELIVERY_BASE
+          - DELIVERY_KM
+          - FUEL
+          - STACKED_COLLECTION
+          - STACKED_DELIVERY
+          - BAGS
+          - PREMIUM
+          - SURGE
+          - DELAY
+          - TIP
+        label:
+          type: string
+        detail:
+          type:
+          - string
+          - 'null'
+        amount: &id005
+          $ref: '#/components/schemas/Money'
+        fundedBy:
+          type: string
+          enum:
+          - platform
+          - customer
+          description: TIP is customer-funded; the rest platform-funded. Absent on quote lines.
+    Item:
+      type: object
+      required:
+      - name
+      properties:
+        name:
+          type: string
+          maxLength: 60
+          description: The product as the store names it. No customer details.
+        qty:
+          type: integer
+          minimum: 1
+          maximum: 99
+          default: 1
+        size:
+          type: string
+          maxLength: 20
+          example: 500ml
+    QuoteRequest:
+      type: object
+      required:
+      - storeId
+      - pickup
+      - dropoff
+      properties:
+        storeId:
+          type: string
+        zone:
+          type: string
+          description: Pricing zone, e.g. Milnerton. Sets the rate card and limits.
+        pickup:
+          $ref: '#/components/schemas/Location'
+        dropoff:
+          $ref: '#/components/schemas/Location'
+        prepMinutes:
+          type: number
+          description: The store's own estimate. Used only until we have measured that store.
+        bagCount:
+          type: integer
+          default: 1
+        tip: *id005
+    Quote:
+      type: object
+      properties:
+        quoteId:
+          type: string
+        expiresInSeconds:
+          type: integer
+          example: 180
+        currency:
+          type: string
+          const: ZAR
+        customerCharge:
+          type: object
+          properties:
+            deliveryFee:
+              $ref: '#/components/schemas/Money'
+              description: Add this to the order total. Flat fee + extraKmFee.
+            baseFee:
+              $ref: '#/components/schemas/Money'
+              description: The flat fee.
+            includedKm:
+              type: number
+              description: Km by road covered by the flat fee (default 5).
+            extraKm:
+              type: number
+              description: Km by road past includedKm.
+            extraKmRate:
+              $ref: '#/components/schemas/Money'
+              description: Rand per extra km for this zone.
+            extraKmFee: *id005
+            tipIsSeparate:
+              type: boolean
+              const: true
+            note:
+              type: string
+        driverCost:
+          type: object
+          properties:
+            lines:
+              type: array
+              items:
+                $ref: '#/components/schemas/FeeLine'
+            total: *id005
+        margin: *id005
+        routing:
+          $ref: '#/components/schemas/Routing'
+        timing:
+          type: object
+          properties:
+            etaMinutes:
+              type: integer
+            merchantPrepMinutes:
+              type:
+              - number
+              - 'null'
+            ourPrepEstimateMinutes:
+              type: number
+            prepSource:
+              type: string
+              enum:
+              - store
+              - merchant
+              - global
+              - cold
+              description: 'store: our measured history. merchant: your estimate (new store). global, cold: fallbacks.'
+            driverDispatchAtMinutes:
+              type: number
+              description: Minutes after the order when we plan to send a driver.
+    Routing:
+      type: object
+      properties:
+        collectKm:
+          type: number
+        deliverKm:
+          type: number
+        roadKm:
+          type: number
+          description: Store to customer by road, used for the limit and the extra-km fee.
+        drivingMinutes:
+          type: number
+        source:
+          type: string
+          enum:
+          - osrm
+          - estimated
+          description: '`osrm`: road distance, billable. `estimated`: straight-line fallback; don''t bill on it.'
+    JobRequest:
+      type: object
+      required:
+      - storeId
+      - pickup
+      - dropoff
+      properties:
+        externalId:
+          type: string
+          description: Your order id, echoed on webhooks. Put SIMFAIL or SIMSLOW in it on staging to test.
+        quoteId:
+          type: string
+        storeId:
+          type: string
+        zone:
+          type: string
+        vertical:
+          type: string
+          default: FOOD
+        pickup:
+          $ref: '#/components/schemas/Location'
+        dropoff:
+          $ref: '#/components/schemas/Location'
+        prepMinutes:
+          type: number
+        expectedReadyAt: *id006
+        promiseAt:
+          $ref: '#/components/schemas/EpochMs'
+          description: 'Promised delivery time. Default: now + 45 min.'
+        createdAt:
+          $ref: '#/components/schemas/EpochMs'
+          description: Order time. Default now; implausible values (such as 0) count as now.
+        bagCount:
+          type: integer
+          default: 1
+        items:
+          type: array
+          maxItems: 50
+          items:
+            $ref: '#/components/schemas/Item'
+          description: New in v1.2. What is in the order. Product names only.
+        itemCount:
+          type: integer
+          description: Worked out from `items` when you send them.
+        tip:
+          $ref: '#/components/schemas/Money'
+          description: Committed at checkout. Shown to the driver inside one all-in figure and paid in full.
+        customerCharge:
+          $ref: '#/components/schemas/Money'
+          description: Delivery fee you charged. If left out, we record the fee our quote would have given.
+        deliveryMode:
+          $ref: '#/components/schemas/DeliveryMode'
+        ageRestricted:
+          type: boolean
+          default: false
+          description: Raises the minimum proof of delivery to grade B.
+        dispatchNow:
+          type: boolean
+          default: false
+          description: 'Staging only: skip the ready gate. Ignored on production.'
+    JobCreated:
+      type: object
+      properties:
+        jobId:
+          type: string
+        status:
+          $ref: '#/components/schemas/OrderStatus'
+        routing:
+          type: object
+          properties:
+            collectKm:
+              type: number
+            deliverKm:
+              type: number
+            source:
+              type: string
+        dispatchAtMinutes:
+          type: number
+          description: When the ready gate plans to release the order to a driver.
+    EventEnvelope:
+      type: object
+      required:
+      - type
+      - at
+      - data
+      properties:
+        type:
+          $ref: '#/components/schemas/EventType'
+        at: *id006
+        data:
+          type: object
+    Driver:
+      type:
+      - object
+      - 'null'
+      properties:
+        firstName:
+          type: string
+          example: Sipho
+        vehicle:
+          type: string
+          example: Motorbike
+    AcceptedData:
+      type: object
+      required:
+      - jobId
+      properties:
+        jobId:
+          type: string
+        externalId:
+          type:
+          - string
+          - 'null'
+        quoteId:
+          type:
+          - string
+          - 'null'
+        etaMinutes:
+          type: integer
+    AssignedData:
+      type: object
+      required:
+      - jobId
+      - driverId
+      properties:
+        jobId:
+          type: string
+        externalId:
+          type:
+          - string
+          - 'null'
+        driverId:
+          type: string
+          description: Our internal id. Never show it to the customer.
+        driver:
+          $ref: '#/components/schemas/Driver'
+        etaMinutes:
+          type:
+          - integer
+          - 'null'
+    CollectedData:
+      type: object
+      required:
+      - jobId
+      - trackingUrl
+      properties:
+        jobId:
+          type: string
+        externalId:
+          type:
+          - string
+          - 'null'
+        trackingUrl:
+          type: string
+          format: uri
+          description: Send to the customer now. Released here and nowhere earlier.
+        driver:
+          $ref: '#/components/schemas/Driver'
+        etaMinutes:
+          type:
+          - integer
+          - 'null'
+          description: Driving minutes to the customer.
+    CodeIssuedData:
+      type: object
+      required:
+      - jobId
+      - code
+      properties:
+        jobId:
+          type: string
+        externalId:
+          type:
+          - string
+          - 'null'
+        code:
+          type: string
+          description: Secret. Show to the customer only.
+        trackingUrl:
+          type: string
+          format: uri
+          description: Present once collected.
+        issuedBy:
+          type: string
+          description: Present when our office issued it.
+    AddressChangedData:
+      type: object
+      properties:
+        jobId:
+          type: string
+        externalId:
+          type:
+          - string
+          - 'null'
+        dropoff:
+          $ref: '#/components/schemas/Location'
+        deliverKm:
+          type: number
+        trackingUrl:
+          type: string
+          format: uri
+          description: Present once collected.
+    DeliveredData:
+      type: object
+      required:
+      - jobId
+      - grade
+      - completedAt
+      - charge
+      properties:
+        jobId:
+          type: string
+        externalId:
+          type:
+          - string
+          - 'null'
+        grade:
+          $ref: '#/components/schemas/ProofGrade'
+        flagged:
+          type: boolean
+        completedAt: *id006
+        charge:
+          type: object
+          properties:
+            customerCharge:
+              type:
+              - number
+              - 'null'
+            driverCost: *id005
+            tipPassedThrough: *id005
+            margin:
+              type:
+              - number
+              - 'null'
+              description: Null if no customerCharge was recorded.
+            lines:
+              type: array
+              items:
+                $ref: '#/components/schemas/FeeLine'
+    FailedData:
+      type: object
+      required:
+      - jobId
+      - reason
+      properties:
+        jobId:
+          type: string
+        externalId:
+          type:
+          - string
+          - 'null'
+        reason:
+          type: string
+        actor:
+          type: string
+          description: '`ops`, a staff name, or `simulator` on staging.'
+    Statement:
+      type: object
+      properties:
+        period:
+          type: object
+          properties:
+            from: *id006
+            to: *id006
+        orders:
+          type: integer
+        totals:
+          type: object
+          properties:
+            customerCharges: *id005
+            driverCost: *id005
+            tipsPassedThrough: *id005
+            margin: *id005
+        rows:
+          type: array
+          items:
+            type: object
+            properties:
+              jobId:
+                type: string
+              externalId:
+                type:
+                - string
+                - 'null'
+              completedAt: *id006
+              storeId:
+                type: string
+              zone:
+                type: string
+              deliverKm:
+                type: number
+              distanceSource:
+                type: string
+                enum:
+                - osrm
+                - estimated
+                - navigation
+              customerCharge:
+                type:
+                - number
+                - 'null'
+              driverCost:
+                type:
+                - number
+                - 'null'
+              tipPassedThrough:
+                type: number
+              margin:
+                type:
+                - number
+                - 'null'
+              lines:
+                type: array
+                items:
+                  $ref: '#/components/schemas/FeeLine'
+              proofGrade:
+                $ref: '#/components/schemas/ProofGrade'
+    Tracking:
+      type: object
+      properties:
+        test:
+          type: boolean
+          description: Staging only.
+        status:
+          $ref: '#/components/schemas/OrderStatus'
+        label:
+          type: string
+        pickup:
+          type: object
+          properties:
+            name:
+              type:
+              - string
+              - 'null'
+        dropoff:
+          type: object
+          properties:
+            name:
+              type:
+              - string
+              - 'null'
+        driver:
+          $ref: '#/components/schemas/Driver'
+          description: Null once finished.
+        driverPosition:
+          type:
+          - object
+          - 'null'
+          description: Only while in flight.
+          properties:
+            lat:
+              type: number
+            lng:
+              type: number
+            secondsAgo:
+              type: integer
+              description: Age of the GPS fix.
+        pickupPosition:
+          type:
+          - object
+          - 'null'
+          description: Only while the driver is heading to or at the store.
+        dropoffPosition:
+          type:
+          - object
+          - 'null'
+          description: Null once finished.
+        etaMinutes:
+          type:
+          - integer
+          - 'null'
+        timeline:
+          type: array
+          items:
+            type: object
+            properties:
+              code:
+                $ref: '#/components/schemas/OrderStatus'
+              label:
+                type: string
+              at: *id006
+              meta:
+                type:
+                - string
+                - 'null'
